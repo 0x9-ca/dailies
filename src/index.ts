@@ -203,13 +203,13 @@ app.get("/auth/logout", async (c) => {
   return c.redirect("/");
 });
 
-app.get("/login", (c) => {
+app.get("/login", async (c) => {
   const user = c.get("user");
   if (user) {
     return c.redirect("/");
   }
 
-  return c.html(layout("Login", null, `
+  return c.html(await layout("Login", null, `
     <main>
       <section class="panel">
         <h1>Sign in</h1>
@@ -272,7 +272,7 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
-  return c.html(layout("Daily Game List", user, `
+  return c.html(await layout("Daily Game List", user, `
     <main>
       <section class="hero">
         <h1>Dailies</h1>
@@ -316,7 +316,7 @@ app.get("/submit", async (c) => {
     name: string;
   }>();
 
-  return c.html(layout("Submit a Daily Game", user, `
+  return c.html(await layout("Submit a Daily Game", user, `
     <main>
       <h1>Submit a Daily Game</h1>
       <section class="panel">
@@ -499,7 +499,7 @@ app.get("/games", async (c) => {
     paginationMarkup += `</div>`;
   }
 
-  return c.html(layout("Browse Games", user, `
+  return c.html(await layout("Browse Games", user, `
     <main>
       <h1>Browse Games</h1>
       <form method="GET" action="/games">
@@ -583,7 +583,7 @@ app.get("/games/:slug", async (c) => {
     userVote = vote?.value || 0;
   }
 
-  return c.html(layout(game.title, user, `
+  return c.html(await layout(game.title, user, `
     <main>
       <h1>${escapeHtml(game.title)}</h1>
       <p>${escapeHtml(game.description || "")}</p>
@@ -1012,7 +1012,7 @@ app.get("/rotation/:shareToken", async (c) => {
   
   const ownerName = owner.display_name || owner.email.split('@')[0];
   
-  return c.html(layout(`${escapeHtml(ownerName)}'s Rotation`, user, `
+  return c.html(await layout(`${escapeHtml(ownerName)}'s Rotation`, user, `
     <main>
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
@@ -1035,7 +1035,7 @@ app.get("/rotation/:shareToken", async (c) => {
 app.get("/me/rotation", async (c) => {
   const user = c.get("user");
   if (!user) {
-    return c.html(layout("My Rotation", null, `
+    return c.html(await layout("My Rotation", null, `
       <main>
         <h1>My Daily Rotation</h1>
         <p>Your favorites are stored in this browser via local storage.</p>
@@ -1282,7 +1282,7 @@ app.get("/me/rotation", async (c) => {
   const shareToken = userWithToken?.rotation_share_token;
   const shareUrl = shareToken ? `${c.env.APP_URL}/rotation/${shareToken}` : null;
 
-  return c.html(layout("My Rotation", user, `
+  return c.html(await layout("My Rotation", user, `
     <main>
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
         <h1 style="margin: 0;">My Daily Rotation</h1>
@@ -1609,7 +1609,7 @@ app.get("/me/settings", async (c) => {
     .bind(auth.id)
     .all<{ id: string; created_at: string; expires_at: string }>();
 
-  return c.html(layout("Account Settings", auth, `
+  return c.html(await layout("Account Settings", auth, `
     <main>
       <h1>Account Settings</h1>
       <section class="panel">
@@ -1684,6 +1684,7 @@ app.get("/me/settings", async (c) => {
 
 app.get("/lists", async (c) => {
   const user = c.get("user");
+  const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   const lists = await c.env.DB.prepare(
     `SELECT id, slug, title, description, visibility, owner_user_id
      FROM curated_lists
@@ -1698,15 +1699,62 @@ app.get("/lists", async (c) => {
   }>();
 
   const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user));
-  return c.html(layout("Curated Lists", user, `
+  return c.html(await layout("Curated Lists", user, `
     <main>
       <h1>Curated Lists</h1>
-      <ul>
-        ${visible
-          .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a> (${row.visibility})</li>`)
-          .join("")}
-      </ul>
+      ${isAdminEditor ? `
+        <section class="panel">
+          <h2>Create list</h2>
+          <form id="create-list-form" class="stack-form">
+            <input name="title" placeholder="List title" required />
+            <textarea name="description" rows="2" placeholder="Description"></textarea>
+            <select name="visibility">
+              <option value="private">private</option>
+              <option value="public">public</option>
+            </select>
+            <button type="submit">Create list</button>
+          </form>
+          <p id="create-list-status" class="status" aria-live="polite"></p>
+        </section>
+      ` : ""}
+      ${visible.length > 0 ? `
+        <ul>
+          ${visible
+            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a> (${row.visibility})</li>`)
+            .join("")}
+        </ul>
+      ` : `<p>No curated lists yet.</p>`}
     </main>
+    <script>
+      (() => {
+        const form = document.getElementById("create-list-form");
+        if (!form) return;
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const fd = new FormData(form);
+          const status = document.getElementById("create-list-status");
+          try {
+            const res = await fetch("/api/lists", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "same-origin",
+              body: JSON.stringify({
+                title: fd.get("title"),
+                description: fd.get("description") || undefined,
+                visibility: fd.get("visibility"),
+              }),
+            });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              throw new Error(body.error || "Failed to create list");
+            }
+            window.location.reload();
+          } catch (err) {
+            if (status) status.textContent = err.message;
+          }
+        });
+      })();
+    </script>
   `, c.env));
 });
 
@@ -1733,7 +1781,7 @@ app.get("/lists/:slug", async (c) => {
     .bind(list.id)
     .all<{ slug: string; title: string; position: number }>();
 
-  return c.html(layout(list.title, user, `
+  return c.html(await layout(list.title, user, `
     <main>
       <h1>${escapeHtml(list.title)}</h1>
       <p>${escapeHtml(list.description || "")}</p>
@@ -1743,12 +1791,12 @@ app.get("/lists/:slug", async (c) => {
 });
 
 // Admin SSR pages.
-app.get("/admin", (c) => {
+app.get("/admin", async (c) => {
   const auth = requireRole(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
-  return c.html(layout("Admin", auth, `
+  return c.html(await layout("Admin", auth, `
     <main>
       <h1>Admin</h1>
       <div class="admin-grid">
@@ -1789,7 +1837,7 @@ app.get("/admin/submissions", async (c) => {
         .bind(status)
         .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null }>();
 
-  return c.html(layout("Admin Submissions", auth, `
+  return c.html(await layout("Admin Submissions", auth, `
     <main>
       <h1>Moderate Submissions</h1>
       <form method="GET" action="/admin/submissions">
@@ -1981,7 +2029,7 @@ app.get("/admin/reports", async (c) => {
         .bind(status)
         .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string }>();
 
-  return c.html(layout("Admin Reports", auth, `
+  return c.html(await layout("Admin Reports", auth, `
     <main>
       <h1>Review Reports</h1>
       <form method="GET" action="/admin/reports">
@@ -2101,7 +2149,7 @@ app.get("/admin/categories", async (c) => {
     "SELECT id, slug, name, description, is_active FROM categories ORDER BY name ASC"
   ).all<{ id: string; slug: string; name: string; description: string | null; is_active: number }>();
 
-  return c.html(layout("Admin Categories", auth, `
+  return c.html(await layout("Admin Categories", auth, `
     <main>
       <h1>Manage Categories</h1>
       <section class="panel">
@@ -2231,7 +2279,7 @@ app.get("/admin/lists", async (c) => {
     itemsByList.set(item.curated_list_id, existing);
   }
 
-  return c.html(layout("Admin Lists", auth, `
+  return c.html(await layout("Admin Lists", auth, `
     <main>
       <h1>Manage Curated Lists</h1>
       <section class="panel">
@@ -4332,7 +4380,10 @@ async function hashAuthToken(secret: string, value: string): Promise<string> {
     .join("");
 }
 
-function layout(title: string, user: AppUser | null, body: string, env: Env): string {
+async function layout(title: string, user: AppUser | null, body: string, env: Env): Promise<string> {
+  const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
+  const hasLists = (listCount?.cnt ?? 0) > 0;
+  const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -4493,8 +4544,9 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         <a href="/games">Games</a>
         ${user ? `<a href="/submit">Submit</a>` : ""}
         <a href="/me/rotation">My Rotation</a>
+        ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
         ${user ? `<a href="/me/settings">Settings</a>` : ""}
-        ${user && (user.role === "editor" || user.role === "admin") ? `<a href="/admin">Admin</a>` : ""}
+        ${isAdminEditor ? `<a href="/admin">Admin</a>` : ""}
         ${!user ? `<a href="/login">Login</a>` : ""}
       </nav>
       <div>
