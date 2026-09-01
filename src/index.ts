@@ -1837,7 +1837,7 @@ app.get("/lists/:slug", async (c) => {
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
     const games = await c.env.DB.prepare(
-      "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC LIMIT 500"
+      "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC"
     ).all<{ id: string; title: string; slug: string }>();
     adminGames = games.results;
   }
@@ -2570,7 +2570,7 @@ app.get("/admin/lists", async (c) => {
   ).all<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private" }>();
 
   const games = await c.env.DB.prepare(
-    "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC LIMIT 500"
+    "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC"
   ).all<{ id: string; title: string; slug: string }>();
 
   const listItems = await c.env.DB.prepare(
