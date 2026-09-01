@@ -682,6 +682,20 @@ app.get("/games/:slug", async (c) => {
              </section>`
           : ""
       }
+      ${
+        user && (user.role === "admin" || user.role === "editor")
+          ? `<section class="panel" id="add-to-list-section">
+               <h2>Add to curated list</h2>
+               <form id="add-to-list-form" class="stack-form">
+                 <select name="listId" id="list-select" required>
+                   <option value="">Select a list...</option>
+                 </select>
+                 <button type="submit">Add game</button>
+               </form>
+               <p id="add-to-list-status" class="status" aria-live="polite"></p>
+             </section>`
+          : ""
+      }
     </main>
     ${
       user
@@ -837,6 +851,44 @@ app.get("/games/:slug", async (c) => {
                 } else {
                   setAdminStatus("Could not save changes.");
                   if (window.appToast) window.appToast("Could not save changes.", "error");
+                }
+              });
+            }
+
+            const listSelect = document.getElementById("list-select");
+            const addToListForm = document.getElementById("add-to-list-form");
+            const addToListStatus = document.getElementById("add-to-list-status");
+            if (listSelect && addToListForm) {
+              fetch("/api/lists").then(r => r.json()).then((lists) => {
+                for (const list of lists) {
+                  const opt = document.createElement("option");
+                  opt.value = list.id;
+                  opt.textContent = list.title;
+                  listSelect.appendChild(opt);
+                }
+              }).catch(() => {});
+              addToListForm.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                const listId = listSelect.value;
+                if (!listId) return;
+                if (addToListStatus) addToListStatus.textContent = "Adding...";
+                try {
+                  const existing = await fetch("/api/lists/" + listId).then(r => r.json());
+                  const nextPos = (existing.items?.length ?? 0) + 1;
+                  const res = await fetch("/api/lists/" + listId + "/items", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ gameId: game.id, position: nextPos })
+                  });
+                  if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(body.error || "Failed to add game");
+                  }
+                  if (addToListStatus) addToListStatus.textContent = "Game added to list.";
+                  if (window.appToast) window.appToast("Game added to list.", "success");
+                } catch (err) {
+                  if (addToListStatus) addToListStatus.textContent = err.message;
+                  if (window.appToast) window.appToast(err.message, "error");
                 }
               });
             }
@@ -2308,6 +2360,7 @@ app.get("/admin/lists", async (c) => {
               <form class="stack-form" data-list-edit="${list.id}">
                 <label>Edit list metadata</label>
                 <input type="text" name="title" value="${escapeHtml(list.title)}" required />
+                <input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />
                 <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
                 <button type="submit">Save list details</button>
               </form>
@@ -2456,6 +2509,7 @@ app.get("/admin/lists", async (c) => {
           const fd = new FormData(form);
           const payload = {
             title: String(fd.get("title") || ""),
+            slug: String(fd.get("slug") || ""),
             description: String(fd.get("description") || "")
           };
           setStatus("Saving list details...");
@@ -3271,7 +3325,8 @@ const createListSchema = z.object({
 
 const updateListSchema = z.object({
   title: z.string().min(2).max(100).optional(),
-  description: z.string().max(300).optional()
+  description: z.string().max(300).optional(),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional()
 });
 
 app.post("/api/lists", async (c) => {
@@ -3322,20 +3377,29 @@ app.patch("/api/lists/:id", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const listId = c.req.param("id");
-  const existing = await c.env.DB.prepare("SELECT title, description FROM curated_lists WHERE id = ?1")
+  const existing = await c.env.DB.prepare("SELECT title, description, slug FROM curated_lists WHERE id = ?1")
     .bind(listId)
-    .first<{ title: string; description: string | null }>();
+    .first<{ title: string; description: string | null; slug: string }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
   }
+  if (parsed.data.slug && parsed.data.slug !== existing.slug) {
+    const slugExists = await c.env.DB.prepare("SELECT id FROM curated_lists WHERE slug = ?1 AND id != ?2")
+      .bind(parsed.data.slug, listId)
+      .first<{ id: string }>();
+    if (slugExists) {
+      return c.json({ error: "Slug already in use" }, 409);
+    }
+  }
   await c.env.DB.prepare(
     `UPDATE curated_lists
-     SET title = ?1, description = ?2, updated_by_user_id = ?3, updated_at = datetime('now')
-     WHERE id = ?4`
+     SET title = ?1, description = ?2, slug = ?3, updated_by_user_id = ?4, updated_at = datetime('now')
+     WHERE id = ?5`
   )
     .bind(
       parsed.data.title ?? existing.title,
       parsed.data.description === undefined ? existing.description : parsed.data.description,
+      parsed.data.slug ?? existing.slug,
       auth.id,
       listId
     )
