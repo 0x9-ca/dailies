@@ -659,8 +659,7 @@ app.get("/", async (c) => {
     <main>
       <section class="hero">
         <h1>Dailies</h1>
-        <p>Find the best daily games.</p>
-	<p>No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
+        <p>Find the best daily games. No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
         <a class="btn" href="/games">Browse games</a>
       </section>
       ${
@@ -1413,6 +1412,12 @@ app.get("/me/rotation", async (c) => {
         <h1>My Daily Rotation</h1>
         <p>Your favorites are stored in this browser via local storage.</p>
         <p><a href="/login">Sign in</a> to sync favorites across devices.</p>
+        <div class="actions">
+          <button type="button" id="export-btn">Export JSON</button>
+          <button type="button" id="import-btn">Import JSON</button>
+          <input type="file" id="import-file" accept=".json" hidden>
+        </div>
+        <p id="import-status" class="status" aria-live="polite"></p>
         <ol id="local-rotation-list" class="rotation-list"></ol>
         <p id="rotation-status" class="status" aria-live="polite"></p>
       </main>
@@ -1567,6 +1572,64 @@ app.get("/me/rotation", async (c) => {
           wireInteractions();
         };
 
+        document.getElementById("export-btn")?.addEventListener("click", () => {
+          const favorites = readFavorites();
+          if (favorites.length === 0) {
+            setStatus("No favorites to export.");
+            return;
+          }
+          const exportData = { version: 1, items: favorites };
+          const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "dailies-rotation.json";
+          a.click();
+          URL.revokeObjectURL(url);
+          setStatus("Exported " + favorites.length + " favorite" + (favorites.length === 1 ? "" : "s") + ".");
+        });
+
+        document.getElementById("import-btn")?.addEventListener("click", () => {
+          document.getElementById("import-file")?.click();
+        });
+
+        document.getElementById("import-file")?.addEventListener("change", (event) => {
+          const file = event.target.files?.[0];
+          if (!file) return;
+          const importStatus = document.getElementById("import-status");
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const data = JSON.parse(reader.result);
+              if (!data || data.version !== 1 || !Array.isArray(data.items)) {
+                if (importStatus) importStatus.textContent = "Invalid file format.";
+                return;
+              }
+              const valid = data.items.filter((item) => item && typeof item.id === "string" && item.id.length > 0 && typeof item.slug === "string" && typeof item.title === "string");
+              if (valid.length === 0) {
+                if (importStatus) importStatus.textContent = "No valid items found in file.";
+                return;
+              }
+              const existing = readFavorites();
+              const existingIds = new Set(existing.map((e) => e.id));
+              let added = 0;
+              for (const item of valid) {
+                if (!existingIds.has(item.id)) {
+                  existing.push({ id: item.id, slug: item.slug, title: item.title });
+                  added += 1;
+                }
+              }
+              writeFavorites(existing);
+              if (importStatus) importStatus.textContent = "Imported " + added + " new favorite" + (added === 1 ? "" : "s") + ".";
+              render();
+            } catch {
+              if (importStatus) importStatus.textContent = "Could not read file.";
+            }
+          };
+          reader.readAsText(file);
+          event.target.value = "";
+        });
+
         render();
       </script>
     `, c.env));
@@ -1615,6 +1678,12 @@ app.get("/me/rotation", async (c) => {
         </div>
         <p id="rotation-local-import-status" class="status" aria-live="polite"></p>
       </section>
+      <div class="actions">
+        <button type="button" id="export-btn">Export JSON</button>
+        <button type="button" id="import-btn">Import JSON</button>
+        <input type="file" id="import-file" accept=".json" hidden>
+      </div>
+      <p id="import-status" class="status" aria-live="polite"></p>
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
@@ -1793,6 +1862,65 @@ app.get("/me/rotation", async (c) => {
           if (window.appToast) window.appToast("Could not save order.", "error");
         }
       };
+
+      document.getElementById("export-btn")?.addEventListener("click", async () => {
+        const response = await fetch("/api/me/favorites/export");
+        if (!response.ok) {
+          setStatus("Could not export favorites.");
+          return;
+        }
+        const data = await response.json();
+        if (!data.items || data.items.length === 0) {
+          setStatus("No favorites to export.");
+          return;
+        }
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "dailies-rotation.json";
+        a.click();
+        URL.revokeObjectURL(url);
+        setStatus("Exported " + data.items.length + " favorite" + (data.items.length === 1 ? "" : "s") + ".");
+      });
+
+      document.getElementById("import-btn")?.addEventListener("click", () => {
+        document.getElementById("import-file")?.click();
+      });
+
+      document.getElementById("import-file")?.addEventListener("change", async (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        const importFileStatus = document.getElementById("import-status");
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const data = JSON.parse(reader.result);
+            if (!data || data.version !== 1 || !Array.isArray(data.items)) {
+              if (importFileStatus) importFileStatus.textContent = "Invalid file format.";
+              return;
+            }
+            if (importFileStatus) importFileStatus.textContent = "Importing...";
+            const response = await fetch("/api/me/favorites/import", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(data)
+            });
+            if (!response.ok) {
+              if (importFileStatus) importFileStatus.textContent = "Could not import favorites.";
+              return;
+            }
+            const result = await response.json();
+            if (importFileStatus) importFileStatus.textContent = "Imported " + result.imported + " new favorite" + (result.imported === 1 ? "" : "s") + ".";
+            if (window.appToast) window.appToast("Imported " + result.imported + " favorites.", "success");
+            window.location.reload();
+          } catch {
+            if (importFileStatus) importFileStatus.textContent = "Could not read file.";
+          }
+        };
+        reader.readAsText(file);
+        event.target.value = "";
+      });
 
       if (list) {
         const items = Array.from(list.querySelectorAll("li[data-game-id]"));
@@ -3149,6 +3277,85 @@ app.post("/api/me/favorites/import-local", async (c) => {
     await invalidateGameCaches(c.env);
   }
 
+  return c.json({ ok: true, imported });
+});
+
+app.get("/api/me/favorites/export", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT games.id, games.slug, games.title, favorites.position, favorites.weekday_mask
+     FROM favorites
+     JOIN games ON games.id = favorites.game_id
+     WHERE favorites.user_id = ?1
+     ORDER BY favorites.position ASC`
+  )
+    .bind(auth.id)
+    .all<{ id: string; slug: string; title: string; position: number; weekday_mask: number }>();
+  const exportData = {
+    version: 1,
+    items: rows.results.map((r) => ({
+      id: r.id,
+      slug: r.slug,
+      title: r.title,
+      position: r.position,
+      weekdayMask: r.weekday_mask
+    }))
+  };
+  return c.json(exportData);
+});
+
+const importFavoritesSchema = z.object({
+  version: z.literal(1),
+  items: z.array(z.object({
+    id: z.string().uuid(),
+    slug: z.string(),
+    title: z.string()
+  })).min(1).max(500)
+});
+
+app.post("/api/me/favorites/import", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = importFavoritesSchema.safeParse(await c.req.json());
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
+  }
+  const existingMax = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(position), 0) AS maxPosition FROM favorites WHERE user_id = ?1"
+  )
+    .bind(auth.id)
+    .first<{ maxPosition: number }>();
+  let nextPosition = (existingMax?.maxPosition || 0) + 1;
+  let imported = 0;
+  const updatedGameIds = new Set<string>();
+  for (const item of parsed.data.items) {
+    const game = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'")
+      .bind(item.id)
+      .first<{ id: string }>();
+    if (!game) continue;
+    const result = await c.env.DB.prepare(
+      "INSERT OR IGNORE INTO favorites (user_id, game_id, position) VALUES (?1, ?2, ?3)"
+    )
+      .bind(auth.id, item.id, nextPosition)
+      .run();
+    const changed = (result.meta as { changes?: number } | undefined)?.changes || 0;
+    if (changed > 0) {
+      imported += 1;
+      nextPosition += 1;
+      updatedGameIds.add(item.id);
+    }
+  }
+  for (const gameId of updatedGameIds) {
+    await updateGameScore(c.env, gameId);
+  }
+  if (updatedGameIds.size > 0) {
+    await invalidateGameCaches(c.env);
+  }
   return c.json({ ok: true, imported });
 });
 
@@ -4824,9 +5031,9 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
     ${body}
     <footer style="text-align: center; padding: 2rem 1rem; margin-top: 4rem; border-top: 1px solid #2c3f63; color: var(--muted); font-size: 0.9rem;">
       <p>
-        <a href="https://github.com/mr-delayer/dailies" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/mr-delayer/dailies" target="_blank" rel="noopener noreferrer">github</a>
         |
-        <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">Discord</a>
+        <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">discord</a>
       </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
