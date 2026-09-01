@@ -45,12 +45,6 @@ app.use("/api/*", async (c, next) => {
   await next();
 });
 
-const emailRequestSchema = z.object({ email: z.string().email() });
-const emailCodeSchema = z.object({
-  email: z.string().email(),
-  code: z.string().regex(/^\d{6}$/)
-});
-
 app.get("/health", (c) => c.json({ ok: true }));
 
 // Development-only quick role login helper.
@@ -71,195 +65,6 @@ app.get("/auth/mock-login/:role", async (c) => {
     .run();
   await createSession(c, userId);
   return c.redirect("/");
-});
-
-app.get("/auth/google", async (c) => {
-  if (!c.env.OAUTH_GOOGLE_CLIENT_ID) {
-    return c.text("Google OAuth not configured", 501);
-  }
-  const state = crypto.randomUUID();
-  setCookie(c, "oauth_state_google", state, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "Lax",
-    secure: c.env.APP_URL.startsWith("https://"),
-    maxAge: 600
-  });
-  const redirectUri = `${c.env.APP_URL}/auth/google/callback`;
-  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-  url.searchParams.set("client_id", c.env.OAUTH_GOOGLE_CLIENT_ID);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "openid email profile");
-  url.searchParams.set("state", state);
-  return c.redirect(url.toString());
-});
-
-app.get("/auth/google/callback", async (c) => {
-  const state = c.req.query("state");
-  const code = c.req.query("code");
-  const stored = getCookie(c, "oauth_state_google");
-  deleteCookie(c, "oauth_state_google", { path: "/" });
-  if (!state || !code || !stored || state !== stored) {
-    return c.text("Invalid OAuth state", 400);
-  }
-  if (!c.env.OAUTH_GOOGLE_CLIENT_SECRET) {
-    return c.text("Google OAuth secret not configured", 501);
-  }
-
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: c.env.OAUTH_GOOGLE_CLIENT_ID,
-      client_secret: c.env.OAUTH_GOOGLE_CLIENT_SECRET,
-      redirect_uri: `${c.env.APP_URL}/auth/google/callback`,
-      grant_type: "authorization_code"
-    })
-  });
-  if (!tokenRes.ok) {
-    const errText = await tokenRes.text();
-    console.error("Google token exchange failed:", tokenRes.status, errText);
-    return c.text("OAuth token exchange failed", 400);
-  }
-  const tokenJson = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string };
-  if (!tokenJson.access_token) {
-    console.error("Google token missing access_token:", JSON.stringify(tokenJson));
-    return c.text("OAuth token missing", 400);
-  }
-
-  const profileRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
-    headers: { Authorization: `Bearer ${tokenJson.access_token}` }
-  });
-  if (!profileRes.ok) {
-    return c.text("OAuth profile fetch failed", 400);
-  }
-  const profile = (await profileRes.json()) as { sub: string; email: string; name?: string; picture?: string };
-  await upsertOAuthUser(c.env, {
-    provider: "google",
-    providerUserId: profile.sub,
-    email: profile.email,
-    displayName: profile.name || null,
-    avatarUrl: profile.picture || null
-  });
-  const user = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(profile.email).first<{ id: string }>();
-  if (!user) {
-    return c.text("Unable to create user", 500);
-  }
-  await createSession(c, user.id);
-  return c.redirect("/?importLocal=1");
-});
-
-app.get("/auth/github", async (c) => {
-  if (!c.env.OAUTH_GITHUB_CLIENT_ID) {
-    return c.text("GitHub OAuth not configured", 501);
-  }
-  const state = crypto.randomUUID();
-  setCookie(c, "oauth_state_github", state, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "Lax",
-    secure: c.env.APP_URL.startsWith("https://"),
-    maxAge: 600
-  });
-  const url = new URL("https://github.com/login/oauth/authorize");
-  url.searchParams.set("client_id", c.env.OAUTH_GITHUB_CLIENT_ID);
-  url.searchParams.set("redirect_uri", `${c.env.APP_URL}/auth/github/callback`);
-  url.searchParams.set("scope", "read:user user:email");
-  url.searchParams.set("state", state);
-  return c.redirect(url.toString());
-});
-
-app.get("/auth/github/callback", async (c) => {
-  const state = c.req.query("state");
-  const code = c.req.query("code");
-  const stored = getCookie(c, "oauth_state_github");
-  deleteCookie(c, "oauth_state_github", { path: "/" });
-  if (!state || !code || !stored || state !== stored) {
-    return c.text("Invalid OAuth state", 400);
-  }
-  if (!c.env.OAUTH_GITHUB_CLIENT_SECRET) {
-    return c.text("GitHub OAuth secret not configured", 501);
-  }
-  const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: c.env.OAUTH_GITHUB_CLIENT_ID,
-      client_secret: c.env.OAUTH_GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: `${c.env.APP_URL}/auth/github/callback`
-    })
-  });
-  if (!tokenRes.ok) {
-    const errText = await tokenRes.text();
-    console.error("GitHub token exchange failed:", tokenRes.status, errText);
-    if (tokenRes.status === 429) {
-      return c.text("GitHub rate limit exceeded. Please try again in a few minutes.", 429);
-    }
-    return c.text("OAuth token exchange failed", 400);
-  }
-  const token = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string };
-  if (!token.access_token) {
-    console.error("GitHub token missing access_token:", JSON.stringify(token));
-    return c.text("OAuth token missing", 400);
-  }
-  const userRes = await fetch("https://api.github.com/user", {
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token.access_token}`,
-      "User-Agent": "daily-game-list"
-    }
-  });
-  if (!userRes.ok) {
-    return c.text("OAuth profile fetch failed", 400);
-  }
-  const ghUser = (await userRes.json()) as {
-    id: number;
-    login?: string | null;
-    name?: string | null;
-    email?: string | null;
-    avatar_url?: string | null;
-  };
-  let email = ghUser.email;
-  if (!email) {
-    const emailsRes = await fetch("https://api.github.com/user/emails", {
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token.access_token}`,
-        "User-Agent": "daily-game-list"
-      }
-    });
-    if (emailsRes.ok) {
-      const emails = (await emailsRes.json()) as Array<{ email: string; primary: boolean; verified?: boolean | null }>;
-      email =
-        emails.find((e) => e.primary && e.verified === true)?.email ||
-        emails.find((e) => e.verified === true)?.email ||
-        emails.find((e) => e.primary)?.email ||
-        emails[0]?.email ||
-        null;
-    }
-  }
-  if (!email && ghUser.login) {
-    email = `${ghUser.login}@users.noreply.github.com`;
-  }
-  if (!email) {
-    return c.text("GitHub account email unavailable", 400);
-  }
-  await upsertOAuthUser(c.env, {
-    provider: "github",
-    providerUserId: String(ghUser.id),
-    email,
-    displayName: ghUser.login || ghUser.name || null,
-    avatarUrl: ghUser.avatar_url || null
-  });
-  const user = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(email).first<{ id: string }>();
-  if (!user) {
-    return c.text("Unable to create user", 500);
-  }
-  await createSession(c, user.id);
-  return c.redirect("/?importLocal=1");
 });
 
 // Discord OAuth
@@ -404,26 +209,11 @@ app.get("/login", (c) => {
     return c.redirect("/");
   }
 
-  const status = c.req.query("status");
-  const turnstileSiteKey = (c.env.TURNSTILE_SITE_KEY || "").trim();
-  const message =
-    status === "sent"
-      ? "Check your email for a code and magic link."
-      : status === "invalid"
-      ? "Invalid or expired sign-in token/code."
-      : status === "unavailable"
-      ? "Email sign-in is temporarily unavailable. Please try again later."
-      : status === "ok"
-      ? "Signed in successfully."
-      : "";
-  const messageClass = status === "invalid" || status === "unavailable" ? "status error" : "status";
-
   return c.html(layout("Login", null, `
     <main>
       <section class="panel">
         <h1>Sign in</h1>
         <p>Sign in with Discord.</p>
-        ${message ? `<p class="${messageClass}">${escapeHtml(message)}</p>` : ""}
       </section>
       <section class="panel">
         <h2>Continue with</h2>
@@ -433,183 +223,6 @@ app.get("/login", (c) => {
       </section>
     </main>
   `, c.env));
-});
-
-app.post("/auth/email/request", async (c) => {
-  return c.text("Email authentication disabled", 404);
-  const body = await c.req.parseBody();
-  if (!isValidCsrfBody(c, body)) {
-    return c.text("Invalid CSRF token", 403);
-  }
-
-  const parsed = emailRequestSchema.safeParse({ email: String(body.email || "") });
-  if (!parsed.success) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  if (!isDevEnv(c.env) && !hasEmailLoginDeliveryConfigured(c.env)) {
-    return c.redirect("/login?status=unavailable");
-  }
-
-  const email = normalizeEmail(parsed.data.email);
-  const ip = c.req.header("cf-connecting-ip") || "unknown";
-  if (isEnabled(c.env.TURNSTILE_ENFORCE_EMAIL_AUTH)) {
-    const turnstileToken = typeof body["cf-turnstile-response"] === "string" ? body["cf-turnstile-response"] : "";
-    const ok = await verifyTurnstile(c.env, turnstileToken, ip);
-    if (!ok) {
-      return c.redirect("/login?status=invalid");
-    }
-  }
-  const emailBurstMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_EMAIL_BURST_MAX, 3);
-  const emailBurstWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_EMAIL_BURST_WINDOW_SEC, 10 * 60);
-  const ipBurstMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_IP_BURST_MAX, 6);
-  const ipBurstWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_IP_BURST_WINDOW_SEC, 10 * 60);
-  const emailHourlyMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_EMAIL_HOURLY_MAX, 8);
-  const emailHourlyWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_EMAIL_HOURLY_WINDOW_SEC, 60 * 60);
-  const ipHourlyMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_IP_HOURLY_MAX, 20);
-  const ipHourlyWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_IP_HOURLY_WINDOW_SEC, 60 * 60);
-
-  const burstByEmail = await enforceRateLimit(c.env, `email-auth-burst:${email}`, emailBurstMax, emailBurstWindowSec);
-  const burstByIp = await enforceRateLimit(c.env, `email-auth-ip-burst:${ip}`, ipBurstMax, ipBurstWindowSec);
-  const rateByEmail = await enforceRateLimit(c.env, `email-auth:${email}`, emailHourlyMax, emailHourlyWindowSec);
-  const rateByIp = await enforceRateLimit(c.env, `email-auth-ip:${ip}`, ipHourlyMax, ipHourlyWindowSec);
-  if (!burstByEmail.ok || !burstByIp.ok || !rateByEmail.ok || !rateByIp.ok) {
-    return c.redirect("/login?status=sent");
-  }
-
-  let user = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(email).first<{ id: string }>();
-  if (!user) {
-    const userId = crypto.randomUUID();
-    await c.env.DB.prepare("INSERT INTO users (id, email, role) VALUES (?1, ?2, 'user')").bind(userId, email).run();
-    user = { id: userId };
-  }
-
-  const code = generateOneTimeCode();
-  const magicToken = randomToken();
-  const codeHash = await hashAuthToken(c.env.SESSION_SECRET, code);
-  const magicTokenHash = await hashAuthToken(c.env.SESSION_SECRET, magicToken);
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-  await c.env.DB.prepare("DELETE FROM email_login_tokens WHERE email = ?1 AND consumed_at IS NULL").bind(email).run();
-  await c.env.DB.prepare(
-    `INSERT INTO email_login_tokens
-      (id, email, user_id, code_hash, magic_token_hash, expires_at, request_ip, user_agent)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`
-  )
-    .bind(
-      crypto.randomUUID(),
-      email,
-      user.id,
-      codeHash,
-      magicTokenHash,
-      expiresAt,
-      ip,
-      c.req.header("user-agent") || ""
-    )
-    .run();
-
-  const magicLink = `${c.env.APP_URL}/auth/email/verify?token=${encodeURIComponent(magicToken)}`;
-  await sendEmailLogin(c.env, {
-    to: email,
-    code,
-    magicLink
-  });
-
-  return c.redirect("/login?status=sent");
-});
-
-app.post("/auth/email/verify-code", async (c) => {
-  return c.text("Email authentication disabled", 404);
-  const body = await c.req.parseBody();
-  if (!isValidCsrfBody(c, body)) {
-    return c.text("Invalid CSRF token", 403);
-  }
-  const parsed = emailCodeSchema.safeParse({
-    email: String(body.email || ""),
-    code: String(body.code || "").trim()
-  });
-  if (!parsed.success) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  const ip = c.req.header("cf-connecting-ip") || "unknown";
-  if (isEnabled(c.env.TURNSTILE_ENFORCE_EMAIL_AUTH)) {
-    const turnstileToken = typeof body["cf-turnstile-response"] === "string" ? body["cf-turnstile-response"] : "";
-    const ok = await verifyTurnstile(c.env, turnstileToken, ip);
-    if (!ok) {
-      return c.redirect("/login?status=invalid");
-    }
-  }
-
-  const email = normalizeEmail(parsed.data.email);
-  const verifyEmailMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_VERIFY_EMAIL_MAX, 8);
-  const verifyEmailWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_VERIFY_EMAIL_WINDOW_SEC, 10 * 60);
-  const verifyIpMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_VERIFY_IP_MAX, 20);
-  const verifyIpWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_VERIFY_IP_WINDOW_SEC, 10 * 60);
-  const byEmail = await enforceRateLimit(c.env, `email-auth-verify:${email}`, verifyEmailMax, verifyEmailWindowSec);
-  const byIp = await enforceRateLimit(c.env, `email-auth-verify-ip:${ip}`, verifyIpMax, verifyIpWindowSec);
-  if (!byEmail.ok || !byIp.ok) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  const codeHash = await hashAuthToken(c.env.SESSION_SECRET, parsed.data.code);
-
-  const tokenRow = await c.env.DB.prepare(
-    `SELECT id, user_id
-     FROM email_login_tokens
-     WHERE email = ?1
-       AND code_hash = ?2
-       AND consumed_at IS NULL
-       AND expires_at > datetime('now')
-     ORDER BY created_at DESC
-     LIMIT 1`
-  )
-    .bind(email, codeHash)
-    .first<{ id: string; user_id: string }>();
-
-  if (!tokenRow) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  await c.env.DB.prepare("UPDATE email_login_tokens SET consumed_at = datetime('now') WHERE id = ?1").bind(tokenRow.id).run();
-  await createSession(c, tokenRow.user_id);
-  return c.redirect("/?importLocal=1");
-});
-
-app.get("/auth/email/verify", async (c) => {
-  return c.text("Email authentication disabled", 404);
-  const token = c.req.query("token") || "";
-  if (!token) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const magicIpMax = parsePositiveInt(c.env.EMAIL_AUTH_RATE_MAGIC_IP_MAX, 40);
-  const magicIpWindowSec = parsePositiveInt(c.env.EMAIL_AUTH_RATE_MAGIC_IP_WINDOW_SEC, 60 * 60);
-  const byIp = await enforceRateLimit(c.env, `email-auth-magic-ip:${ip}`, magicIpMax, magicIpWindowSec);
-  if (!byIp.ok) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  const tokenHash = await hashAuthToken(c.env.SESSION_SECRET, token);
-  const tokenRow = await c.env.DB.prepare(
-    `SELECT id, user_id
-     FROM email_login_tokens
-     WHERE magic_token_hash = ?1
-       AND consumed_at IS NULL
-       AND expires_at > datetime('now')
-     LIMIT 1`
-  )
-    .bind(tokenHash)
-    .first<{ id: string; user_id: string }>();
-
-  if (!tokenRow) {
-    return c.redirect("/login?status=invalid");
-  }
-
-  await c.env.DB.prepare("UPDATE email_login_tokens SET consumed_at = datetime('now') WHERE id = ?1").bind(tokenRow.id).run();
-  await createSession(c, tokenRow.user_id);
-  return c.redirect("/?importLocal=1");
 });
 
 // Public SSR pages.
@@ -1007,7 +620,7 @@ app.get("/games/:slug", async (c) => {
                   <button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>
                   <a href="/me/rotation">View my rotation</a>
                 </div>
-                <p><a href="/auth/google">Sign in</a> to sync favorites and report issues.</p>
+                <p><a href="/login">Sign in</a> to sync favorites and report issues.</p>
                 <p id="game-action-status" class="status" aria-live="polite"></p>
               </section>`
       }
@@ -4617,15 +4230,6 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
   </script>`;
 }
 
-function isValidCsrfBody(
-  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
-  body: Record<string, string | File>
-): boolean {
-  const token = typeof body.csrf_token === "string" ? body.csrf_token : "";
-  const cookie = getCookie(c, "csrf_token") || "";
-  return token.length > 0 && cookie.length > 0 && token === cookie;
-}
-
 function getClientIp(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): string {
   const cfIp = (c.req.header("cf-connecting-ip") || "").trim();
   if (cfIp) {
@@ -4639,10 +4243,6 @@ function getClientIp(c: Context<{ Bindings: Bindings; Variables: AppVariables }>
 async function getAnonymousVoteKey(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): Promise<string> {
   const ip = getClientIp(c);
   return hashAuthToken(c.env.SESSION_SECRET, `anon-vote:${ip}`);
-}
-
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
 }
 
 function parsePositiveInt(value: string | undefined, fallbackValue: number): number {
@@ -4689,23 +4289,9 @@ function getResetMetaLabel(resetBasis: "local" | "server" | null | undefined, re
   return `Reset ${time}`;
 }
 
-function isEnabled(value: string | undefined): boolean {
-  const normalized = (value || "").trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
 function isDevEnv(env: Env): boolean {
   const appEnv = (env.APP_ENV || "").trim().toLowerCase();
   return appEnv === "dev" || appEnv === "development";
-}
-
-function hasEmailLoginDeliveryConfigured(env: Env): boolean {
-  return Boolean(env.EMAIL?.send || env.RESEND_API_KEY || env.POSTMARK_SERVER_TOKEN || env.EMAIL_AUTH_WEBHOOK_URL);
-}
-
-function generateOneTimeCode(): string {
-  const random = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
-  return String(random).padStart(6, "0");
 }
 
 async function hashAuthToken(secret: string, value: string): Promise<string> {
@@ -4713,143 +4299,6 @@ async function hashAuthToken(secret: string, value: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-}
-
-async function verifyTurnstile(env: Env, token: string, remoteIp: string): Promise<boolean> {
-  if (!token || !env.TURNSTILE_SECRET_KEY) {
-    return false;
-  }
-
-  try {
-    const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: new URLSearchParams({
-        secret: env.TURNSTILE_SECRET_KEY,
-        response: token,
-        remoteip: remoteIp
-      })
-    });
-    if (!response.ok) {
-      return false;
-    }
-    const payload = (await response.json()) as { success?: boolean };
-    return payload.success === true;
-  } catch {
-    return false;
-  }
-}
-
-async function sendEmailLogin(
-  env: Env,
-  args: { to: string; code: string; magicLink: string }
-): Promise<void> {
-  const fromAddress = env.EMAIL_AUTH_FROM || "noreply@example.com";
-  const subject = "Your Daily Game List sign-in code";
-  const html = `<p>Your Daily Game List sign-in code: <strong>${escapeHtml(args.code)}</strong></p><p><a href="${escapeHtml(
-    args.magicLink
-  )}">Sign in with magic link</a></p><p>This code/link expires in 15 minutes.</p>`;
-  const text = [
-    "Your Daily Game List sign-in code:",
-    args.code,
-    "",
-    "Or sign in instantly with this magic link:",
-    args.magicLink,
-    "",
-    "This code/link expires in 15 minutes."
-  ].join("\n");
-
-  // Preferred path: Cloudflare Email Service Worker binding.
-  if (env.EMAIL?.send) {
-    await env.EMAIL.send({
-      to: args.to,
-      from: { email: fromAddress, name: "Daily Game List" },
-      subject,
-      text,
-      html
-    });
-    return;
-  }
-
-  // Fallback provider: Resend REST API.
-  if (env.RESEND_API_KEY) {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        from: fromAddress,
-        to: [args.to],
-        subject,
-        text,
-        html
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`Resend send failed with ${response.status}`);
-    }
-    return;
-  }
-
-  // Fallback provider: Postmark REST API.
-  if (env.POSTMARK_SERVER_TOKEN) {
-    const response = await fetch("https://api.postmarkapp.com/email", {
-      method: "POST",
-      headers: {
-        "X-Postmark-Server-Token": env.POSTMARK_SERVER_TOKEN,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        From: fromAddress,
-        To: args.to,
-        Subject: subject,
-        TextBody: text,
-        HtmlBody: html,
-        MessageStream: "outbound"
-      })
-    });
-    if (!response.ok) {
-      throw new Error(`Postmark send failed with ${response.status}`);
-    }
-    return;
-  }
-
-  if (env.EMAIL_AUTH_WEBHOOK_URL) {
-    const headers = new Headers({ "Content-Type": "application/json" });
-    if (env.EMAIL_AUTH_WEBHOOK_TOKEN) {
-      headers.set("Authorization", `Bearer ${env.EMAIL_AUTH_WEBHOOK_TOKEN}`);
-    }
-    await fetch(env.EMAIL_AUTH_WEBHOOK_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        to: args.to,
-        from: fromAddress,
-        subject,
-        text,
-        html
-      })
-    });
-    return;
-  }
-
-  if (isDevEnv(env)) {
-    console.log(
-      JSON.stringify({
-        message: "EMAIL_AUTH_WEBHOOK_URL not configured. Login token generated for development only.",
-        to: args.to,
-        code: args.code,
-        magicLink: args.magicLink
-      })
-    );
-    return;
-  }
-
-  throw new Error("Email login delivery is not configured");
 }
 
 function layout(title: string, user: AppUser | null, body: string, env: Env): string {
@@ -5099,7 +4548,7 @@ function escapeHtml(value: string): string {
 async function upsertOAuthUser(
   env: Env,
   args: {
-    provider: "google" | "github" | "discord";
+    provider: "discord";
     providerUserId: string;
     email: string;
     displayName: string | null;

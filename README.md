@@ -9,11 +9,12 @@ Daily game directory and aggregator built on Cloudflare Workers + D1 + KV.
 
 - **Public directory** - Browse, search, and sort games by top, new, trending, or reset time
 - **Category filters** - Seeded category taxonomy for easy discovery
-- **Discord authentication** - Secure login with Discord OAuth (GitHub OAuth available but hidden)
+- **Discord authentication** - Secure login with Discord OAuth
 - **Submission workflow** - Submit games with pending approval, voting, and reporting
 - **Anonymous voting** - Track votes by hashed client IP (one vote per game per IP)
 - **Favorites & rotation** - Manual ordering with weekday masks for daily game routines
 - **Rotation sharing** - Generate shareable links to let others view your daily rotation
+- **Rotation export/import** - Export your rotation as JSON and import it on any device (works for both logged-in and anonymous users)
 - **Anonymous favorites** - Browser localStorage with post-login import into account
 - **Game reset tracking** - Local vs server time support with reset-soon sorting
 - **Curated lists** - Public/private visibility (feature in development)
@@ -49,26 +50,19 @@ npm install
 
 ```bash
 wrangler secret put SESSION_SECRET
-wrangler secret put OAUTH_GOOGLE_CLIENT_SECRET
-wrangler secret put OAUTH_GITHUB_CLIENT_SECRET
 wrangler secret put OAUTH_DISCORD_CLIENT_SECRET
 ```
 
-**Note:** Email authentication has been disabled. Login is available through Discord OAuth only (GitHub OAuth is implemented but hidden from the UI).
-
-4. Set OAuth client IDs and Discord configuration in `wrangler.jsonc` (`vars`).
+4. Set Discord configuration in `wrangler.jsonc` (`vars`).
 
    - Staging URL: `https://dailies-stg.0x9.ca`
    - Production URL: `https://dailies.0x9.ca`
 
-   Redirect URLs:
+   Discord redirect URLs:
 
-   - GitHub dev: `http://192.168.17.2:8787/auth/github/callback`
-   - GitHub staging: `https://dailies-stg.0x9.ca/auth/github/callback`
-   - GitHub prod: `https://dailies.0x9.ca/auth/github/callback`
-   - Discord dev: `http://192.168.17.2:8787/auth/discord/callback`
-   - Discord staging: `https://dailies-stg.0x9.ca/auth/discord/callback`
-   - Discord prod: `https://dailies.0x9.ca/auth/discord/callback`
+   - Dev: `http://192.168.17.2:8787/auth/discord/callback`
+   - Staging: `https://dailies-stg.0x9.ca/auth/discord/callback`
+   - Production: `https://dailies.0x9.ca/auth/discord/callback`
 
    Discord Configuration:
    - Set `OAUTH_DISCORD_CLIENT_ID` to your Discord OAuth2 application client ID
@@ -111,22 +105,6 @@ npm run dev
 npm run validate:config
 ```
 
-Email auth rate-limit vars are configurable in `wrangler.jsonc` (or via `.secrets.env` + `./scripts/set-secrets.sh`):
-
-- `EMAIL_AUTH_RATE_EMAIL_BURST_MAX` / `EMAIL_AUTH_RATE_EMAIL_BURST_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_IP_BURST_MAX` / `EMAIL_AUTH_RATE_IP_BURST_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_EMAIL_HOURLY_MAX` / `EMAIL_AUTH_RATE_EMAIL_HOURLY_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_IP_HOURLY_MAX` / `EMAIL_AUTH_RATE_IP_HOURLY_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_VERIFY_EMAIL_MAX` / `EMAIL_AUTH_RATE_VERIFY_EMAIL_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_VERIFY_IP_MAX` / `EMAIL_AUTH_RATE_VERIFY_IP_WINDOW_SEC`
-- `EMAIL_AUTH_RATE_MAGIC_IP_MAX` / `EMAIL_AUTH_RATE_MAGIC_IP_WINDOW_SEC`
-
-Optional Turnstile protection for email auth routes:
-
-- `TURNSTILE_SITE_KEY`
-- `TURNSTILE_SECRET_KEY` (secret)
-- `TURNSTILE_ENFORCE_EMAIL_AUTH=1`
-
 Use mock login during local development:
 
 - `/auth/mock-login/user`
@@ -146,6 +124,7 @@ npx wrangler d1 migrations apply daily-game-list --remote --env production
 - `src/index.ts` - app routes, APIs, SSR pages, scheduled job
 - `src/lib/auth.ts` - session middleware and role checks
 - `src/lib/cache.ts` - KV cache helpers
+- `src/env.ts` - Env type definitions
 - `migrations/0001_initial.sql` - schema
 - `migrations/0002_seed_categories.sql` - seed categories + system user
 - `migrations/0005_game_reset_metadata.sql` - reset basis/time metadata
