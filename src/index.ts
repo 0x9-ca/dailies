@@ -859,8 +859,8 @@ app.get("/games/:slug", async (c) => {
             const addToListForm = document.getElementById("add-to-list-form");
             const addToListStatus = document.getElementById("add-to-list-status");
             if (listSelect && addToListForm) {
-              fetch("/api/lists").then(r => r.json()).then((lists) => {
-                for (const list of lists) {
+              fetch("/api/lists").then(r => r.json()).then((data) => {
+                for (const list of (data.results || [])) {
                   const opt = document.createElement("option");
                   opt.value = list.id;
                   opt.textContent = list.title;
@@ -1813,6 +1813,7 @@ app.get("/lists", async (c) => {
 app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
+  const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   const list = await c.env.DB.prepare(
     `SELECT id, slug, title, description, visibility, owner_user_id
      FROM curated_lists
@@ -1824,21 +1825,134 @@ app.get("/lists/:slug", async (c) => {
     return c.text("Not found", 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.slug, games.title, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ slug: string; title: string; position: number }>();
+    .all<{ id: string; slug: string; title: string; position: number }>();
+
+  let gamesOptions = "";
+  if (isAdminEditor) {
+    const games = await c.env.DB.prepare(
+      "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC LIMIT 500"
+    ).all<{ id: string; title: string; slug: string }>();
+    gamesOptions = games.results.map((g) => `<option value="${g.id}">${escapeHtml(g.title)} (${escapeHtml(g.slug)})</option>`).join("");
+  }
 
   return c.html(await layout(list.title, user, `
     <main>
       <h1>${escapeHtml(list.title)}</h1>
       <p>${escapeHtml(list.description || "")}</p>
-      <ol>${items.results.map((item) => `<li>#${item.position} <a href="/games/${item.slug}">${escapeHtml(item.title)}</a></li>`).join("")}</ol>
+      <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
+      ${isAdminEditor ? `
+        <section class="panel">
+          <h2>Edit list</h2>
+          <form id="list-edit-form" class="stack-form">
+            <input type="text" name="title" value="${escapeHtml(list.title)}" required />
+            <input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />
+            <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
+            <div class="actions">
+              <button type="submit">Save details</button>
+              <button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>
+              <button type="button" id="list-delete-btn">Delete list</button>
+            </div>
+          </form>
+          <p id="list-edit-status" class="status" aria-live="polite"></p>
+        </section>
+        <section class="panel">
+          <h2>Add game</h2>
+          <form id="list-add-game-form" class="stack-form">
+            <select name="gameId" required>
+              <option value="">Select a game...</option>
+              ${gamesOptions}
+            </select>
+            <button type="submit">Add to list</button>
+          </form>
+          <p id="list-add-status" class="status" aria-live="polite"></p>
+        </section>
+      ` : ""}
+      <ol>
+        ${items.results.map((item) => `<li>#${item.position} <a href="/games/${item.slug}">${escapeHtml(item.title)}</a>${isAdminEditor ? ` <button type="button" class="list-remove-game" data-game-id="${item.id}" style="background:none;border:none;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:inherit;">remove</button>` : ""}</li>`).join("")}
+      </ol>
     </main>
+    ${isAdminEditor ? `
+    <script>
+      (() => {
+        const listId = ${JSON.stringify(list.id)};
+        const status = document.getElementById("list-edit-status");
+        const setStatus = (t) => { if (status) status.textContent = t; };
+
+        document.getElementById("list-edit-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          setStatus("Saving...");
+          const res = await fetch("/api/lists/" + listId, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: fd.get("title"),
+              slug: fd.get("slug"),
+              description: fd.get("description") || undefined
+            })
+          });
+          if (res.ok) {
+            setStatus("Saved.");
+            window.location.reload();
+          } else {
+            const body = await res.json().catch(() => ({}));
+            setStatus(body.error || "Could not save.");
+          }
+        });
+
+        document.getElementById("list-visibility-toggle")?.addEventListener("click", async () => {
+          setStatus("Updating visibility...");
+          const res = await fetch("/api/lists/" + listId + "/visibility", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ visibility: ${JSON.stringify(list.visibility === "public" ? "private" : "public")} })
+          });
+          if (res.ok) { window.location.reload(); } else { setStatus("Could not update visibility."); }
+        });
+
+        document.getElementById("list-delete-btn")?.addEventListener("click", async () => {
+          if (!confirm("Delete this list?")) return;
+          setStatus("Deleting...");
+          const res = await fetch("/api/lists/" + listId, { method: "DELETE" });
+          if (res.ok) { window.location.href = "/lists"; } else { setStatus("Could not delete."); }
+        });
+
+        document.getElementById("list-add-game-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          const gameId = fd.get("gameId");
+          if (!gameId) return;
+          setStatus("Adding game...");
+          const nextPos = ${items.results.length} + 1;
+          const res = await fetch("/api/lists/" + listId + "/items", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ gameId, position: nextPos })
+          });
+          if (res.ok) { window.location.reload(); } else {
+            const body = await res.json().catch(() => ({}));
+            setStatus(body.error || "Could not add game.");
+          }
+        });
+
+        document.querySelectorAll(".list-remove-game").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const gameId = btn.getAttribute("data-game-id");
+            setStatus("Removing game...");
+            const res = await fetch("/api/lists/" + listId + "/items/" + gameId, { method: "DELETE" });
+            if (res.ok) { window.location.reload(); } else { setStatus("Could not remove game."); }
+          });
+        });
+      })();
+    </script>
+    ` : ""}
   `, c.env));
 });
 
