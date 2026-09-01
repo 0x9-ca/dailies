@@ -4311,14 +4311,14 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
     <style>
       :root {
         color-scheme: dark;
-        --bg: #080b12;
-        --bg-soft: #0d1320;
-        --ink: #e7edf8;
-        --muted: #9cabca;
-        --accent: #38d5a2;
-        --accent-strong: #1da67b;
-        --card: #101827;
-        --border: #24324c;
+        --bg: #121212;
+        --bg-soft: #1a1a1a;
+        --ink: #E0E0E0;
+        --muted: #B0B0B0;
+        --accent: #888888;
+        --accent-strong: #777777;
+        --card: #1e1e1e;
+        --border: #444444;
         --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
       }
       * { box-sizing: border-box; }
@@ -4326,10 +4326,7 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         margin: 0;
         color: var(--ink);
         font-family: "Manrope", "IBM Plex Sans", "Segoe UI", "Helvetica Neue", sans-serif;
-        background:
-          radial-gradient(circle at 0% -10%, rgba(56, 213, 162, 0.14), transparent 40%),
-          radial-gradient(circle at 110% -20%, rgba(106, 180, 255, 0.22), transparent 45%),
-          linear-gradient(180deg, #070a10 0%, #0b101b 65%, #080b12 100%);
+        background: var(--bg);
       }
       header {
         display: flex;
@@ -4337,7 +4334,7 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         align-items: center;
         padding: 1rem 1.5rem;
         border-bottom: 1px solid var(--border);
-        background: rgba(8, 11, 18, 0.72);
+        background: rgba(18, 18, 18, 0.85);
         backdrop-filter: blur(10px);
         position: sticky;
         top: 0;
@@ -4348,19 +4345,21 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
       main { max-width: 960px; margin: 1rem auto; padding: 0 1rem 2rem; }
       h1, h2 { letter-spacing: 0.01em; }
       .hero {
-        background: linear-gradient(135deg, rgba(17, 25, 40, 0.94), rgba(14, 32, 49, 0.88));
+        background: var(--card);
         border: 1px solid var(--border);
         border-radius: 16px;
         box-shadow: var(--shadow);
         padding: 1.25rem;
       }
+      .hero { margin-top: 0; }
+      .hero h1 { margin-top: 0; }
       .hero p { color: var(--muted); }
       .btn {
         display: inline-block;
         padding: 0.55rem 0.9rem;
         border-radius: 9px;
-        background: linear-gradient(135deg, var(--accent), #2bbfc8);
-        color: #04130f;
+        background: var(--accent);
+        color: #121212;
         font-weight: 700;
         text-decoration: none;
       }
@@ -4378,35 +4377,35 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         text-decoration: none;
         border: 1px solid var(--border);
         border-radius: 7px;
-        background: linear-gradient(180deg, #1a2740, #131d31);
+        background: var(--bg-soft);
         color: var(--ink);
         font-weight: bold;
       }
       .game-row .compact-actions .btn-details:hover {
-        background: linear-gradient(180deg, #1e2d4a, #16213a);
+        background: var(--border);
       }
       .panel {
         margin: 1rem 0;
         padding: 1rem;
         border: 1px solid var(--border);
         border-radius: 12px;
-        background: linear-gradient(160deg, rgba(17, 24, 39, 0.95), rgba(12, 19, 31, 0.95));
+        background: var(--card);
         box-shadow: var(--shadow);
       }
       .admin-grid { display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .stack { display:flex; flex-direction:column; gap:0.8rem; }
       .stack-form { display:flex; flex-direction:column; gap:0.6rem; }
-      textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--border); background:#0d1422; color:var(--ink); }
+      textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
       .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
       .status { min-height: 1.2rem; color:var(--accent); font-weight: 600; }
-      .status.error { color: #ff9eb5; }
+      .status.error { color: #cc6666; }
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
-      button.active { background: linear-gradient(135deg, var(--accent), #2bbfc8); color:#04130f; }
-      .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid #2c3a58; background:#152138; font-size: 0.85rem; color:#b4c7ea; }
+      button.active { background: var(--accent); color: #121212; }
+      .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
-      .rotation-list li { display:flex; align-items:center; flex-wrap:wrap; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:#101827; }
-      .drag { cursor: grab; font-weight: 700; color:#7e90b2; }
+      .rotation-list li { display:flex; align-items:center; flex-wrap:wrap; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
+      .drag { cursor: grab; font-weight: 700; color:var(--muted); }
       .rotation-list li.dragging { opacity: 0.55; }
       .weekday-controls { display:flex; gap:0.4rem; flex-wrap:wrap; }
       .weekday-controls label { display:inline-flex; align-items:center; gap:0.2rem; font-size:0.85rem; color:var(--muted); }
@@ -4427,29 +4426,29 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         border-radius: 10px;
         padding: 0.7rem 0.8rem;
         border: 1px solid var(--border);
-        background: #101a2a;
+        background: var(--card);
         box-shadow: var(--shadow);
         color: var(--ink);
         font-weight: 600;
       }
-      .toast.success { border-color: #2c805f; }
-      .toast.error { border-color: #9b4d63; }
+      .toast.success { border-color: #666666; }
+      .toast.error { border-color: #cc6666; }
       form { display:flex; gap: 0.6rem; flex-wrap:wrap; margin-bottom: 1rem; }
       input, select, button {
         padding: 0.5rem;
         border-radius: 7px;
         border: 1px solid var(--border);
-        background: #0d1422;
+        background: var(--bg-soft);
         color: var(--ink);
       }
-      input::placeholder, textarea::placeholder { color: #7c8da9; }
+      input::placeholder, textarea::placeholder { color: #777777; }
       button {
-        background: linear-gradient(180deg, #1a2740, #131d31);
+        background: var(--bg-soft);
         color: var(--ink);
-        border: 1px solid #2c3f63;
+        border: 1px solid var(--border);
         cursor: pointer;
       }
-      a { color: #8ac5ff; }
+      a { color: var(--accent); }
       p { color: var(--muted); }
       @media (max-width: 700px) {
         header { flex-direction: column; align-items:flex-start; gap:0.5rem; }
@@ -4478,7 +4477,7 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
       </div>
     </header>
     ${body}
-    <footer style="text-align: center; padding: 2rem 1rem; margin-top: 4rem; border-top: 1px solid #2c3f63; color: var(--muted); font-size: 0.9rem;">
+    <footer style="text-align: center; padding: 2rem 1rem; margin-top: 4rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem;">
       <p>
         <a href="https://github.com/mr-delayer/dailies" target="_blank" rel="noopener noreferrer">github</a>
         |
