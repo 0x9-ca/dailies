@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.wrangler/
+
+# Secrets and environment files
+.dev.vars
+.secrets.env
+.secrets/
+*.env
+*.env.*
+!*.env.example
+.env.local
+.env.*.local
+
+# Wrangler state
+.wrangler/
+wrangler.toml.local
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.log
+
+# Testing and coverage
+coverage/
+*.lcov
+.nyc_output/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3

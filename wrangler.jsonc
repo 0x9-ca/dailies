@@ -1,0 +1,167 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "daily-game-list",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-31",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "daily-game-list",
+      "database_id": "9e1124fc-5f00-4c21-a100-b807d8d46925",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "59fe208f58e2486884a6f2460f415b7a"
+    }
+  ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
+  "vars": {
+    "APP_ENV": "development",
+    "APP_URL": "http://192.168.17.2:8787",
+    "SESSION_COOKIE_NAME": "dgl_session",
+    "OAUTH_GOOGLE_CLIENT_ID": "700924319990-k4ud6jce7rartu07vosgl29h0gt8th7a.apps.googleusercontent.com",
+    "OAUTH_GITHUB_CLIENT_ID": "Iv23lii8Q6cJmBRDG95K",
+    "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
+    "DISCORD_GUILD_ID": "1544140186915700859",
+    "DISCORD_ROLE_ADMIN": "1544140573491863662",
+    "DISCORD_ROLE_EDITOR": "1544140999671156908",
+    "EMAIL_AUTH_FROM": "noreply@dailies.0x9.ca",
+    "EMAIL_AUTH_RATE_EMAIL_BURST_MAX": "3",
+    "EMAIL_AUTH_RATE_EMAIL_BURST_WINDOW_SEC": "600",
+    "EMAIL_AUTH_RATE_IP_BURST_MAX": "6",
+    "EMAIL_AUTH_RATE_IP_BURST_WINDOW_SEC": "600",
+    "EMAIL_AUTH_RATE_EMAIL_HOURLY_MAX": "8",
+    "EMAIL_AUTH_RATE_EMAIL_HOURLY_WINDOW_SEC": "3600",
+    "EMAIL_AUTH_RATE_IP_HOURLY_MAX": "20",
+    "EMAIL_AUTH_RATE_IP_HOURLY_WINDOW_SEC": "3600",
+    "EMAIL_AUTH_RATE_VERIFY_EMAIL_MAX": "8",
+    "EMAIL_AUTH_RATE_VERIFY_EMAIL_WINDOW_SEC": "600",
+    "EMAIL_AUTH_RATE_VERIFY_IP_MAX": "20",
+    "EMAIL_AUTH_RATE_VERIFY_IP_WINDOW_SEC": "600",
+    "EMAIL_AUTH_RATE_MAGIC_IP_MAX": "40",
+    "EMAIL_AUTH_RATE_MAGIC_IP_WINDOW_SEC": "3600",
+    "TURNSTILE_SITE_KEY": "",
+    "TURNSTILE_ENFORCE_EMAIL_AUTH": "0"
+  },
+  "triggers": {
+    "crons": [
+      "15 8 * * *"
+    ]
+  },
+  "env": {
+    "staging": {
+      "name": "daily-game-list-staging",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "daily-game-list",
+          "database_id": "9e1124fc-5f00-4c21-a100-b807d8d46925",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "CACHE",
+          "id": "59fe208f58e2486884a6f2460f415b7a"
+        }
+      ],
+      "send_email": [
+        {
+          "name": "EMAIL"
+        }
+      ],
+      "vars": {
+        "APP_ENV": "staging",
+        "APP_URL": "https://dailies-stg.0x9.ca",
+        "SESSION_COOKIE_NAME": "dgl_session",
+        "OAUTH_GOOGLE_CLIENT_ID": "700924319990-k4ud6jce7rartu07vosgl29h0gt8th7a.apps.googleusercontent.com",
+        "OAUTH_GITHUB_CLIENT_ID": "Iv23lii8Q6cJmBRDG95K",
+        "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
+        "DISCORD_GUILD_ID": "1544140186915700859",
+        "DISCORD_ROLE_ADMIN": "1544140573491863662",
+        "DISCORD_ROLE_EDITOR": "1544140999671156908",
+        "EMAIL_AUTH_FROM": "noreply@dailies.0x9.ca",
+        "EMAIL_AUTH_RATE_EMAIL_BURST_MAX": "3",
+        "EMAIL_AUTH_RATE_EMAIL_BURST_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_IP_BURST_MAX": "6",
+        "EMAIL_AUTH_RATE_IP_BURST_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_EMAIL_HOURLY_MAX": "8",
+        "EMAIL_AUTH_RATE_EMAIL_HOURLY_WINDOW_SEC": "3600",
+        "EMAIL_AUTH_RATE_IP_HOURLY_MAX": "20",
+        "EMAIL_AUTH_RATE_IP_HOURLY_WINDOW_SEC": "3600",
+        "EMAIL_AUTH_RATE_VERIFY_EMAIL_MAX": "8",
+        "EMAIL_AUTH_RATE_VERIFY_EMAIL_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_VERIFY_IP_MAX": "20",
+        "EMAIL_AUTH_RATE_VERIFY_IP_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_MAGIC_IP_MAX": "40",
+        "EMAIL_AUTH_RATE_MAGIC_IP_WINDOW_SEC": "3600",
+        "TURNSTILE_SITE_KEY": "",
+        "TURNSTILE_ENFORCE_EMAIL_AUTH": "0"
+      }
+    },
+    "production": {
+      "name": "daily-game-list-production",
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "daily-game-list",
+          "database_id": "9e1124fc-5f00-4c21-a100-b807d8d46925",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "CACHE",
+          "id": "59fe208f58e2486884a6f2460f415b7a"
+        }
+      ],
+      "send_email": [
+        {
+          "name": "EMAIL"
+        }
+      ],
+      "vars": {
+        "APP_ENV": "production",
+        "APP_URL": "https://dailies.0x9.ca",
+        "SESSION_COOKIE_NAME": "dgl_session",
+        "OAUTH_GOOGLE_CLIENT_ID": "700924319990-k4ud6jce7rartu07vosgl29h0gt8th7a.apps.googleusercontent.com",
+        "OAUTH_GITHUB_CLIENT_ID": "Iv23lisjluLPezhzTnuE",
+        "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
+        "DISCORD_GUILD_ID": "1544140186915700859",
+        "DISCORD_ROLE_ADMIN": "1544140573491863662",
+        "DISCORD_ROLE_EDITOR": "1544140999671156908",
+        "EMAIL_AUTH_FROM": "noreply@dailies.0x9.ca",
+        "EMAIL_AUTH_RATE_EMAIL_BURST_MAX": "3",
+        "EMAIL_AUTH_RATE_EMAIL_BURST_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_IP_BURST_MAX": "6",
+        "EMAIL_AUTH_RATE_IP_BURST_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_EMAIL_HOURLY_MAX": "8",
+        "EMAIL_AUTH_RATE_EMAIL_HOURLY_WINDOW_SEC": "3600",
+        "EMAIL_AUTH_RATE_IP_HOURLY_MAX": "20",
+        "EMAIL_AUTH_RATE_IP_HOURLY_WINDOW_SEC": "3600",
+        "EMAIL_AUTH_RATE_VERIFY_EMAIL_MAX": "8",
+        "EMAIL_AUTH_RATE_VERIFY_EMAIL_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_VERIFY_IP_MAX": "20",
+        "EMAIL_AUTH_RATE_VERIFY_IP_WINDOW_SEC": "600",
+        "EMAIL_AUTH_RATE_MAGIC_IP_MAX": "40",
+        "EMAIL_AUTH_RATE_MAGIC_IP_WINDOW_SEC": "3600",
+        "TURNSTILE_SITE_KEY": "",
+        "TURNSTILE_ENFORCE_EMAIL_AUTH": "0"
+      }
+    }
+  }
+}
