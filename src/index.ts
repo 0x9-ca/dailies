@@ -1371,11 +1371,11 @@ app.get("/me/rotation", async (c) => {
               <span class="drag">::</span>
               <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
               <div class="reorder-controls">
-                <button type="button" data-move="up" aria-label="Move up">Up</button>
-                <button type="button" data-move="down" aria-label="Move down">Down</button>
+                <button type="button" data-move="up" aria-label="Move up">↑</button>
+                <button type="button" data-move="down" aria-label="Move down">↓</button>
               </div>
               <div class="compact-actions">
-                <a href="/games/${item.slug}" class="btn-details">...</a>
+                <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
                 <button type="button" data-unfavorite="${item.id}">X</button>
               </div>
             </li>`
@@ -1902,12 +1902,12 @@ app.get("/lists/:slug", async (c) => {
           <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
           ${isAdminEditor ? `
             <div class="reorder-controls">
-              <button type="button" data-move="up">Up</button>
-              <button type="button" data-move="down">Down</button>
+              <button type="button" data-move="up">↑</button>
+              <button type="button" data-move="down">↓</button>
             </div>
           ` : ""}
           <div class="compact-actions">
-            <a href="/games/${item.slug}" class="btn-details">...</a>
+            <a href="/games/${item.slug}" class="btn-details">…</a>
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
         </li>`).join("")}
