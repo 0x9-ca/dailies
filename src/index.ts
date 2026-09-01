@@ -878,7 +878,7 @@ app.get("/games/:slug", async (c) => {
                   const res = await fetch("/api/lists/" + listId + "/items", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ gameId: game.id, position: nextPos })
+                    body: JSON.stringify({ gameId: gameId, position: nextPos })
                   });
                   if (!res.ok) {
                     const body = await res.json().catch(() => ({}));
@@ -1834,12 +1834,12 @@ app.get("/lists/:slug", async (c) => {
     .bind(list.id)
     .all<{ id: string; slug: string; title: string; position: number }>();
 
-  let gamesOptions = "";
+  let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
     const games = await c.env.DB.prepare(
       "SELECT id, title, slug FROM games WHERE status = 'approved' ORDER BY title ASC LIMIT 500"
     ).all<{ id: string; title: string; slug: string }>();
-    gamesOptions = games.results.map((g) => `<option value="${g.id}">${escapeHtml(g.title)} (${escapeHtml(g.slug)})</option>`).join("");
+    adminGames = games.results;
   }
 
   return c.html(await layout(list.title, user, `
@@ -1864,13 +1864,14 @@ app.get("/lists/:slug", async (c) => {
         </section>
         <section class="panel">
           <h2>Add game</h2>
-          <form id="list-add-game-form" class="stack-form">
-            <select name="gameId" required>
-              <option value="">Select a game...</option>
-              ${gamesOptions}
-            </select>
-            <button type="submit">Add to list</button>
-          </form>
+          <div class="game-search-wrap">
+            <input type="text" id="game-search-input" placeholder="Search games..." autocomplete="off" />
+            <div id="game-search-list" class="game-search-list"></div>
+          </div>
+          <input type="hidden" id="game-search-selected" name="gameId" />
+          <div style="margin-top:0.5rem">
+            <button type="button" id="list-add-game-btn">Add to list</button>
+          </div>
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
@@ -1949,6 +1950,79 @@ app.get("/lists/:slug", async (c) => {
             const res = await fetch("/api/lists/" + listId + "/items/" + gameId, { method: "DELETE" });
             if (res.ok) { window.location.reload(); } else { setStatus("Could not remove game."); }
           });
+        });
+
+        const allGames = ${JSON.stringify(adminGames.map(g => ({ id: g.id, title: g.title, slug: g.slug })))};
+        const searchInput = document.getElementById("game-search-input");
+        const searchList = document.getElementById("game-search-list");
+        const selectedInput = document.getElementById("game-search-selected");
+        const addStatus = document.getElementById("list-add-status");
+        let selectedGame = null;
+        let activeIdx = -1;
+
+        const renderFilter = (q) => {
+          const query = q.toLowerCase();
+          const matches = allGames.filter(g => !query || g.title.toLowerCase().includes(query) || g.slug.toLowerCase().includes(query)).slice(0, 20);
+          searchList.innerHTML = "";
+          activeIdx = -1;
+          if (matches.length === 0 || !query) { searchList.classList.remove("open"); return; }
+          matches.forEach((g, i) => {
+            const div = document.createElement("div");
+            div.className = "game-search-item";
+            div.textContent = g.title;
+            div.dataset.idx = i;
+            div.dataset.gameId = g.id;
+            div.dataset.gameTitle = g.title;
+            div.addEventListener("mousedown", (e) => {
+              e.preventDefault();
+              pickGame(g);
+            });
+            searchList.appendChild(div);
+          });
+          searchList.classList.add("open");
+        };
+
+        const pickGame = (g) => {
+          selectedGame = g;
+          selectedInput.value = g.id;
+          searchInput.value = g.title;
+          searchList.classList.remove("open");
+          const tag = document.createElement("div");
+          tag.className = "game-search-selected";
+          tag.innerHTML = "Selected: <strong>" + g.title + '</strong> <button type="button" id="clear-game-selection">change</button>';
+          searchList.parentNode.appendChild(tag);
+          document.getElementById("clear-game-selection")?.addEventListener("click", () => {
+            selectedGame = null;
+            selectedInput.value = "";
+            searchInput.value = "";
+            tag.remove();
+            searchInput.focus();
+          });
+        };
+
+        searchInput?.addEventListener("input", () => { renderFilter(searchInput.value); });
+        searchInput?.addEventListener("focus", () => { renderFilter(searchInput.value); });
+        searchInput?.addEventListener("blur", () => { setTimeout(() => searchList.classList.remove("open"), 150); });
+        searchInput?.addEventListener("keydown", (e) => {
+          const items = searchList.querySelectorAll(".game-search-item");
+          if (e.key === "ArrowDown") { e.preventDefault(); activeIdx = Math.min(activeIdx + 1, items.length - 1); items.forEach((el, i) => el.classList.toggle("active", i === activeIdx)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); activeIdx = Math.max(activeIdx - 1, 0); items.forEach((el, i) => el.classList.toggle("active", i === activeIdx)); }
+          else if (e.key === "Enter" && activeIdx >= 0 && items[activeIdx]) { e.preventDefault(); const g = allGames.find(x => x.id === items[activeIdx].dataset.gameId); if (g) pickGame(g); }
+        });
+
+        document.getElementById("list-add-game-btn")?.addEventListener("click", async () => {
+          if (!selectedGame) { if (addStatus) addStatus.textContent = "Select a game first."; return; }
+          if (addStatus) addStatus.textContent = "Adding game...";
+          const nextPos = ${items.results.length} + 1;
+          const res = await fetch("/api/lists/" + listId + "/items", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ gameId: selectedGame.id, position: nextPos })
+          });
+          if (res.ok) { window.location.reload(); } else {
+            const body = await res.json().catch(() => ({}));
+            if (addStatus) addStatus.textContent = body.error || "Could not add game.";
+          }
         });
       })();
     </script>
@@ -4671,6 +4745,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .weekday-controls label { display:inline-flex; align-items:center; gap:0.2rem; font-size:0.85rem; color:var(--muted); }
       .reorder-controls { display:inline-flex; gap:0.35rem; }
       .reorder-controls button { padding: 0.3rem 0.45rem; font-size: 0.78rem; }
+      .game-search-wrap { position: relative; width: 100%; max-width: 400px; }
+      .game-search-list { position: absolute; top: 100%; left: 0; right: 0; max-height: 240px; overflow-y: auto; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 6px; z-index: 10; display: none; }
+      .game-search-list.open { display: block; }
+      .game-search-item { padding: 0.5rem 0.65rem; cursor: pointer; color: var(--ink); font-size: 0.9rem; }
+      .game-search-item:hover, .game-search-item.active { background: var(--card); }
+      .game-search-item small { color: var(--muted); }
+      .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
+      .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
       #toast-stack {
         position: fixed;
         right: 1rem;
