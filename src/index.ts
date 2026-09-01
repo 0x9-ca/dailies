@@ -527,7 +527,7 @@ app.get("/games/:slug", async (c) => {
   const user = c.get("user");
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
-    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes
+    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, paywall
      FROM games
      WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
   )
@@ -544,6 +544,7 @@ app.get("/games/:slug", async (c) => {
       report_count: number;
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
+      paywall: number;
     }>();
   if (!game) {
     return c.text("Not found", 404);
@@ -583,7 +584,7 @@ app.get("/games/:slug", async (c) => {
 
   return c.html(await layout(game.title, user, `
     <main>
-      <h1>${escapeHtml(game.title)}</h1>
+      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</h1>
       <p>${escapeHtml(game.description || "")}</p>
       <p>${categories.results.map((cat) => `<span class="tag">${escapeHtml(cat.name)}</span>`).join(" ")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
@@ -662,9 +663,10 @@ app.get("/games/:slug", async (c) => {
                      <option value="server" ${game.reset_basis === "server" ? "selected" : ""}>Server</option>
                    </select>
                  </label>
-                 <label>Reset Time (minutes since midnight, 0-1439)
-                   <input type="number" name="reset_time_minutes" min="0" max="1439" value="${game.reset_time_minutes ?? ""}" />
-                 </label>
+                  <label>Reset Time (minutes since midnight, 0-1439)
+                    <input type="number" name="reset_time_minutes" min="0" max="1439" value="${game.reset_time_minutes ?? ""}" />
+                  </label>
+                  <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
                  <fieldset>
                    <legend>Categories</legend>
                    ${allCategories.results
@@ -834,6 +836,7 @@ app.get("/games/:slug", async (c) => {
                   status: String(formData.get("status") || "approved"),
                   reset_basis: resetBasis ? String(resetBasis) : null,
                   reset_time_minutes: resetTimeMinutes && String(resetTimeMinutes).trim() ? Number(resetTimeMinutes) : null,
+                  paywall: formData.has("paywall"),
                   category_ids: categories.map(c => String(c))
                 };
                 setAdminStatus("Saving changes...");
@@ -1051,14 +1054,14 @@ app.get("/rotation/:shareToken", async (c) => {
   }
   
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(owner.id)
-    .all<{ id: string; title: string; slug: string; url: string; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; position: number }>();
   
   const ownerName = owner.display_name || owner.email.split('@')[0];
   
@@ -1071,7 +1074,7 @@ app.get("/rotation/:shareToken", async (c) => {
           ${favorites.results
             .map(
               (item) => `<li>
-                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>
+                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
                 <a href="/games/${item.slug}" class="details-link">details</a>
               </li>`
             )
@@ -1314,14 +1317,14 @@ app.get("/me/rotation", async (c) => {
   }
 
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(user.id)
-    .all<{ id: string; title: string; slug: string; url: string; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; position: number }>();
 
   const userWithToken = await c.env.DB.prepare(
     "SELECT rotation_share_token FROM users WHERE id = ?1"
@@ -1367,7 +1370,7 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => `<li draggable="true" data-game-id="${item.id}">
               <span class="drag">::</span>
-              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
+              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
               <div class="card-actions">
                 <div class="reorder-controls">
                   <button type="button" data-move="up" aria-label="Move up">↑</button>
@@ -1844,14 +1847,14 @@ app.get("/lists/:slug", async (c) => {
     return c.text("Not found", 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, games.url, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, games.url, games.paywall, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; position: number }>();
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -1897,7 +1900,7 @@ app.get("/lists/:slug", async (c) => {
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
           <div class="card-actions">
             ${isAdminEditor ? `
               <div class="reorder-controls">
@@ -3175,6 +3178,7 @@ const adminGameUpdateSchema = z.object({
   status: z.enum(["pending", "approved", "rejected", "disabled"]),
   reset_basis: z.enum(["local", "server"]).nullable(),
   reset_time_minutes: z.number().int().min(0).max(1439).nullable(),
+  paywall: z.boolean().optional().default(false),
   category_ids: z.array(z.string().uuid()).max(20)
 });
 
@@ -3196,7 +3200,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
   await c.env.DB.prepare(
     `UPDATE games 
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, status = ?5,
-         reset_basis = ?6, reset_time_minutes = ?7, updated_at = datetime('now')
+         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, updated_at = datetime('now')
      WHERE id = ?8`
   )
     .bind(
@@ -3207,7 +3211,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
       parsed.data.status,
       parsed.data.reset_basis,
       parsed.data.reset_time_minutes,
-      gameId
+      gameId,
+      parsed.data.paywall ? 1 : 0
     )
     .run();
 
@@ -4262,6 +4267,7 @@ async function listGames(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    paywall: boolean;
   }>
 > {
   const sortSql =
@@ -4295,7 +4301,7 @@ async function listGames(
   const sql = `
     SELECT DISTINCT games.id, games.title, games.slug, games.url, games.description,
            games.score, games.vote_up_count, games.vote_down_count,
-           games.reset_basis, games.reset_time_minutes
+           games.reset_basis, games.reset_time_minutes, games.paywall
     FROM games
     LEFT JOIN game_categories ON games.id = game_categories.game_id
     LEFT JOIN categories ON categories.id = game_categories.category_id
@@ -4318,6 +4324,7 @@ async function listGames(
       vote_down_count: number;
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
+      paywall: number;
     }>();
 
   return rows.results.map((row) => ({
@@ -4330,7 +4337,8 @@ async function listGames(
     voteUpCount: row.vote_up_count,
     voteDownCount: row.vote_down_count,
     resetBasis: row.reset_basis,
-    resetTimeMinutes: row.reset_time_minutes
+    resetTimeMinutes: row.reset_time_minutes,
+    paywall: !!row.paywall
   }));
 }
 
@@ -4403,6 +4411,7 @@ function renderGames(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    paywall: boolean;
   }>
 ): string {
   if (games.length === 0) {
@@ -4414,7 +4423,7 @@ function renderGames(
         .map(
           (game) => `
         <li>
-          <a href="/games/${game.slug}">${escapeHtml(game.title)}</a>
+          <a href="/games/${game.slug}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
           <p>${escapeHtml(game.description || "")}</p>
           ${(() => {
             const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
@@ -4441,6 +4450,7 @@ function renderCompactGameList(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    paywall: boolean;
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
@@ -4461,6 +4471,7 @@ function renderCompactGameList(
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div>
               <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
+              ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
               ${meta ? `<div class="meta">${meta}</div>` : ""}
             </div>
             <div class="compact-actions">
@@ -4879,6 +4890,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
       button.active { background: var(--accent); color: #121212; }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
+      .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
       .rotation-list li > a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
