@@ -17,11 +17,13 @@ Daily game directory and aggregator built on Cloudflare Workers + D1 + KV.
 - **Rotation export/import** - Export your rotation as JSON and import it on any device (works for both logged-in and anonymous users)
 - **Anonymous favorites** - Browser localStorage with post-login import into account
 - **Game reset tracking** - Local vs server time support with reset-soon sorting
-- **Curated lists** - Public/private visibility (feature in development)
+- **Curated lists** - Public/private visibility with admin/editor management and drag-and-drop reordering
 - **Moderation tools** - Editor/admin roles with bulk actions and queue search
 - **Link health checks** - Daily cron job with auto-broken reporting threshold
 - **Account settings** - Display name updates and session revocation
 - **Compact design** - Clean game cards with bold titles and metadata
+- **Paywall indicator** - Editors/admins can mark games as paywall; green `$` badge on cards
+- **Click tracking** - Open-game clicks are tracked and factored into scoring
 
 ## Tech stack
 
@@ -132,6 +134,8 @@ npx wrangler d1 migrations apply daily-game-list --remote --env production
 - `migrations/0007_anonymous_votes.sql` - anonymous vote table (IP-hash keyed)
 - `migrations/0008_add_discord_provider.sql` - Discord OAuth provider
 - `migrations/0009_add_rotation_share_token.sql` - rotation sharing tokens
+- `migrations/0010_game_click_count.sql` - click count column for scoring
+- `migrations/0011_game_paywall.sql` - paywall flag for games
 
 ## License and Attribution
 

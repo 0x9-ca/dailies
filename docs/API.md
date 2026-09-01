@@ -12,15 +12,11 @@
 - `POST /api/games/:id/vote` (anonymous by IP hash or authenticated by user ID; repeat vote updates existing value)
 - `POST /api/games/:id/favorite-anon`
 - `DELETE /api/games/:id/favorite-anon`
+- `POST /api/games/:id/click` (increments click count for scoring)
 
 ## Auth pages/routes
 
 - `GET /login`
-- `GET /auth/google`
-- `GET /auth/github`
-- `POST /auth/email/request`
-- `POST /auth/email/verify-code`
-- `GET /auth/email/verify?token=...`
 - `GET /auth/logout`
 
 ## Authenticated user
@@ -29,7 +25,9 @@
 - `POST /api/games/:id/favorite`
 - `DELETE /api/games/:id/favorite`
 - `POST /api/games/:id/report`
-- `POST /api/me/favorites/import-local`
+- `GET /api/me/favorites/export` (JSON export of rotation)
+- `POST /api/me/favorites/import` (JSON import of rotation)
+- `POST /api/me/favorites/import-local` (sync localStorage favorites to account)
 - `POST /api/me/favorites/reorder`
 - `PATCH /api/me/favorites/:gameId`
 - `GET /api/me/rotation?weekday=1..7`
@@ -39,6 +37,7 @@
 ## Editor/Admin
 
 - `GET /api/admin/submissions?status=pending|rejected|disabled|approved&q=<query>`
+- `PUT /api/games/:id/admin-update` (title, url, description, status, reset metadata, paywall, categories)
 - `PATCH /api/admin/games/:id/reset`
 - `POST /api/admin/games/bulk`
 - `POST /api/admin/games/:id/approve`
@@ -66,3 +65,4 @@
 - Mutating `/api/*` endpoints require `x-csrf-token` matching `csrf_token` cookie.
 - User/session checks are enforced by `requireAuth` and `requireRole` where required (for example, favorites/report/admin endpoints).
 - Anonymous vote identity is derived server-side from client IP and stored as a hash (`anon_ip_hash`).
+- Games can have a `paywall` flag set via admin update; rendered as a green `$` badge on cards.

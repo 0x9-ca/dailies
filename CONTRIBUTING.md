@@ -36,3 +36,5 @@ Thanks for contributing to Daily Game List.
 - Vote/favorite/report from game detail page (verify both anonymous and logged-in voting behavior).
 - Reorder rotation and curated lists; confirm persistence.
 - Exercise admin pages (`/admin/*`) as editor/admin.
+- Toggle paywall checkbox on game detail page; confirm green `$` badge appears on all card views.
+- Click "Open game" link; confirm click count increments and affects score.

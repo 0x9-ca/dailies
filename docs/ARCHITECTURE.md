@@ -20,12 +20,11 @@ Daily Game List is a Cloudflare Worker app with server-rendered pages and JSON A
 
 ## Auth flows
 
-### OAuth (Google/GitHub)
+### Discord OAuth
 
-- Browser visits `/auth/google` or `/auth/github`.
-- State cookie is set and user is redirected to provider.
-- Callback validates state, exchanges code, fetches user profile.
-- GitHub callback prefers verified email and falls back to the account noreply address when email APIs do not provide one.
+- Browser visits `/login` which redirects to Discord OAuth2.
+- Callback validates state, exchanges code, fetches user profile and guild membership.
+- Discord guild roles (admin/editor) are mapped to application roles.
 - User record is upserted in D1 and session is created.
 
 ## Voting and favorites
@@ -37,28 +36,20 @@ Daily Game List is a Cloudflare Worker app with server-rendered pages and JSON A
 - Game vote counters (`vote_up_count`, `vote_down_count`) are computed from both vote tables.
 - Authenticated favorites are stored in `favorites`; anonymous favorites are stored in `anonymous_favorites` and merged into score computation.
 
-### Email sign-in (code and magic link)
+## Click tracking
 
-- User submits email on `/login` -> `POST /auth/email/request`.
-- Server validates email and rate limits by email/IP.
-  - Burst and hourly thresholds are configured with `EMAIL_AUTH_RATE_*` vars.
-  - Verify-code and magic-link attempts use dedicated fixed-window limits.
-- Optional Turnstile challenge can be enforced on email auth form submissions.
-- Server generates:
-  - 6-digit code
-  - random magic token
-- Server stores only token/code hashes in `email_login_tokens`.
-- Email is delivered using webhook config (`EMAIL_AUTH_WEBHOOK_URL`) or logged in dev fallback.
-- Delivery provider precedence:
-  1. Cloudflare Email Service binding (`env.EMAIL.send`)
-  2. Resend (`RESEND_API_KEY`)
-  3. Postmark (`POSTMARK_SERVER_TOKEN`)
-  4. Generic webhook (`EMAIL_AUTH_WEBHOOK_URL`)
-  5. Development log fallback
-- User signs in via:
-  - `POST /auth/email/verify-code` (email + code), or
-  - `GET /auth/email/verify?token=...` (magic link).
-- Token is single-use via `consumed_at` and expires after 15 minutes.
+- `POST /api/games/:id/click` increments `click_count` on the game row.
+- Clicks are triggered from the "Open game" link on game detail pages.
+- Click count feeds into the game score computation (+0.003/click, capped at +0.30).
+
+## Scoring
+
+Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost, and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures. Score is recomputed on vote changes, link check results, and manual admin recalculation.
+
+## Paywall flag
+
+- Games can be marked as `paywall` (boolean) by editors/admins via the game detail page edit form.
+- A green `$` badge renders after the game title on all card views (homepage, browse, rotation, lists, game detail).
 
 ## Submission and moderation flow
 
@@ -100,15 +91,15 @@ Daily Game List is a Cloudflare Worker app with server-rendered pages and JSON A
 
 ## Sequence diagrams
 
-### Email magic-link sign-in
+### Discord OAuth sign-in
 
 ```text
-Browser -> Worker: POST /auth/email/request (email)
-Worker -> D1: upsert user, store hashed code/token
-Worker -> Email provider webhook: send code + magic link
-Email provider -> User inbox: message delivered
-Browser -> Worker: GET /auth/email/verify?token=...
-Worker -> D1: validate hash + expiry + unused
+Browser -> Worker: GET /login
+Worker -> Browser: redirect to Discord OAuth2
+Browser -> Discord: authorize
+Discord -> Worker: GET /auth/discord/callback (code)
+Worker -> Discord: exchange code for token + fetch user/guild
+Worker -> D1: upsert user, map guild roles
 Worker -> Browser: set session cookie, redirect /
 ```
 

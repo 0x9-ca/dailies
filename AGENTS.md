@@ -4,14 +4,14 @@ This file helps coding agents quickly understand the repository.
 
 ## Product summary
 
-Cloudflare Worker app for discovering daily games. Users can submit links, vote, favorite, report issues, and browse curated lists. Voting works for both authenticated and anonymous users. Editor/admin users moderate content and manage taxonomy/lists.
+Cloudflare Worker app for discovering daily games. Users can submit links, vote, favorite, report issues, and browse curated lists. Voting works for both authenticated and anonymous users. Editor/admin users moderate content and manage taxonomy/lists. Games have a `paywall` flag indicated by a green `$` badge on cards.
 
 ## Core files
 
 - `src/index.ts`: routes, API handlers, SSR rendering, scheduled link check, and client-side inline scripts.
 - `src/lib/auth.ts`: session creation/destruction, session middleware, role/auth guards.
 - `src/lib/cache.ts`: KV JSON cache helpers and invalidation.
-- `src/lib/ranking.ts`: Wilson + freshness/penalty score helper.
+- `src/lib/ranking.ts`: Wilson + freshness/penalty/click/list score helper.
 - `src/lib/url.ts`: URL canonicalization and slug helper.
 - `src/env.ts`: Env type definitions.
 - `migrations/*.sql`: D1 schema and seeds.
@@ -38,6 +38,12 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Favorites support manual ordering and weekday masks.
 - Anonymous favorites are local-first and can sync after login; anonymous votes are limited to one vote per game per IP hash.
 - Login supports Discord OAuth only via `/login`.
+- Games can be marked as `paywall` by editors/admins; a green `$` badge renders after the title on all card views.
+- Click tracking: `POST /api/games/:id/click` increments `click_count`; score computation factors in click count and list membership.
+
+## Scoring
+
+Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost (+0.003/click, max +0.30), and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures.
 
 ## Rotation export/import
 
@@ -61,3 +67,4 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - If adding public list queries, consider cache invalidation with `invalidateGameCaches`.
 - The `/me/rotation` page has separate rendering paths for anonymous (localStorage) and authenticated (DB) users — update both if changing rotation UI.
 - Inline `<script>` blocks in `src/index.ts` handle client-side rendering for rotation and game list pages. These are not separate files.
+- The `game_categories` table has a required `assigned_by_user_id` column — always include it in INSERT statements.

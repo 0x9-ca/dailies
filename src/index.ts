@@ -3235,8 +3235,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
     .run();
 
   for (const categoryId of parsed.data.category_ids) {
-    await c.env.DB.prepare("INSERT INTO game_categories (id, game_id, category_id) VALUES (?1, ?2, ?3)")
-      .bind(crypto.randomUUID(), gameId, categoryId)
+    await c.env.DB.prepare("INSERT INTO game_categories (id, game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3, ?4)")
+      .bind(crypto.randomUUID(), gameId, categoryId, auth.id)
       .run();
   }
 
