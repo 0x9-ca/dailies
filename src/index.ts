@@ -588,7 +588,7 @@ app.get("/games/:slug", async (c) => {
       <h1>${escapeHtml(game.title)}</h1>
       <p>${escapeHtml(game.description || "")}</p>
       <p>${categories.results.map((cat) => `<span class="tag">${escapeHtml(cat.name)}</span>`).join(" ")}</p>
-      <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer">Open game</a></p>
+      <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
       ${(() => {
         const resetLabel = getResetMetaLabel(game.reset_basis, game.reset_time_minutes);
         return resetLabel ? `<p>${escapeHtml(resetLabel)}</p>` : "";
@@ -3545,8 +3545,17 @@ app.post("/api/games/:id/report", async (c) => {
   ]);
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
-  return c.json({ id: reportId }, 201);
+  return c.json({ ok: true });
 });
+
+app.post("/api/games/:id/click", async (c) => {
+  const gameId = c.req.param("id");
+  await c.env.DB.prepare("UPDATE games SET click_count = click_count + 1 WHERE id = ?1").bind(gameId).run();
+  await updateGameScore(c.env, gameId);
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
+});
+
 
 app.get("/api/me/rotation", async (c) => {
   const auth = requireAuth(c);
@@ -4128,6 +4137,7 @@ export default {
   fetch: app.fetch,
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runLinkChecks(env));
+    ctx.waitUntil(recalculateAllScores(env));
   }
 };
 
@@ -4328,9 +4338,10 @@ async function listGames(
 
 async function updateGameScore(env: Env, gameId: string): Promise<void> {
   const row = await env.DB.prepare(
-    `SELECT games.vote_up_count, games.vote_down_count, games.report_count, games.created_at,
+    `SELECT games.vote_up_count, games.vote_down_count, games.report_count, games.created_at, games.click_count,
             (SELECT COUNT(*) FROM favorites WHERE game_id = games.id) AS favorite_count_user,
-            (SELECT COUNT(*) FROM anonymous_favorites WHERE game_id = games.id) AS favorite_count_anon
+            (SELECT COUNT(*) FROM anonymous_favorites WHERE game_id = games.id) AS favorite_count_anon,
+            (SELECT COUNT(*) FROM curated_list_items WHERE game_id = games.id) AS list_count
      FROM games
      WHERE games.id = ?1`
   )
@@ -4340,8 +4351,10 @@ async function updateGameScore(env: Env, gameId: string): Promise<void> {
       vote_down_count: number;
       report_count: number;
       created_at: string;
+      click_count: number;
       favorite_count_user: number;
       favorite_count_anon: number;
+      list_count: number;
     }>();
   if (!row) {
     return;
@@ -4351,9 +4364,18 @@ async function updateGameScore(env: Env, gameId: string): Promise<void> {
     downVotes: row.vote_down_count,
     reportCount: row.report_count,
     favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+    clickCount: row.click_count || 0,
+    listCount: row.list_count || 0,
     createdAtIso: row.created_at
   });
   await env.DB.prepare("UPDATE games SET score = ?1, updated_at = datetime('now') WHERE id = ?2").bind(score, gameId).run();
+}
+
+async function recalculateAllScores(env: Env): Promise<void> {
+  const games = await env.DB.prepare("SELECT id FROM games WHERE status = 'approved'").all<{ id: string }>();
+  for (const game of games.results) {
+    await updateGameScore(env, game.id);
+  }
 }
 
 async function writeAudit(

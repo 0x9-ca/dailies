@@ -17,6 +17,8 @@ export function computeGameScore(params: {
   downVotes: number;
   reportCount: number;
   favoriteCount: number;
+  clickCount: number;
+  listCount: number;
   createdAtIso: string;
 }): number {
   const voteScore = wilsonLowerBound(params.upVotes, params.downVotes);
@@ -25,5 +27,7 @@ export function computeGameScore(params: {
   const freshnessBoost = Math.max(0, 0.25 - ageDays * 0.005);
   const reportPenalty = Math.min(0.4, params.reportCount * 0.05);
   const favoriteBoost = Math.min(0.35, params.favoriteCount * 0.008);
-  return Math.max(0, voteScore + freshnessBoost + favoriteBoost - reportPenalty);
+  const clickBoost = Math.min(0.3, params.clickCount * 0.003);
+  const listBoost = Math.min(0.2, params.listCount * 0.1);
+  return Math.max(0, voteScore + freshnessBoost + favoriteBoost + clickBoost + listBoost - reportPenalty);
 }
