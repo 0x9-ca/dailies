@@ -1875,9 +1875,20 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      <ol>
-        ${items.results.map((item) => `<li>#${item.position} <a href="/games/${item.slug}">${escapeHtml(item.title)}</a>${isAdminEditor ? ` <button type="button" class="list-remove-game" data-game-id="${item.id}" style="background:none;border:none;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:inherit;">remove</button>` : ""}</li>`).join("")}
+      <ol class="rotation-list" id="list-items">
+        ${items.results.map((item, idx) => `<li draggable="true" data-game-id="${item.id}">
+          <span class="drag">::</span>
+          <a href="/games/${item.slug}">${escapeHtml(item.title)}</a>
+          ${isAdminEditor ? `
+            <div class="reorder-controls">
+              <button type="button" data-move="up">Up</button>
+              <button type="button" data-move="down">Down</button>
+            </div>
+            <button type="button" class="list-remove-game" data-game-id="${item.id}" style="background:none;border:none;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:inherit;">remove</button>
+          ` : ""}
+        </li>`).join("")}
       </ol>
+      <p id="list-reorder-status" class="status" aria-live="polite"></p>
     </main>
     ${isAdminEditor ? `
     <script>
@@ -1925,24 +1936,6 @@ app.get("/lists/:slug", async (c) => {
           if (res.ok) { window.location.href = "/lists"; } else { setStatus("Could not delete."); }
         });
 
-        document.getElementById("list-add-game-form")?.addEventListener("submit", async (e) => {
-          e.preventDefault();
-          const fd = new FormData(e.target);
-          const gameId = fd.get("gameId");
-          if (!gameId) return;
-          setStatus("Adding game...");
-          const nextPos = ${items.results.length} + 1;
-          const res = await fetch("/api/lists/" + listId + "/items", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ gameId, position: nextPos })
-          });
-          if (res.ok) { window.location.reload(); } else {
-            const body = await res.json().catch(() => ({}));
-            setStatus(body.error || "Could not add game.");
-          }
-        });
-
         document.querySelectorAll(".list-remove-game").forEach((btn) => {
           btn.addEventListener("click", async () => {
             const gameId = btn.getAttribute("data-game-id");
@@ -1951,6 +1944,82 @@ app.get("/lists/:slug", async (c) => {
             if (res.ok) { window.location.reload(); } else { setStatus("Could not remove game."); }
           });
         });
+
+        const listEl = document.getElementById("list-items");
+        const reorderStatus = document.getElementById("list-reorder-status");
+        const setReorderStatus = (t) => { if (reorderStatus) reorderStatus.textContent = t; };
+        let dragItem = null;
+
+        const saveOrder = async () => {
+          if (!listEl) return;
+          const items = Array.from(listEl.querySelectorAll("li[data-game-id]"));
+          const payload = {
+            items: items.map((item, index) => ({
+              gameId: item.getAttribute("data-game-id"),
+              position: index + 1
+            }))
+          };
+          setReorderStatus("Saving order...");
+          const res = await fetch("/api/lists/" + listId + "/items/reorder", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (res.ok) {
+            setReorderStatus("Order saved.");
+            items.forEach((item, i) => {
+              item.querySelectorAll(".position-label").forEach(el => el.textContent = String(i + 1));
+            });
+          } else {
+            setReorderStatus("Could not save order.");
+            if (window.appToast) window.appToast("Could not save order.", "error");
+          }
+        };
+
+        const moveItem = (item, direction) => {
+          if (!listEl) return;
+          if (direction === "up" && item.previousElementSibling) {
+            listEl.insertBefore(item, item.previousElementSibling);
+          } else if (direction === "down" && item.nextElementSibling) {
+            listEl.insertBefore(item, item.nextElementSibling.nextSibling);
+          }
+        };
+
+        if (listEl) {
+          Array.from(listEl.querySelectorAll("li[data-game-id]")).forEach((item) => {
+            item.addEventListener("dragstart", () => {
+              dragItem = item;
+              item.classList.add("dragging");
+            });
+            item.addEventListener("dragend", () => {
+              item.classList.remove("dragging");
+              dragItem = null;
+              void saveOrder();
+            });
+            item.addEventListener("dragover", (event) => {
+              event.preventDefault();
+            });
+            item.addEventListener("drop", (event) => {
+              event.preventDefault();
+              if (!dragItem || dragItem === item) return;
+              const rect = item.getBoundingClientRect();
+              const before = event.clientY < rect.top + rect.height / 2;
+              if (before) {
+                listEl.insertBefore(dragItem, item);
+              } else {
+                listEl.insertBefore(dragItem, item.nextSibling);
+              }
+            });
+            item.querySelectorAll("button[data-move]").forEach((button) => {
+              button.addEventListener("click", async () => {
+                const direction = button.getAttribute("data-move");
+                if (!direction) return;
+                moveItem(item, direction);
+                await saveOrder();
+              });
+            });
+          });
+        }
 
         const allGames = ${JSON.stringify(adminGames.map(g => ({ id: g.id, title: g.title, slug: g.slug })))};
         const searchInput = document.getElementById("game-search-input");
@@ -3621,13 +3690,18 @@ app.post("/api/lists/:id/items", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
+  const listId = c.req.param("id");
+  const maxPos = await c.env.DB.prepare(
+    "SELECT COALESCE(MAX(position), 0) as maxPos FROM curated_list_items WHERE curated_list_id = ?1"
+  ).bind(listId).first<{ maxPos: number }>();
+  const nextPos = (maxPos?.maxPos ?? 0) + 1;
   await c.env.DB.prepare(
-    `INSERT OR REPLACE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id)
+    `INSERT OR IGNORE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id)
      VALUES (?1, ?2, ?3, ?4)`
   )
-    .bind(c.req.param("id"), parsed.data.gameId, parsed.data.position, auth.id)
+    .bind(listId, parsed.data.gameId, nextPos, auth.id)
     .run();
-  await writeAudit(c.env, auth.id, "list", c.req.param("id"), "add_item", parsed.data);
+  await writeAudit(c.env, auth.id, "list", listId, "add_item", { gameId: parsed.data.gameId, position: nextPos });
   return c.json({ ok: true });
 });
 
