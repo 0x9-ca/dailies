@@ -22,12 +22,16 @@ CREATE TABLE games (
   approved_by_user_id TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  reset_basis TEXT CHECK (reset_basis IN ('local', 'server')),
+  reset_time_minutes INTEGER CHECK (reset_time_minutes >= 0 AND reset_time_minutes <= 1439),
+  click_count INTEGER NOT NULL DEFAULT 0,
+  paywall INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (submitted_by_user_id) REFERENCES users(id),
   FOREIGN KEY (approved_by_user_id) REFERENCES users(id)
 );
 
-INSERT INTO games (id, title, slug, url, canonical_url, description, source_name, source_url, submitted_by_user_id, status, moderation_note, score, vote_up_count, vote_down_count, report_count, link_fail_count, last_checked_at, approved_at, approved_by_user_id, created_at, updated_at)
-  SELECT id, title, slug, url, canonical_url, description, source_name, source_url, submitted_by_user_id, status, moderation_note, score, vote_up_count, vote_down_count, report_count, link_fail_count, last_checked_at, approved_at, approved_by_user_id, created_at, updated_at
+INSERT INTO games (id, title, slug, url, canonical_url, description, source_name, source_url, submitted_by_user_id, status, moderation_note, score, vote_up_count, vote_down_count, report_count, link_fail_count, last_checked_at, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, click_count, paywall)
+  SELECT id, title, slug, url, canonical_url, description, source_name, source_url, submitted_by_user_id, status, moderation_note, score, vote_up_count, vote_down_count, report_count, link_fail_count, last_checked_at, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, click_count, paywall
   FROM games_old;
 
 DROP TABLE games_old;
