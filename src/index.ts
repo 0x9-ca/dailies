@@ -655,13 +655,6 @@ app.get("/", async (c) => {
   }
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
-  const curated = await c.env.DB.prepare(
-    `SELECT id, slug, title, description
-     FROM curated_lists
-     WHERE visibility = 'public'
-     ORDER BY updated_at DESC
-     LIMIT 6`
-  ).all<{ id: string; slug: string; title: string; description: string | null }>();
   return c.html(layout("Daily Game List", user, `
     <main>
       <section class="hero">
@@ -686,14 +679,6 @@ app.get("/", async (c) => {
       <section>
         <h2>Popular Today</h2>
         ${topGamesMarkup}
-      </section>
-      <section>
-        <h2>Curated Lists</h2>
-        <ul>
-          ${curated.results
-            .map((list) => `<li><a href="/lists/${list.slug}">${escapeHtml(list.title)}</a>${list.description ? ` - ${escapeHtml(list.description)}` : ""}</li>`)
-            .join("")}
-        </ul>
       </section>
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
@@ -794,6 +779,30 @@ app.get("/games", async (c) => {
   const perPage = 98; // Max 98 to stay within D1's 100 bind parameter limit (1 for user_id + up to 99 for game_ids when fetching perPage+1)
   const offset = (page - 1) * perPage;
   
+  // Get total count for pagination
+  const countParams: Array<string | number> = [];
+  let countWhereSql = "WHERE games.status = 'approved'";
+  if (category) {
+    countWhereSql += " AND categories.slug = ?";
+    countParams.push(category);
+  }
+  if (q) {
+    countWhereSql += " AND (games.title LIKE ? OR games.description LIKE ?)";
+    countParams.push(`%${q}%`, `%${q}%`);
+  }
+  
+  const countSql = `
+    SELECT COUNT(DISTINCT games.id) as total
+    FROM games
+    LEFT JOIN game_categories ON games.id = game_categories.game_id
+    LEFT JOIN categories ON categories.id = game_categories.category_id
+    ${countWhereSql}
+  `;
+  
+  const countResult = await c.env.DB.prepare(countSql).bind(...countParams).first<{ total: number }>();
+  const totalGames = countResult?.total || 0;
+  const totalPages = Math.ceil(totalGames / perPage);
+  
   // Fetch one extra to check if there are more pages
   const gamesWithExtra = await listGames(c.env, { sort, category, q, limit: perPage + 1, offset });
   const hasMore = gamesWithExtra.length > perPage;
@@ -863,7 +872,7 @@ app.get("/games", async (c) => {
     if (page > 1) {
       paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page - 1))}">&larr; Previous</a>`;
     }
-    paginationMarkup += `<span>Page ${page}</span>`;
+    paginationMarkup += `<span>Page ${page}${totalPages > 0 ? ` of ${totalPages}` : ""}</span>`;
     if (hasMore) {
       paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page + 1))}">Next &rarr;</a>`;
     }
