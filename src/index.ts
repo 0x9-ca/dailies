@@ -229,26 +229,29 @@ app.get("/login", (c) => {
 app.get("/", async (c) => {
   const user = c.get("user");
   const shouldPromptImport = c.req.query("importLocal") === "1";
-  const topGames = await listGames(c.env, { sort: "top", limit: 12 });
+  const topGames = await listGames(c.env, { sort: "top", limit: 5 });
   const topGameIds = topGames.map((game) => game.id);
+  const newGames = await listGames(c.env, { sort: "new", limit: 5 });
+  const newGameIds = newGames.map((game) => game.id);
+  const allGameIds = [...new Set([...topGameIds, ...newGameIds])];
   const userVotes = new Map<string, -1 | 1>();
   const userFavorites = new Set<string>();
-  if (topGameIds.length > 0) {
-    const placeholders = topGameIds.map((_id, index) => `?${index + 2}`).join(", ");
+  if (allGameIds.length > 0) {
+    const placeholders = allGameIds.map((_id, index) => `?${index + 2}`).join(", ");
     const voteRows = user
       ? await c.env.DB.prepare(
           `SELECT game_id, value
            FROM votes
            WHERE user_id = ?1 AND game_id IN (${placeholders})`
         )
-          .bind(user.id, ...topGameIds)
+          .bind(user.id, ...allGameIds)
           .all<{ game_id: string; value: -1 | 1 }>()
       : await c.env.DB.prepare(
           `SELECT game_id, value
            FROM anonymous_votes
            WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
         )
-          .bind(await getAnonymousVoteKey(c), ...topGameIds)
+          .bind(await getAnonymousVoteKey(c), ...allGameIds)
           .all<{ game_id: string; value: -1 | 1 }>();
     for (const row of voteRows.results) {
       userVotes.set(row.game_id, row.value);
@@ -259,7 +262,7 @@ app.get("/", async (c) => {
          FROM favorites
          WHERE user_id = ?1 AND game_id IN (${placeholders})`
       )
-        .bind(user.id, ...topGameIds)
+        .bind(user.id, ...allGameIds)
         .all<{ game_id: string }>();
       for (const row of favoriteRows.results) {
         userFavorites.add(row.game_id);
@@ -268,6 +271,7 @@ app.get("/", async (c) => {
   }
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
+  const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
   return c.html(layout("Daily Game List", user, `
     <main>
       <section class="hero">
@@ -291,6 +295,10 @@ app.get("/", async (c) => {
       <section>
         <h2>Popular Today</h2>
         ${topGamesMarkup}
+      </section>
+      <section>
+        <h2>Newly Added</h2>
+        ${newGamesMarkup}
       </section>
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
@@ -594,21 +602,9 @@ app.get("/games/:slug", async (c) => {
                  <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}">Vote up</button>
                  <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}">Vote down</button>
                  <button type="button" id="favorite-toggle" data-favorited="${userFavorite ? "yes" : "no"}">${
-                    userFavorite ? "Remove favorite" : "Add favorite"
-                  }</button>
+                     userFavorite ? "Remove favorite" : "Add favorite"
+                   }</button>
                </div>
-               <form id="report-form" class="stack-form">
-                 <label>Report issue
-                   <select name="reason">
-                     <option value="broken">Broken link</option>
-                     <option value="not_daily">Not a daily game</option>
-                     <option value="spam">Spam</option>
-                     <option value="other">Other</option>
-                   </select>
-                 </label>
-                 <textarea name="note" rows="3" placeholder="Optional notes"></textarea>
-                 <button type="submit">Send report</button>
-               </form>
                <p id="game-action-status" class="status" aria-live="polite"></p>
              </section>`
           : `<section class="panel">
@@ -620,10 +616,25 @@ app.get("/games/:slug", async (c) => {
                   <button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>
                   <a href="/me/rotation">View my rotation</a>
                 </div>
-                <p><a href="/login">Sign in</a> to sync favorites and report issues.</p>
                 <p id="game-action-status" class="status" aria-live="polite"></p>
               </section>`
       }
+      <section class="panel">
+        <h2>Report issue</h2>
+        <form id="report-form" class="stack-form">
+          <label>Reason
+            <select name="reason">
+              <option value="broken">Broken link</option>
+              <option value="not_daily">Not a daily game</option>
+              <option value="spam">Spam</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <textarea name="note" rows="3" placeholder="Optional notes"></textarea>
+          <button type="submit">Send report</button>
+        </form>
+        <p id="report-status" class="status" aria-live="polite"></p>
+      </section>
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -763,6 +774,10 @@ app.get("/games/:slug", async (c) => {
             });
 
             const reportForm = document.getElementById("report-form");
+            const reportStatus = document.getElementById("report-status");
+            const setReportStatus = (text) => {
+              if (reportStatus) reportStatus.textContent = text;
+            };
             reportForm?.addEventListener("submit", async (event) => {
               event.preventDefault();
               if (!(reportForm instanceof HTMLFormElement)) return;
@@ -771,7 +786,7 @@ app.get("/games/:slug", async (c) => {
                 reason: String(formData.get("reason") || "other"),
                 note: String(formData.get("note") || "").trim() || undefined
               };
-              setStatus("Submitting report...");
+              setReportStatus("Submitting report...");
               const response = await fetch("/api/games/" + gameId + "/report", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -779,10 +794,10 @@ app.get("/games/:slug", async (c) => {
               });
               if (response.ok) {
                 reportForm.reset();
-                setStatus("Report submitted. Thank you.");
+                setReportStatus("Report submitted. Thank you.");
                 if (window.appToast) window.appToast("Report submitted.", "success");
               } else {
-                setStatus("Could not submit report.");
+                setReportStatus("Could not submit report.");
                 if (window.appToast) window.appToast("Could not submit report.", "error");
               }
             });
@@ -3106,11 +3121,28 @@ const reportSchema = z.object({
 });
 
 app.post("/api/games/:id/report", async (c) => {
-  const auth = requireAuth(c);
-  if (auth instanceof Response) {
-    return auth;
+  const user = c.get("user");
+  const gameId = c.req.param("id");
+
+  let reporterId: string;
+  let rateLimitKey: string;
+  if (user) {
+    reporterId = user.id;
+    rateLimitKey = `report:${user.id}`;
+  } else {
+    const ipHash = await getAnonymousVoteKey(c);
+    const anonEmail = `anon-${ipHash}@anonymous.local`;
+    let anonUser = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(anonEmail).first<{ id: string }>();
+    if (!anonUser) {
+      const anonId = crypto.randomUUID();
+      await c.env.DB.prepare("INSERT INTO users (id, email, role) VALUES (?1, ?2, 'user')").bind(anonId, anonEmail).run();
+      anonUser = { id: anonId };
+    }
+    reporterId = anonUser.id;
+    rateLimitKey = `report:anon:${ipHash}`;
   }
-  const reportRate = await enforceRateLimit(c.env, `report:${auth.id}`, 20, 60 * 60);
+
+  const reportRate = await enforceRateLimit(c.env, rateLimitKey, 20, 60 * 60);
   if (!reportRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: reportRate.retryAfterSeconds }, 429);
   }
@@ -3119,12 +3151,11 @@ app.post("/api/games/:id/report", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const reportId = crypto.randomUUID();
-  const gameId = c.req.param("id");
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO reports (id, game_id, reported_by_user_id, reason, note)
        VALUES (?1, ?2, ?3, ?4, ?5)`
-    ).bind(reportId, gameId, auth.id, parsed.data.reason, parsed.data.note || null),
+    ).bind(reportId, gameId, reporterId, parsed.data.reason, parsed.data.note || null),
     c.env.DB.prepare(
       "UPDATE games SET report_count = report_count + 1, updated_at = datetime('now') WHERE id = ?1"
     ).bind(gameId)
@@ -3969,9 +4000,9 @@ function renderGames(
           <p>${escapeHtml(game.description || "")}</p>
           ${(() => {
             const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
-            return resetLabel ? `<small>${escapeHtml(resetLabel)}</small><br />` : "";
+            const meta = `Score ${game.score.toFixed(3)}${resetLabel ? ` | ${resetLabel}` : ""}`;
+            return `<small>${escapeHtml(meta)}</small>`;
           })()}
-          <small>Score ${game.score.toFixed(3)} | +${game.voteUpCount} / -${game.voteDownCount}</small>
         </li>
       `
         )
@@ -4007,12 +4038,12 @@ function renderCompactGameList(
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
         const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
-        const meta = `${resetLabel ? `${resetLabel} | ` : ""}Score ${game.score.toFixed(2)} | +${game.voteUpCount} / -${game.voteDownCount}`;
+        const meta = `Score ${game.score.toFixed(2)}${resetLabel ? ` | ${resetLabel}` : ""}`;
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div>
               <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
-              <div class="meta">${escapeHtml(meta)}</div>
+              ${meta ? `<div class="meta">${meta}</div>` : ""}
             </div>
             <div class="compact-actions">
               <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}">+ <span data-up-count>${game.voteUpCount}</span></button>
