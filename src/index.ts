@@ -222,10 +222,8 @@ app.get("/login", async (c) => {
         </div>
       </section>
     </main>
-  `, c.env));
+  `, c.env, { path: "/login", description: "Sign in to Dailies to save your rotation and manage curated lists." }));
 });
-
-// Public SSR pages.
 app.get("/", async (c) => {
   const user = c.get("user");
   const shouldPromptImport = c.req.query("importLocal") === "1";
@@ -272,7 +270,7 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
-  return c.html(await layout("Daily Game List", user, `
+  return c.html(await layout("Dailies – Find the Best Daily Games", user, `
     <main>
       <section class="hero">
         <h1>Dailies</h1>
@@ -302,7 +300,7 @@ app.get("/", async (c) => {
       </section>
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
-  `, c.env));
+  `, c.env, { path: "/" }));
 });
 
 app.get("/submit", async (c) => {
@@ -387,7 +385,7 @@ app.get("/submit", async (c) => {
         }
       });
     </script>
-  `, c.env));
+  `, c.env, { path: "/submit", description: "Submit a daily game for the community to discover." }));
 });
 
 app.get("/games", async (c) => {
@@ -521,7 +519,7 @@ app.get("/games", async (c) => {
       ${paginationMarkup}
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
-  `, c.env));
+  `, c.env, { path: "/games", description: "Browse all daily games. Filter by category, sort by score, trending, or newest." }));
 });
 
 app.get("/games/:slug", async (c) => {
@@ -1034,7 +1032,7 @@ app.get("/games/:slug", async (c) => {
             setButtonState(isFavorite());
           </script>`
     }
-  `, c.env));
+  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on Dailies. Vote, favorite, and add to your rotation.` }));
 });
 
 app.get("/rotation/:shareToken", async (c) => {
@@ -1081,7 +1079,7 @@ app.get("/rotation/:shareToken", async (c) => {
         </ol>
       ` : '<p>No favorites in this rotation yet.</p>'}
     </main>
-  `, c.env));
+  `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.` }));
 });
 
 app.get("/me/rotation", async (c) => {
@@ -1312,7 +1310,7 @@ app.get("/me/rotation", async (c) => {
 
         render();
       </script>
-    `, c.env));
+    `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
   }
 
   const favorites = await c.env.DB.prepare(
@@ -1661,7 +1659,7 @@ app.get("/me/rotation", async (c) => {
         });
       }
     </script>
-  `, c.env));
+  `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
 });
 
 app.get("/me/settings", async (c) => {
@@ -1828,7 +1826,7 @@ app.get("/lists", async (c) => {
         });
       })();
     </script>
-  `, c.env));
+  `, c.env, { path: "/lists", description: "Browse curated lists of daily games." }));
 });
 
 app.get("/lists/:slug", async (c) => {
@@ -2120,7 +2118,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env));
+  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}` }));
 });
 
 // Admin SSR pages.
@@ -4752,16 +4750,25 @@ async function hashAuthToken(secret: string, value: string): Promise<string> {
     .join("");
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env): Promise<string> {
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string }): Promise<string> {
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
+  const description = opts?.description || "Find the best daily games. No login required. Votes, favorites, and curated lists.";
+  const pagePath = opts?.path || "/";
   return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${escapeHtml(title)}</title>
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
     <style>
       :root {
         color-scheme: dark;
