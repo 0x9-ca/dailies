@@ -305,9 +305,6 @@ app.get("/", async (c) => {
 
 app.get("/submit", async (c) => {
   const user = c.get("user");
-  if (!user) {
-    return c.redirect("/login");
-  }
 
   const categories = await c.env.DB.prepare("SELECT slug, name FROM categories WHERE is_active = 1 ORDER BY name ASC").all<{
     slug: string;
@@ -2982,11 +2979,12 @@ app.get("/api/categories", async (c) => {
 });
 
 app.post("/api/games", async (c) => {
-  const auth = requireAuth(c);
-  if (auth instanceof Response) {
-    return auth;
-  }
-  const submitRate = await enforceRateLimit(c.env, `submit:${auth.id}`, 10, 60 * 60);
+  const user = c.get("user");
+  const isAnon = !user;
+  const submitRateKey = user
+    ? `submit:${user.id}`
+    : `submit:anon:${await getAnonymousVoteKey(c)}`;
+  const submitRate = await enforceRateLimit(c.env, submitRateKey, 10, 60 * 60);
   if (!submitRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: submitRate.retryAfterSeconds }, 429);
   }
@@ -3015,7 +3013,7 @@ app.post("/api/games", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const slug = uniqueSlug(parsed.data.title, id);
-  const bypassModeration = auth.role === "editor" || auth.role === "admin";
+  const bypassModeration = user && (user.role === "editor" || user.role === "admin");
 
   if (bypassModeration) {
     await c.env.DB.prepare(
@@ -3023,7 +3021,7 @@ app.post("/api/games", async (c) => {
         (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, auth.id, now, auth.id, resetBasis, resetTimeMinutes)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes)
       .run();
   } else {
     await c.env.DB.prepare(
@@ -3031,18 +3029,18 @@ app.post("/api/games", async (c) => {
         (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes)
        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, auth.id, now, resetBasis, resetTimeMinutes)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes)
       .run();
   }
 
-  if (parsed.data.categories && parsed.data.categories.length > 0) {
+  if (parsed.data.categories && parsed.data.categories.length > 0 && user) {
     for (const categorySlug of parsed.data.categories) {
       const category = await c.env.DB.prepare("SELECT id FROM categories WHERE slug = ?1 AND is_active = 1").bind(categorySlug).first<{ id: string }>();
       if (category) {
         await c.env.DB.prepare(
           "INSERT OR IGNORE INTO game_categories (game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3)"
         )
-          .bind(id, category.id, auth.id)
+          .bind(id, category.id, user.id)
           .run();
       }
     }
@@ -4957,7 +4955,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       <nav>
         <a href="/">Home</a>
         <a href="/games">Games</a>
-        ${user ? `<a href="/submit">Submit</a>` : ""}
+        <a href="/submit">Submit</a>
         <a href="/me/rotation">My Rotation</a>
         ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
         ${user ? `<a href="/me/settings">Settings</a>` : ""}
