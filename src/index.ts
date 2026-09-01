@@ -4877,6 +4877,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         background: var(--card);
         box-shadow: var(--shadow);
       }
+      .panel > h2:first-child { margin-top: 0; }
+      .panel > h2:last-child { margin-bottom: 0.5rem; }
+      .panel > p:last-child { margin-bottom: 0; }
+      .panel > form:last-child { margin-bottom: 0; }
       .admin-grid { display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .stack { display:flex; flex-direction:column; gap:0.8rem; }
       .stack-form { display:flex; flex-direction:column; gap:0.6rem; }
