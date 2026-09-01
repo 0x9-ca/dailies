@@ -2,22 +2,25 @@
 
 Daily game directory and aggregator built on Cloudflare Workers + D1 + KV.
 
-## Features in this implementation
+**Live site:** [https://dailies.0x9.ca](https://dailies.0x9.ca)  
+**Discord:** [https://discord.gg/uRApjQJ4vh](https://discord.gg/uRApjQJ4vh)
 
-- Public directory browse/search/sort (`top`, `new`, `trending`, `reset`)
-- Category filters and seeded category taxonomy
-- Login page with Google/GitHub OAuth plus email code/magic-link sign-in (plus dev mock login)
-- Submission workflow (`pending`), votes, favorites, reports
-- Anonymous voting tracked by hashed client IP (one active vote per game per IP)
-- Manual favorites ordering and weekday mask rotation
-- Anonymous local favorites via browser localStorage, with post-login import into account
-- Game reset metadata (`local` vs `server` time, reset time) with reset-soon sorting
-- Curated lists with `public/private` visibility
-- Editor/admin moderation and category management endpoints
-- Bulk moderation actions and queue search for submissions/reports
-- Daily cron link checker and auto-broken reporting threshold
-- Email code + magic-link auth delivery via Cloudflare Email binding, Resend, Postmark, or webhook fallback
-- Account settings page for display name updates and session revocation
+## Features
+
+- **Public directory** - Browse, search, and sort games by top, new, trending, or reset time
+- **Category filters** - Seeded category taxonomy for easy discovery
+- **Discord authentication** - Secure login with Discord OAuth (GitHub OAuth available but hidden)
+- **Submission workflow** - Submit games with pending approval, voting, and reporting
+- **Anonymous voting** - Track votes by hashed client IP (one vote per game per IP)
+- **Favorites & rotation** - Manual ordering with weekday masks for daily game routines
+- **Rotation sharing** - Generate shareable links to let others view your daily rotation
+- **Anonymous favorites** - Browser localStorage with post-login import into account
+- **Game reset tracking** - Local vs server time support with reset-soon sorting
+- **Curated lists** - Public/private visibility (feature in development)
+- **Moderation tools** - Editor/admin roles with bulk actions and queue search
+- **Link health checks** - Daily cron job with auto-broken reporting threshold
+- **Account settings** - Display name updates and session revocation
+- **Compact design** - Clean game cards with bold titles and metadata
 
 ## Tech stack
 
@@ -51,7 +54,7 @@ wrangler secret put OAUTH_GITHUB_CLIENT_SECRET
 wrangler secret put OAUTH_DISCORD_CLIENT_SECRET
 ```
 
-**Note:** Email authentication has been disabled. Login is available through GitHub and Discord OAuth only.
+**Note:** Email authentication has been disabled. Login is available through Discord OAuth only (GitHub OAuth is implemented but hidden from the UI).
 
 4. Set OAuth client IDs and Discord configuration in `wrangler.jsonc` (`vars`).
 
@@ -148,6 +151,16 @@ npx wrangler d1 migrations apply daily-game-list --remote --env production
 - `migrations/0005_game_reset_metadata.sql` - reset basis/time metadata
 - `migrations/0006_anonymous_favorites.sql` - anonymous favorites table
 - `migrations/0007_anonymous_votes.sql` - anonymous vote table (IP-hash keyed)
+- `migrations/0008_add_discord_provider.sql` - Discord OAuth provider
+- `migrations/0009_add_rotation_share_token.sql` - rotation sharing tokens
+
+## License and Attribution
+
+This project is licensed under the **GNU General Public License v3.0** (GPLv3). See the [LICENSE](LICENSE) file for full details.
+
+### Attribution
+
+The base list of daily games is sourced from [aukspot/dles](https://github.com/aukspot/dles). We are grateful for their comprehensive collection of daily puzzle games.
 
 ## Additional docs
 

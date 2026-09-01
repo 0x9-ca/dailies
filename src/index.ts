@@ -4819,10 +4819,6 @@ function layout(title: string, user: AppUser | null, body: string, env: Env): st
         |
         <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">Discord</a>
       </p>
-      <p style="margin-top: 0.5rem;">
-        Licensed under <a href="https://www.gnu.org/licenses/gpl-3.0.en.html" target="_blank" rel="noopener noreferrer">GPLv3</a>
-        • Base game list from <a href="https://github.com/aukspot/dles" target="_blank" rel="noopener noreferrer">aukspot/dles</a>
-      </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
     <script>
