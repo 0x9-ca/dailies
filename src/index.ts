@@ -1370,11 +1370,11 @@ app.get("/me/rotation", async (c) => {
             (item) => `<li draggable="true" data-game-id="${item.id}">
               <span class="drag">::</span>
               <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
-              <div class="reorder-controls">
-                <button type="button" data-move="up" aria-label="Move up">↑</button>
-                <button type="button" data-move="down" aria-label="Move down">↓</button>
-              </div>
-              <div class="compact-actions">
+              <div class="card-actions">
+                <div class="reorder-controls">
+                  <button type="button" data-move="up" aria-label="Move up">↑</button>
+                  <button type="button" data-move="down" aria-label="Move down">↓</button>
+                </div>
                 <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
                 <button type="button" data-unfavorite="${item.id}">X</button>
               </div>
@@ -1900,14 +1900,14 @@ app.get("/lists/:slug", async (c) => {
         ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
-          ${isAdminEditor ? `
-            <div class="reorder-controls">
-              <button type="button" data-move="up">↑</button>
-              <button type="button" data-move="down">↓</button>
-            </div>
-          ` : ""}
-          <div class="compact-actions">
-            <a href="/games/${item.slug}" class="btn-details">…</a>
+          <div class="card-actions">
+            ${isAdminEditor ? `
+              <div class="reorder-controls">
+                <button type="button" data-move="up">↑</button>
+                <button type="button" data-move="down">↓</button>
+              </div>
+            ` : ""}
+            <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
         </li>`).join("")}
@@ -4451,7 +4451,7 @@ function renderCompactGameList(
                   ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}">${currentFavorite ? "★" : "☆"}</button>`
                   : `<button type="button" data-local-favorite="no">☆</button>`
               }
-              <a href="/games/${game.slug}" class="btn-details">...</a>
+              <button type="button" class="btn-details" onclick="window.location='/games/${game.slug}'">…</button>
             </div>
           </div>
         </li>`;
@@ -4801,7 +4801,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       ul.games.compact li { padding: 0.5rem 0.6rem; border-radius: 10px; }
       .game-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center; }
       .game-row .meta { color: var(--muted); font-size: 0.8rem; }
-      .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap; }
+      .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; flex-wrap: nowrap; }
       .game-row .compact-actions button { padding: 0.3rem 0.45rem; font-size: 0.78rem; }
       .game-row .compact-actions .btn-details {
         padding: 0.3rem 0.55rem;
@@ -4816,7 +4816,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .game-row .compact-actions .btn-details:hover {
         background: var(--border);
       }
-      .game-row .compact-actions button, .rotation-list .compact-actions button {
+      .card-actions { display:flex; gap:0.35rem; align-items:center; flex-wrap:nowrap; margin-left:auto; }
+      .game-row .compact-actions button, .rotation-list .compact-actions button, .card-actions button {
         padding: 0.3rem 0.55rem;
         font-size: 0.85rem;
         border: 1px solid var(--border);
@@ -4826,9 +4827,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         font-weight: bold;
         cursor: pointer;
       }
-      .game-row .compact-actions button:hover, .rotation-list .compact-actions button:hover {
+      .game-row .compact-actions button:hover, .rotation-list .compact-actions button:hover, .card-actions button:hover {
         background: var(--border);
       }
+      .rotation-list .reorder-controls { display:inline-flex; gap:0.25rem; }
       .panel {
         margin: 1rem 0;
         padding: 1rem;
@@ -4849,7 +4851,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       button.active { background: var(--accent); color: #121212; }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
-      .rotation-list li { display:flex; align-items:center; flex-wrap:wrap; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
+      .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
+      .rotation-list li > a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .drag { cursor: grab; font-weight: 700; color:var(--muted); }
       .rotation-list li.dragging { opacity: 0.55; }
       .weekday-controls { display:flex; gap:0.4rem; flex-wrap:wrap; }
