@@ -1316,14 +1316,14 @@ app.get("/me/rotation", async (c) => {
   }
 
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(user.id)
-    .all<{ id: string; title: string; slug: string; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; position: number }>();
 
   const userWithToken = await c.env.DB.prepare(
     "SELECT rotation_share_token FROM users WHERE id = ?1"
@@ -1369,10 +1369,14 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => `<li draggable="true" data-game-id="${item.id}">
               <span class="drag">::</span>
-              <a href="/games/${item.slug}">${escapeHtml(item.title)}</a>
+              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
               <div class="reorder-controls">
                 <button type="button" data-move="up" aria-label="Move up">Up</button>
                 <button type="button" data-move="down" aria-label="Move down">Down</button>
+              </div>
+              <div class="compact-actions">
+                <a href="/games/${item.slug}" class="btn-details">...</a>
+                <button type="button" data-unfavorite="${item.id}">X</button>
               </div>
             </li>`
           )
@@ -1638,6 +1642,23 @@ app.get("/me/rotation", async (c) => {
             });
           });
         });
+
+        document.querySelectorAll("button[data-unfavorite]").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const gameId = btn.getAttribute("data-unfavorite");
+            if (!gameId) return;
+            setStatus("Removing from rotation...");
+            const res = await fetch("/api/games/" + gameId + "/favorite", { method: "DELETE" });
+            if (res.ok) {
+              btn.closest("li")?.remove();
+              setStatus("Removed from rotation.");
+              if (window.appToast) window.appToast("Removed from rotation.", "success");
+            } else {
+              setStatus("Could not remove.");
+              if (window.appToast) window.appToast("Could not remove from rotation.", "error");
+            }
+          });
+        });
       }
     </script>
   `, c.env));
@@ -1825,14 +1846,14 @@ app.get("/lists/:slug", async (c) => {
     return c.text("Not found", 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, games.url, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; position: number }>();
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -1876,16 +1897,19 @@ app.get("/lists/:slug", async (c) => {
         </section>
       ` : ""}
       <ol class="rotation-list" id="list-items">
-        ${items.results.map((item, idx) => `<li draggable="true" data-game-id="${item.id}">
-          <span class="drag">::</span>
-          <a href="/games/${item.slug}">${escapeHtml(item.title)}</a>
+        ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
+          ${isAdminEditor ? `<span class="drag">::</span>` : ""}
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}</a>
           ${isAdminEditor ? `
             <div class="reorder-controls">
               <button type="button" data-move="up">Up</button>
               <button type="button" data-move="down">Down</button>
             </div>
-            <button type="button" class="list-remove-game" data-game-id="${item.id}" style="background:none;border:none;color:var(--accent);cursor:pointer;text-decoration:underline;font-size:inherit;">remove</button>
           ` : ""}
+          <div class="compact-actions">
+            <a href="/games/${item.slug}" class="btn-details">...</a>
+            ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
+          </div>
         </li>`).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
@@ -4790,6 +4814,19 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         font-weight: bold;
       }
       .game-row .compact-actions .btn-details:hover {
+        background: var(--border);
+      }
+      .game-row .compact-actions button, .rotation-list .compact-actions button {
+        padding: 0.3rem 0.55rem;
+        font-size: 0.85rem;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg-soft);
+        color: var(--ink);
+        font-weight: bold;
+        cursor: pointer;
+      }
+      .game-row .compact-actions button:hover, .rotation-list .compact-actions button:hover {
         background: var(--border);
       }
       .panel {
