@@ -619,7 +619,7 @@ app.get("/games/:slug", async (c) => {
 
   return c.html(await layout(game.title, user, `
     <main>
-      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</h1>
+      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       <p>${escapeHtml(game.description || "")}</p>
       <p>${categories.results.map((cat) => `<span class="tag">${escapeHtml(cat.name)}</span>`).join(" ")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
@@ -1111,7 +1111,7 @@ app.get("/rotation/:shareToken", async (c) => {
           ${favorites.results
             .map(
               (item) => `<li>
-                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
+                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                 <a href="/games/${item.slug}" class="details-link">details</a>
               </li>`
             )
@@ -1407,7 +1407,7 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => `<li draggable="true" data-game-id="${item.id}">
               <span class="drag">::</span>
-              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
+              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
               <div class="card-actions">
                 <div class="reorder-controls">
                   <button type="button" data-move="up" aria-label="Move up">↑</button>
@@ -1937,7 +1937,7 @@ app.get("/lists/:slug", async (c) => {
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
           <div class="card-actions">
             ${isAdminEditor ? `
               <div class="reorder-controls">
@@ -2231,7 +2231,7 @@ app.get("/admin/submissions", async (c) => {
         ${rows.results
           .map(
             (row) => `<article class="panel">
-              <h2>${escapeHtml(row.title)}${row.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${row.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</h2>
+              <h2>${escapeHtml(row.title)}${row.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${row.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h2>
               <p>${escapeHtml(row.description || "")}</p>
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
@@ -4554,7 +4554,7 @@ function renderCompactGameList(
             <div>
               <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
               ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
-              ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}
+              ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               ${meta ? `<div class="meta">${meta}</div>` : ""}
             </div>
             <div class="compact-actions">
