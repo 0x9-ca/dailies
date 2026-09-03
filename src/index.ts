@@ -3384,14 +3384,24 @@ app.post("/api/me/favorites/reorder", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
-  const statements = parsed.data.items.map((item) =>
+  // Two-phase update to avoid unique index conflict on (user_id, position).
+  // Phase 1: move all to temporary out-of-range positions.
+  // Phase 2: set final positions.
+  const phase1 = parsed.data.items.map((item) =>
+    c.env.DB.prepare("UPDATE favorites SET position = ?1 WHERE user_id = ?2 AND game_id = ?3").bind(
+      item.position + 10000,
+      auth.id,
+      item.gameId
+    )
+  );
+  const phase2 = parsed.data.items.map((item) =>
     c.env.DB.prepare("UPDATE favorites SET position = ?1, updated_at = datetime('now') WHERE user_id = ?2 AND game_id = ?3").bind(
       item.position,
       auth.id,
       item.gameId
     )
   );
-  await c.env.DB.batch(statements);
+  await c.env.DB.batch([...phase1, ...phase2]);
   return c.json({ ok: true });
 });
 
@@ -4763,6 +4773,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
+  let pendingModerationCount = 0;
+  if (isAdminEditor) {
+    const pendingSubmissions = await env.DB.prepare("SELECT COUNT(*) as cnt FROM games WHERE status = 'pending'").first<{ cnt: number }>();
+    const openReports = await env.DB.prepare("SELECT COUNT(*) as cnt FROM reports WHERE status = 'open'").first<{ cnt: number }>();
+    pendingModerationCount = (pendingSubmissions?.cnt ?? 0) + (openReports?.cnt ?? 0);
+  }
   const description = opts?.description || "Find the best daily games. No login required. Votes, favorites, and curated lists.";
   const pagePath = opts?.path || "/";
   return `<!doctype html>
@@ -4893,6 +4909,22 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       button.active { background: var(--accent); color: #121212; }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
+      .moderation-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.3em;
+        height: 1.3em;
+        padding: 0 0.35em;
+        margin-left: 0.3rem;
+        border-radius: 9999px;
+        background: #dc2626;
+        color: #fff;
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1;
+        vertical-align: middle;
+      }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
       .rotation-list li > a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -4963,7 +4995,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/me/rotation">My Rotation</a>
         ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
         ${user ? `<a href="/me/settings">Settings</a>` : ""}
-        ${isAdminEditor ? `<a href="/admin">Admin</a>` : ""}
+        ${isAdminEditor ? `<a href="/admin">Admin${pendingModerationCount > 0 ? `<span class="moderation-badge">${pendingModerationCount}</span>` : ""}</a>` : ""}
         ${!user ? `<a href="/login">Login</a>` : ""}
       </nav>
       <div>
