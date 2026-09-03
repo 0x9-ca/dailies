@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --ip 192.168.17.2 --port 8787",
-    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
     "validate:config": "node scripts/validate-config.mjs"
