@@ -275,7 +275,10 @@ app.get("/", async (c) => {
       <section class="hero">
         <h1>Dailies</h1>
         <p>Find the best daily games. No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
-        <a class="btn" href="/games">Browse games</a>
+        <div class="actions">
+          <a class="btn" href="/games">Browse games</a>
+          <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
+        </div>
       </section>
       ${
         user
@@ -299,6 +302,24 @@ app.get("/", async (c) => {
         ${newGamesMarkup}
       </section>
     </main>
+    <script>
+      document.getElementById("feeling-auspicious-btn")?.addEventListener("click", async () => {
+        // Open the tab synchronously (within the click handler) so browsers don't block it as a popup;
+        // the fetch below happens after an await, by which point window.open would no longer count as user-initiated.
+        const newTab = window.open("", "_blank");
+        if (newTab) newTab.opener = null;
+        const response = await fetch("/api/games/random");
+        if (!response.ok) {
+          if (newTab) newTab.close();
+          if (window.appToast) window.appToast("No games available.", "error");
+          return;
+        }
+        const game = await response.json();
+        if (newTab) newTab.location = game.url;
+        fetch("/api/games/" + game.id + "/click", { method: "POST" }).catch(() => {});
+        window.location.href = "/games/" + game.slug;
+      });
+    </script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
   `, c.env, { path: "/" }));
 });
@@ -341,6 +362,8 @@ app.get("/submit", async (c) => {
               <input type="time" name="resetTime" />
             </label>
           </fieldset>
+          <label class="check"><input type="checkbox" name="paywall" value="1" /> This game is paywalled</label>
+          <label class="check"><input type="checkbox" name="nsfw" value="1" /> This game is NSFW</label>
           <button type="submit">Submit for review</button>
         </form>
         <p id="submission-status" class="status" aria-live="polite"></p>
@@ -361,7 +384,9 @@ app.get("/submit", async (c) => {
           description: String(formData.get("description") || "").trim() || undefined,
           categories: formData.getAll("categories").map((v) => String(v)),
           resetBasis: resetBasis || undefined,
-          resetTime: resetTime || undefined
+          resetTime: resetTime || undefined,
+          paywall: formData.has("paywall"),
+          nsfw: formData.has("nsfw")
         };
         if (status) status.textContent = "Submitting...";
         const response = await fetch("/api/games", {
@@ -390,10 +415,12 @@ app.get("/games", async (c) => {
   const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "reset";
   const category = c.req.query("category") || undefined;
   const q = c.req.query("q") || undefined;
+  const hidePaywall = c.req.query("hidePaywall") === "1";
+  const hideNsfw = c.req.query("hideNsfw") === "1";
   const page = Math.max(1, parsePositiveInt(c.req.query("page"), 1));
   const perPage = 98; // Max 98 to stay within D1's 100 bind parameter limit (1 for user_id + up to 99 for game_ids when fetching perPage+1)
   const offset = (page - 1) * perPage;
-  
+
   // Get total count for pagination
   const countParams: Array<string | number> = [];
   let countWhereSql = "WHERE games.status = 'approved'";
@@ -405,7 +432,13 @@ app.get("/games", async (c) => {
     countWhereSql += " AND (games.title LIKE ? OR games.description LIKE ?)";
     countParams.push(`%${q}%`, `%${q}%`);
   }
-  
+  if (hidePaywall) {
+    countWhereSql += " AND games.paywall = 0";
+  }
+  if (hideNsfw) {
+    countWhereSql += " AND games.nsfw = 0";
+  }
+
   const countSql = `
     SELECT COUNT(DISTINCT games.id) as total
     FROM games
@@ -413,13 +446,13 @@ app.get("/games", async (c) => {
     LEFT JOIN categories ON categories.id = game_categories.category_id
     ${countWhereSql}
   `;
-  
+
   const countResult = await c.env.DB.prepare(countSql).bind(...countParams).first<{ total: number }>();
   const totalGames = countResult?.total || 0;
   const totalPages = Math.ceil(totalGames / perPage);
-  
+
   // Fetch one extra to check if there are more pages
-  const gamesWithExtra = await listGames(c.env, { sort, category, q, limit: perPage + 1, offset });
+  const gamesWithExtra = await listGames(c.env, { sort, category, q, hidePaywall, hideNsfw, limit: perPage + 1, offset });
   const hasMore = gamesWithExtra.length > perPage;
   const games = gamesWithExtra.slice(0, perPage);
   
@@ -477,6 +510,8 @@ app.get("/games", async (c) => {
     if (sort !== "top") params.set("sort", sort);
     if (category) params.set("category", category);
     if (q) params.set("q", q);
+    if (hidePaywall) params.set("hidePaywall", "1");
+    if (hideNsfw) params.set("hideNsfw", "1");
     if (newPage > 1) params.set("page", String(newPage));
     return `/games${params.toString() ? "?" + params.toString() : ""}`;
   };
@@ -510,6 +545,8 @@ app.get("/games", async (c) => {
             .map((cat) => `<option value="${cat.slug}" ${cat.slug === category ? "selected" : ""}>${escapeHtml(cat.name)}</option>`)
             .join("")}
         </select>
+        <label class="check"><input type="checkbox" name="hidePaywall" value="1" ${hidePaywall ? "checked" : ""} /> Hide paywalled</label>
+        <label class="check"><input type="checkbox" name="hideNsfw" value="1" ${hideNsfw ? "checked" : ""} /> Hide NSFW</label>
         <button type="submit">Apply</button>
       </form>
       ${gamesMarkup}
@@ -524,7 +561,7 @@ app.get("/games/:slug", async (c) => {
   const user = c.get("user");
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
-    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, paywall
+    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, paywall, nsfw
      FROM games
      WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
   )
@@ -542,6 +579,7 @@ app.get("/games/:slug", async (c) => {
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
       paywall: number;
+      nsfw: number;
     }>();
   if (!game) {
     return c.text("Not found", 404);
@@ -581,7 +619,7 @@ app.get("/games/:slug", async (c) => {
 
   return c.html(await layout(game.title, user, `
     <main>
-      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</h1>
+      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</h1>
       <p>${escapeHtml(game.description || "")}</p>
       <p>${categories.results.map((cat) => `<span class="tag">${escapeHtml(cat.name)}</span>`).join(" ")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
@@ -664,6 +702,7 @@ app.get("/games/:slug", async (c) => {
                     <input type="number" name="reset_time_minutes" min="0" max="1439" value="${game.reset_time_minutes ?? ""}" />
                   </label>
                   <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
+                  <label style="display:block;"><input type="checkbox" name="nsfw" value="1" ${game.nsfw ? "checked" : ""} /> NSFW</label>
                  <fieldset>
                    <legend>Categories</legend>
                    ${allCategories.results
@@ -834,6 +873,7 @@ app.get("/games/:slug", async (c) => {
                   reset_basis: resetBasis ? String(resetBasis) : null,
                   reset_time_minutes: resetTimeMinutes && String(resetTimeMinutes).trim() ? Number(resetTimeMinutes) : null,
                   paywall: formData.has("paywall"),
+                  nsfw: formData.has("nsfw"),
                   category_ids: categories.map(c => String(c))
                 };
                 setAdminStatus("Saving changes...");
@@ -1051,14 +1091,14 @@ app.get("/rotation/:shareToken", async (c) => {
   }
   
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, games.paywall, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(owner.id)
-    .all<{ id: string; title: string; slug: string; url: string; paywall: number; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
   
   const ownerName = owner.display_name || owner.email.split('@')[0];
   
@@ -1071,7 +1111,7 @@ app.get("/rotation/:shareToken", async (c) => {
           ${favorites.results
             .map(
               (item) => `<li>
-                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
+                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
                 <a href="/games/${item.slug}" class="details-link">details</a>
               </li>`
             )
@@ -1314,14 +1354,14 @@ app.get("/me/rotation", async (c) => {
   }
 
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, games.paywall, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(user.id)
-    .all<{ id: string; title: string; slug: string; url: string; paywall: number; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
 
   const userWithToken = await c.env.DB.prepare(
     "SELECT rotation_share_token FROM users WHERE id = ?1"
@@ -1367,7 +1407,7 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => `<li draggable="true" data-game-id="${item.id}">
               <span class="drag">::</span>
-              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
+              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
               <div class="card-actions">
                 <div class="reorder-controls">
                   <button type="button" data-move="up" aria-label="Move up">↑</button>
@@ -1844,14 +1884,14 @@ app.get("/lists/:slug", async (c) => {
     return c.text("Not found", 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, games.url, games.paywall, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; paywall: number; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; position: number }>();
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -1897,7 +1937,7 @@ app.get("/lists/:slug", async (c) => {
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</a>
           <div class="card-actions">
             ${isAdminEditor ? `
               <div class="reorder-controls">
@@ -2149,7 +2189,7 @@ app.get("/admin/submissions", async (c) => {
   const q = (c.req.query("q") || "").trim();
   const rows = q
     ? await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes
+        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, paywall, nsfw
          FROM games
          WHERE status = ?1
            AND (title LIKE ?2 OR url LIKE ?2 OR description LIKE ?2)
@@ -2157,16 +2197,16 @@ app.get("/admin/submissions", async (c) => {
          LIMIT 200`
       )
         .bind(status, `%${q}%`)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null }>()
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; paywall: number; nsfw: number }>()
     : await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes
+        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, paywall, nsfw
          FROM games
          WHERE status = ?1
          ORDER BY created_at DESC
          LIMIT 200`
       )
         .bind(status)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null }>();
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; paywall: number; nsfw: number }>();
 
   return c.html(await layout("Admin Submissions", auth, `
     <main>
@@ -2191,7 +2231,7 @@ app.get("/admin/submissions", async (c) => {
         ${rows.results
           .map(
             (row) => `<article class="panel">
-              <h2>${escapeHtml(row.title)}</h2>
+              <h2>${escapeHtml(row.title)}${row.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${row.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}</h2>
               <p>${escapeHtml(row.description || "")}</p>
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
@@ -2944,17 +2984,21 @@ const submissionSchema = z.object({
   description: z.string().max(500).optional(),
   categories: z.array(z.string()).max(8).optional(),
   resetBasis: z.enum(["local", "server"]).optional(),
-  resetTime: z.string().regex(/^\d{2}:\d{2}$/).optional()
+  resetTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  paywall: z.boolean().optional().default(false),
+  nsfw: z.boolean().optional().default(false)
 });
 
 app.get("/api/games", async (c) => {
   const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "reset";
   const category = c.req.query("category") || undefined;
   const q = c.req.query("q") || undefined;
+  const hidePaywall = c.req.query("hidePaywall") === "1";
+  const hideNsfw = c.req.query("hideNsfw") === "1";
   const page = Math.max(1, parsePositiveInt(c.req.query("page"), 1));
   const perPage = Math.min(100, Math.max(1, parsePositiveInt(c.req.query("perPage"), 25)));
   const offset = (page - 1) * perPage;
-  const key = `games:${sort}:${category || "all"}:${q || "none"}:${page}:${perPage}`;
+  const key = `games:${sort}:${category || "all"}:${q || "none"}:${hidePaywall ? 1 : 0}:${hideNsfw ? 1 : 0}:${page}:${perPage}`;
   const cached = await getCachedJson<unknown[]>(c.env, key);
   if (cached) {
     const results = Array.isArray(cached) ? cached : [];
@@ -2966,7 +3010,7 @@ app.get("/api/games", async (c) => {
       cached: true
     });
   }
-  const withExtra = await listGames(c.env, { sort, category, q, limit: perPage + 1, offset });
+  const withExtra = await listGames(c.env, { sort, category, q, hidePaywall, hideNsfw, limit: perPage + 1, offset });
   const hasMore = withExtra.length > perPage;
   const results = withExtra.slice(0, perPage);
   await setCachedJson(c.env, key, results);
@@ -2976,6 +3020,16 @@ app.get("/api/games", async (c) => {
 app.get("/api/categories", async (c) => {
   const rows = await c.env.DB.prepare("SELECT id, slug, name, description FROM categories WHERE is_active = 1 ORDER BY name").all();
   return c.json(rows);
+});
+
+app.get("/api/games/random", async (c) => {
+  const game = await c.env.DB.prepare(
+    "SELECT id, slug, url FROM games WHERE status = 'approved' AND nsfw = 0 ORDER BY RANDOM() LIMIT 1"
+  ).first<{ id: string; slug: string; url: string }>();
+  if (!game) {
+    return c.json({ error: "No games available" }, 404);
+  }
+  return c.json(game);
 });
 
 app.post("/api/games", async (c) => {
@@ -3018,18 +3072,18 @@ app.post("/api/games", async (c) => {
   if (bypassModeration) {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11, ?12, ?13)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0)
       .run();
   } else {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10, ?11, ?12)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0)
       .run();
   }
 
@@ -3177,6 +3231,7 @@ const adminGameUpdateSchema = z.object({
   reset_basis: z.enum(["local", "server"]).nullable(),
   reset_time_minutes: z.number().int().min(0).max(1439).nullable(),
   paywall: z.boolean().optional().default(false),
+  nsfw: z.boolean().optional().default(false),
   category_ids: z.array(z.string().uuid()).max(20)
 });
 
@@ -3196,9 +3251,9 @@ app.put("/api/games/:id/admin-update", async (c) => {
 
   // Update game
   await c.env.DB.prepare(
-    `UPDATE games 
+    `UPDATE games
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, status = ?5,
-         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, updated_at = datetime('now')
+         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, updated_at = datetime('now')
      WHERE id = ?8`
   )
     .bind(
@@ -3210,7 +3265,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
       parsed.data.reset_basis,
       parsed.data.reset_time_minutes,
       gameId,
-      parsed.data.paywall ? 1 : 0
+      parsed.data.paywall ? 1 : 0,
+      parsed.data.nsfw ? 1 : 0
     )
     .run();
 
@@ -3233,8 +3289,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
     .run();
 
   for (const categoryId of parsed.data.category_ids) {
-    await c.env.DB.prepare("INSERT INTO game_categories (id, game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3, ?4)")
-      .bind(crypto.randomUUID(), gameId, categoryId, auth.id)
+    await c.env.DB.prepare("INSERT INTO game_categories (game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3)")
+      .bind(gameId, categoryId, auth.id)
       .run();
   }
 
@@ -4262,7 +4318,15 @@ async function enforceRateLimit(
 
 async function listGames(
   env: Env,
-  opts: { sort: "top" | "new" | "trending" | "reset"; category?: string; q?: string; limit: number; offset?: number }
+  opts: {
+    sort: "top" | "new" | "trending" | "reset";
+    category?: string;
+    q?: string;
+    limit: number;
+    offset?: number;
+    hidePaywall?: boolean;
+    hideNsfw?: boolean;
+  }
 ): Promise<
   Array<{
     id: string;
@@ -4276,6 +4340,7 @@ async function listGames(
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
     paywall: boolean;
+    nsfw: boolean;
   }>
 > {
   const sortSql =
@@ -4303,13 +4368,19 @@ async function listGames(
     whereSql += " AND (games.title LIKE ? OR games.description LIKE ?)";
     params.push(`%${opts.q}%`, `%${opts.q}%`);
   }
+  if (opts.hidePaywall) {
+    whereSql += " AND games.paywall = 0";
+  }
+  if (opts.hideNsfw) {
+    whereSql += " AND games.nsfw = 0";
+  }
 
   params.push(opts.limit, opts.offset || 0);
 
   const sql = `
     SELECT DISTINCT games.id, games.title, games.slug, games.url, games.description,
            games.score, games.vote_up_count, games.vote_down_count,
-           games.reset_basis, games.reset_time_minutes, games.paywall
+           games.reset_basis, games.reset_time_minutes, games.paywall, games.nsfw
     FROM games
     LEFT JOIN game_categories ON games.id = game_categories.game_id
     LEFT JOIN categories ON categories.id = game_categories.category_id
@@ -4333,6 +4404,7 @@ async function listGames(
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
       paywall: number;
+      nsfw: number;
     }>();
 
   return rows.results.map((row) => ({
@@ -4346,7 +4418,8 @@ async function listGames(
     voteDownCount: row.vote_down_count,
     resetBasis: row.reset_basis,
     resetTimeMinutes: row.reset_time_minutes,
-    paywall: !!row.paywall
+    paywall: !!row.paywall,
+    nsfw: !!row.nsfw
   }));
 }
 
@@ -4459,6 +4532,7 @@ function renderCompactGameList(
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
     paywall: boolean;
+    nsfw: boolean;
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
@@ -4480,6 +4554,7 @@ function renderCompactGameList(
             <div>
               <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
               ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
+              ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">Nsfw</span>` : ""}
               ${meta ? `<div class="meta">${meta}</div>` : ""}
             </div>
             <div class="compact-actions">
@@ -4909,6 +4984,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       button.active { background: var(--accent); color: #121212; }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
+      .nsfw-badge { color:#ef4444; font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
       .moderation-badge {
         display: inline-flex;
         align-items: center;
