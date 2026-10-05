@@ -37,8 +37,8 @@
 ## Editor/Admin
 
 - `GET /api/admin/submissions?status=pending|rejected|disabled|approved&q=<query>`
-- `PUT /api/games/:id/admin-update` (title, url, description, status, reset metadata, paywall, categories)
-- `PATCH /api/admin/games/:id/reset`
+- `PUT /api/games/:id/admin-update` (title, url, description, status, reset metadata incl. `reset_timezone`, paywall, categories)
+- `PATCH /api/admin/games/:id/reset` (`resetBasis`, `resetTime`, `resetTimezone`)
 - `POST /api/admin/games/bulk`
 - `POST /api/admin/games/:id/approve`
 - `POST /api/admin/games/:id/reject`
