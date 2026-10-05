@@ -1986,7 +1986,9 @@ app.get("/lists", async (c) => {
 app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
-  const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
+  const canEdit = !!user && (user.role === "editor" || user.role === "admin");
+  // Editors/admins view the list normally and opt in to edit mode with ?edit=1.
+  const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const list = await c.env.DB.prepare(
     `SELECT id, slug, title, description, visibility, owner_user_id
      FROM curated_lists
@@ -1998,14 +2000,14 @@ app.get("/lists/:slug", async (c) => {
     return c.text("Not found", 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
 
@@ -2022,6 +2024,7 @@ app.get("/lists/:slug", async (c) => {
       <h1>${escapeHtml(list.title)}</h1>
       <p>${escapeHtml(list.description || "")}</p>
       <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
+      ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
       ${isAdminEditor ? `
         <section class="panel">
           <h2>Edit list</h2>
@@ -2056,6 +2059,10 @@ app.get("/lists/:slug", async (c) => {
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
+            ${(() => {
+              const resetLabel = getResetMetaLabel(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
+              return resetLabel ? `<div class="meta">${escapeHtml(resetLabel)}</div>` : "";
+            })()}
           </div>
           <div class="card-actions">
             ${isAdminEditor ? `
@@ -2093,7 +2100,7 @@ app.get("/lists/:slug", async (c) => {
           });
           if (res.ok) {
             setStatus("Saved.");
-            window.location.reload();
+            window.location.href = "/lists/" + encodeURIComponent(String(fd.get("slug"))) + "?edit=1";
           } else {
             const body = await res.json().catch(() => ({}));
             setStatus(body.error || "Could not save.");
@@ -2277,7 +2284,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}`, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]])] }));
+  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}`, noindex: isAdminEditor, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]])] }));
 });
 
 // Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
@@ -5518,7 +5525,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       ul.games.compact { gap: 0.45rem; }
       ul.games.compact li { padding: 0.5rem 0.6rem; border-radius: 10px; }
       .game-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center; }
-      .game-row .meta { color: var(--muted); font-size: 0.8rem; }
+      .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
       .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; flex-wrap: nowrap; }
       .game-row .compact-actions button { padding: 0.3rem 0.45rem; font-size: 0.78rem; }
       .game-row .compact-actions .btn-details {
