@@ -263,7 +263,7 @@ app.get("/", async (c) => {
     <main>
       <section class="hero">
         <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
-        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies. No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
+        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
         <div class="actions">
           <a class="btn" href="/games">Browse games</a>
           <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -4816,7 +4816,7 @@ function renderGames(
         .map(
           (game) => `
         <li>
-          <a href="/games/${game.slug}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
+          <a href="/games/${game.slug}" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
           <p>${escapeHtml(game.description || "")}</p>
           ${(() => {
             const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
@@ -4829,6 +4829,12 @@ function renderGames(
         .join("")}
     </ul>
   `;
+}
+
+function gameAriaLabel(game: { title: string; description: string | null; score: number; voteUpCount: number }): string {
+  const description = (game.description || "").trim().replace(/[.\s]+$/, "");
+  const votes = `${game.voteUpCount} upvote${game.voteUpCount === 1 ? "" : "s"}`;
+  return `${game.title}${description ? `: ${description}` : ""} with a community score of ${game.score.toFixed(2)} based on ${votes}.`;
 }
 
 function renderCompactGameList(
@@ -4865,7 +4871,7 @@ function renderCompactGameList(
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div>
-              <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
+              <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
               ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
               ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               ${renderCategoryPills(game.categories)}
@@ -5170,7 +5176,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     pendingSubmissionCount = pendingSubmissions?.cnt ?? 0;
     openReportCount = openReports?.cnt ?? 0;
   }
-  const description = opts?.description || "Find the best daily games. No login required. Votes, favorites, and curated lists.";
+  const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
   return `<!doctype html>
 <html lang="en">
@@ -5190,10 +5196,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <script type="application/ld+json">${JSON.stringify({
       "@context": "https://schema.org",
       "@type": "WebSite",
-      "name": "Dailies",
-      "alternateName": "dles",
-      "url": "https://dailies.0x9.ca/",
-      "description": "Dailies (dles) is a hub for daily games. Browse, vote on, and favorite the best daily games.",
+      "name": "Dailies (dles)",
+      "url": "https://0x9.ca",
+      "description": "A comprehensive directory and hub for discovering, voting on, and tracking daily web games.",
       "potentialAction": {
         "@type": "SearchAction",
         "target": "https://dailies.0x9.ca/games?q={search_term_string}",
