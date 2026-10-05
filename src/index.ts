@@ -2231,7 +2231,8 @@ const SIBLING_SITE_URLS = [
   "https://0x9.ca/",
   "https://pilldle.0x9.ca/",
   "https://gamba.0x9.ca/",
-  "https://waffledle.0x9.ca/"
+  "https://waffledle.0x9.ca/",
+  "https://sherdle.0x9.ca/"
 ];
 
 app.get("/sitemap.xml", async (c) => {
