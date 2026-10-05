@@ -2484,7 +2484,7 @@ app.get("/admin/reports", async (c) => {
   const rows = q
     ? await c.env.DB.prepare(
         `SELECT reports.id, reports.reason, reports.status, reports.note, reports.created_at,
-                games.id AS game_id, games.slug AS game_slug, games.title, games.status AS game_status
+                games.id AS game_id, games.slug AS game_slug, games.title, games.url AS game_url, games.status AS game_status
          FROM reports
          JOIN games ON games.id = reports.game_id
          WHERE reports.status = ?1
@@ -2493,10 +2493,10 @@ app.get("/admin/reports", async (c) => {
          LIMIT 200`
       )
         .bind(status, `%${q}%`)
-        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_status: string }>()
+        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_url: string; game_status: string }>()
     : await c.env.DB.prepare(
         `SELECT reports.id, reports.reason, reports.status, reports.note, reports.created_at,
-                games.id AS game_id, games.slug AS game_slug, games.title, games.status AS game_status
+                games.id AS game_id, games.slug AS game_slug, games.title, games.url AS game_url, games.status AS game_status
          FROM reports
          JOIN games ON games.id = reports.game_id
          WHERE reports.status = ?1
@@ -2504,7 +2504,7 @@ app.get("/admin/reports", async (c) => {
          LIMIT 200`
       )
         .bind(status)
-        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_status: string }>();
+        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_url: string; game_status: string }>();
 
   return c.html(await layout("Admin Reports", auth, `
     <main>
@@ -2531,7 +2531,8 @@ app.get("/admin/reports", async (c) => {
               <h2>${escapeHtml(row.title)}</h2>
               <p>Reason: <strong>${escapeHtml(row.reason)}</strong> · Report: <strong>${escapeHtml(row.status)}</strong> · Game: <strong>${escapeHtml(row.game_status)}</strong> · ${escapeHtml(row.created_at)}</p>
               <p>${escapeHtml(row.note || "No note provided")}</p>
-              <p><a href="/games/${row.game_slug}">Open game context</a></p>
+              <p><a href="${escapeHtml(row.game_url)}" target="_blank" rel="noopener noreferrer">Visit game site ↗</a> · <a href="/games/${row.game_slug}">Open game context</a></p>
+              <p style="color:var(--muted);overflow-wrap:anywhere"><small>${escapeHtml(row.game_url)}</small></p>
               <label class="check"><input type="checkbox" data-report-select value="${row.id}" /> Select</label>
               <div class="actions">
                 <button type="button" data-report-action="hide" data-report-id="${row.id}"${row.game_status === "disabled" ? " disabled" : ""}>Hide game</button>
