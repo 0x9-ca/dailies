@@ -4846,9 +4846,11 @@ function renderGames(
 }
 
 function gameAriaLabel(game: { title: string; description: string | null; score: number; voteUpCount: number }): string {
-  const description = (game.description || "").trim().replace(/[.\s]+$/, "");
+  const description = (game.description || "").trim();
   const votes = `${game.voteUpCount} upvote${game.voteUpCount === 1 ? "" : "s"}`;
-  return `${game.title}${description ? `: ${description}` : ""} with a community score of ${game.score.toFixed(2)} based on ${votes}.`;
+  const intro = description ? `${game.title}: ${description}` : game.title;
+  const sentence = /[.!?]$/.test(intro) ? intro : `${intro}.`;
+  return `${sentence} Community score ${game.score.toFixed(2)} based on ${votes}.`;
 }
 
 function renderCompactGameList(
