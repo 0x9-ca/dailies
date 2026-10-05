@@ -2484,7 +2484,7 @@ app.get("/admin/reports", async (c) => {
   const rows = q
     ? await c.env.DB.prepare(
         `SELECT reports.id, reports.reason, reports.status, reports.note, reports.created_at,
-                games.id AS game_id, games.slug AS game_slug, games.title
+                games.id AS game_id, games.slug AS game_slug, games.title, games.status AS game_status
          FROM reports
          JOIN games ON games.id = reports.game_id
          WHERE reports.status = ?1
@@ -2493,10 +2493,10 @@ app.get("/admin/reports", async (c) => {
          LIMIT 200`
       )
         .bind(status, `%${q}%`)
-        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string }>()
+        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_status: string }>()
     : await c.env.DB.prepare(
         `SELECT reports.id, reports.reason, reports.status, reports.note, reports.created_at,
-                games.id AS game_id, games.slug AS game_slug, games.title
+                games.id AS game_id, games.slug AS game_slug, games.title, games.status AS game_status
          FROM reports
          JOIN games ON games.id = reports.game_id
          WHERE reports.status = ?1
@@ -2504,7 +2504,7 @@ app.get("/admin/reports", async (c) => {
          LIMIT 200`
       )
         .bind(status)
-        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string }>();
+        .all<{ id: string; reason: string; status: string; note: string | null; created_at: string; game_id: string; game_slug: string; title: string; game_status: string }>();
 
   return c.html(await layout("Admin Reports", auth, `
     <main>
@@ -2520,7 +2520,8 @@ app.get("/admin/reports", async (c) => {
       </form>
       <div class="actions">
         <button type="button" data-select-all-reports>Toggle all</button>
-        <button type="button" data-bulk-report-action="resolve">Bulk resolve</button>
+        <button type="button" data-bulk-report-action="hide">Bulk hide games</button>
+        ${auth.role === "admin" ? `<button type="button" class="danger" data-bulk-report-action="delete">Bulk delete games</button>` : ""}
         <button type="button" data-bulk-report-action="dismiss">Bulk dismiss</button>
       </div>
       <div class="stack">
@@ -2528,12 +2529,13 @@ app.get("/admin/reports", async (c) => {
           .map(
             (row) => `<article class="panel">
               <h2>${escapeHtml(row.title)}</h2>
-              <p>Reason: <strong>${escapeHtml(row.reason)}</strong> · Status: <strong>${escapeHtml(row.status)}</strong></p>
+              <p>Reason: <strong>${escapeHtml(row.reason)}</strong> · Report: <strong>${escapeHtml(row.status)}</strong> · Game: <strong>${escapeHtml(row.game_status)}</strong> · ${escapeHtml(row.created_at)}</p>
               <p>${escapeHtml(row.note || "No note provided")}</p>
               <p><a href="/games/${row.game_slug}">Open game context</a></p>
               <label class="check"><input type="checkbox" data-report-select value="${row.id}" /> Select</label>
               <div class="actions">
-                <button type="button" data-report-action="resolve" data-report-id="${row.id}">Resolve</button>
+                <button type="button" data-report-action="hide" data-report-id="${row.id}"${row.game_status === "disabled" ? " disabled" : ""}>Hide game</button>
+                ${auth.role === "admin" ? `<button type="button" class="danger" data-report-action="delete" data-report-id="${row.id}">Delete game</button>` : ""}
                 <button type="button" data-report-action="dismiss" data-report-id="${row.id}">Dismiss</button>
               </div>
             </article>`
@@ -2548,7 +2550,12 @@ app.get("/admin/reports", async (c) => {
         if (statusNode) statusNode.textContent = text;
       };
 
+      const confirmations = {
+        delete: "Permanently delete the reported game(s)? This also removes votes, favorites and all reports for them. This cannot be undone."
+      };
+
       const runAction = async (reportId, action) => {
+        if (confirmations[action] && !window.confirm(confirmations[action])) return;
         setStatus("Running " + action + "...");
         const response = await fetch("/api/admin/reports/" + reportId + "/" + action, { method: "POST" });
         if (!response.ok) {
@@ -2573,6 +2580,7 @@ app.get("/admin/reports", async (c) => {
           setStatus("Select at least one report first.");
           return;
         }
+        if (confirmations[action] && !window.confirm(confirmations[action])) return;
         setStatus("Running bulk " + action + " on " + ids.length + " item(s)...");
         const response = await fetch("/api/admin/reports/bulk", {
           method: "POST",
@@ -4191,8 +4199,40 @@ app.get("/api/admin/reports", async (c) => {
 
 const bulkReportsSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
-  action: z.enum(["resolve", "dismiss"])
+  action: z.enum(["resolve", "dismiss", "hide", "delete"])
 });
+
+// Hide (disable) or delete the games behind the given reports. Hiding also resolves every open report for
+// those games; deleting cascades the reports away with the game.
+async function applyGameActionForReports(env: Env, userId: string, reportIds: string[], action: "hide" | "delete"): Promise<number> {
+  const placeholders = reportIds.map((_, i) => `?${i + 1}`).join(",");
+  const found = await env.DB.prepare(`SELECT DISTINCT game_id FROM reports WHERE id IN (${placeholders})`)
+    .bind(...reportIds)
+    .all<{ game_id: string }>();
+  const gameIds = found.results.map((row) => row.game_id);
+  if (gameIds.length === 0) {
+    return 0;
+  }
+  const statements: D1PreparedStatement[] = [];
+  for (const gameId of gameIds) {
+    if (action === "hide") {
+      statements.push(
+        env.DB.prepare("UPDATE games SET status = 'disabled', updated_at = datetime('now') WHERE id = ?1").bind(gameId),
+        env.DB.prepare(
+          "UPDATE reports SET status = 'resolved', resolved_by_user_id = ?1, resolved_at = datetime('now') WHERE game_id = ?2 AND status = 'open'"
+        ).bind(userId, gameId)
+      );
+    } else {
+      statements.push(env.DB.prepare("DELETE FROM games WHERE id = ?1").bind(gameId));
+    }
+  }
+  await env.DB.batch(statements);
+  for (const gameId of gameIds) {
+    await writeAudit(env, userId, "game", gameId, action === "hide" ? "disable" : "delete", { via: "report" });
+  }
+  await invalidateGameCaches(env);
+  return gameIds.length;
+}
 
 app.post("/api/admin/reports/bulk", async (c) => {
   const auth = requireRole(c, ["editor", "admin"]);
@@ -4202,6 +4242,14 @@ app.post("/api/admin/reports/bulk", async (c) => {
   const parsed = bulkReportsSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
+  }
+
+  if (parsed.data.action === "delete" && auth.role !== "admin") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  if (parsed.data.action === "hide" || parsed.data.action === "delete") {
+    const count = await applyGameActionForReports(c.env, auth.id, parsed.data.ids, parsed.data.action);
+    return c.json({ ok: true, count });
   }
 
   const nextStatus = parsed.data.action === "resolve" ? "resolved" : "dismissed";
@@ -4227,6 +4275,27 @@ app.post("/api/admin/reports/:id/resolve", async (c) => {
     .run();
   await writeAudit(c.env, auth.id, "report", c.req.param("id"), "resolve", {});
   return c.json({ ok: true });
+});
+
+app.post("/api/admin/reports/:id/hide", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const count = await applyGameActionForReports(c.env, auth.id, [c.req.param("id")], "hide");
+  return count === 0 ? c.json({ error: "Not found" }, 404) : c.json({ ok: true });
+});
+
+app.post("/api/admin/reports/:id/delete", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  if (auth.role !== "admin") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  const count = await applyGameActionForReports(c.env, auth.id, [c.req.param("id")], "delete");
+  return count === 0 ? c.json({ error: "Not found" }, 404) : c.json({ ok: true });
 });
 
 app.post("/api/admin/reports/:id/dismiss", async (c) => {
@@ -5032,11 +5101,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
-  let pendingModerationCount = 0;
+  let pendingSubmissionCount = 0;
+  let openReportCount = 0;
   if (isAdminEditor) {
     const pendingSubmissions = await env.DB.prepare("SELECT COUNT(*) as cnt FROM games WHERE status = 'pending'").first<{ cnt: number }>();
     const openReports = await env.DB.prepare("SELECT COUNT(*) as cnt FROM reports WHERE status = 'open'").first<{ cnt: number }>();
-    pendingModerationCount = (pendingSubmissions?.cnt ?? 0) + (openReports?.cnt ?? 0);
+    pendingSubmissionCount = pendingSubmissions?.cnt ?? 0;
+    openReportCount = openReports?.cnt ?? 0;
   }
   const description = opts?.description || "Find the best daily games. No login required. Votes, favorites, and curated lists.";
   const pagePath = opts?.path || "/";
@@ -5200,6 +5271,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         line-height: 1;
         vertical-align: middle;
       }
+      .moderation-badge-submissions { background: #16a34a; }
+      button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
       .rotation-list li > .item-main { flex: 1; min-width: 0; }
@@ -5275,7 +5348,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/me/rotation">My Rotation</a>
         ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
         ${user ? `<a href="/me/settings">Settings</a>` : ""}
-        ${isAdminEditor ? `<a href="/admin">Admin${pendingModerationCount > 0 ? `<span class="moderation-badge">${pendingModerationCount}</span>` : ""}</a>` : ""}
+        ${isAdminEditor ? `<a href="/admin">Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>` : ""}
         ${!user ? `<a href="/login">Login</a>` : ""}
       </nav>
       <div>
