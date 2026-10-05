@@ -4197,6 +4197,13 @@ app.get("/api/admin/reports", async (c) => {
   return c.json(rows);
 });
 
+// Closing a "broken link" report restarts the checker's failure streak, otherwise the next run re-files it immediately.
+function resetLinkFailCountStatement(env: Env, reportId: string): D1PreparedStatement {
+  return env.DB.prepare(
+    "UPDATE games SET link_fail_count = 0 WHERE id IN (SELECT game_id FROM reports WHERE id = ?1 AND reason = 'broken')"
+  ).bind(reportId);
+}
+
 const bulkReportsSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
   action: z.enum(["resolve", "dismiss", "hide", "delete"])
@@ -4258,6 +4265,7 @@ app.post("/api/admin/reports/bulk", async (c) => {
       "UPDATE reports SET status = ?1, resolved_by_user_id = ?2, resolved_at = datetime('now') WHERE id = ?3"
     ).bind(nextStatus, auth.id, reportId)
   );
+  statements.push(...parsed.data.ids.map((reportId) => resetLinkFailCountStatement(c.env, reportId)));
   await c.env.DB.batch(statements);
   await writeAudit(c.env, auth.id, "report", "bulk", parsed.data.action, { count: parsed.data.ids.length });
   return c.json({ ok: true, count: parsed.data.ids.length });
@@ -4268,11 +4276,12 @@ app.post("/api/admin/reports/:id/resolve", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  await c.env.DB.prepare(
-    "UPDATE reports SET status = 'resolved', resolved_by_user_id = ?1, resolved_at = datetime('now') WHERE id = ?2"
-  )
-    .bind(auth.id, c.req.param("id"))
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE reports SET status = 'resolved', resolved_by_user_id = ?1, resolved_at = datetime('now') WHERE id = ?2"
+    ).bind(auth.id, c.req.param("id")),
+    resetLinkFailCountStatement(c.env, c.req.param("id"))
+  ]);
   await writeAudit(c.env, auth.id, "report", c.req.param("id"), "resolve", {});
   return c.json({ ok: true });
 });
@@ -4303,11 +4312,12 @@ app.post("/api/admin/reports/:id/dismiss", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  await c.env.DB.prepare(
-    "UPDATE reports SET status = 'dismissed', resolved_by_user_id = ?1, resolved_at = datetime('now') WHERE id = ?2"
-  )
-    .bind(auth.id, c.req.param("id"))
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE reports SET status = 'dismissed', resolved_by_user_id = ?1, resolved_at = datetime('now') WHERE id = ?2"
+    ).bind(auth.id, c.req.param("id")),
+    resetLinkFailCountStatement(c.env, c.req.param("id"))
+  ]);
   await writeAudit(c.env, auth.id, "report", c.req.param("id"), "dismiss", {});
   return c.json({ ok: true });
 });
@@ -4408,28 +4418,60 @@ export default {
   }
 };
 
+// Max games checked per scheduled run (oldest-checked first). Each check costs up to 2 fetches + 1 D1 call,
+// so this keeps a run under the Worker subrequest limit instead of silently failing the tail of the list.
+const LINK_CHECK_BATCH_SIZE = 300;
+const LINK_CHECK_TIMEOUT_MS = 10_000;
+const LINK_CHECK_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (compatible; DailyGameListLinkChecker/1.0; +https://dailies.0x9.ca)",
+  Accept: "text/html,application/xhtml+xml,*/*;q=0.8"
+};
+
+type LinkCheckResult = "ok" | "broken" | "unknown";
+
+// Only a definitive "gone" counts as broken. Bot walls (401/403/429), 5xx and timeouts say nothing
+// about whether the game is actually down, so they are "unknown" and leave the fail count alone.
+async function checkLink(url: string): Promise<LinkCheckResult> {
+  const attempt = async (method: "HEAD" | "GET"): Promise<LinkCheckResult> => {
+    try {
+      const res = await fetch(url, {
+        method,
+        redirect: "follow",
+        headers: LINK_CHECK_HEADERS,
+        signal: AbortSignal.timeout(LINK_CHECK_TIMEOUT_MS)
+      });
+      if (res.ok) return "ok";
+      if (res.status === 404 || res.status === 410) return "broken";
+      return "unknown";
+    } catch (error) {
+      // Timeouts are inconclusive; DNS/connection failures mean the site is really unreachable.
+      return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError") ? "unknown" : "broken";
+    }
+  };
+
+  // Some servers reject HEAD, so anything but "ok" gets confirmed with a GET.
+  const head = await attempt("HEAD");
+  return head === "ok" ? head : attempt("GET");
+}
+
 async function runLinkChecks(env: Env): Promise<void> {
   const rows = await env.DB.prepare(
     `SELECT id, url, link_fail_count
      FROM games
      WHERE status = 'approved'
-     ORDER BY COALESCE(last_checked_at, '1970-01-01') ASC`
-  ).all<{ id: string; url: string; link_fail_count: number }>();
+     ORDER BY COALESCE(last_checked_at, '1970-01-01') ASC
+     LIMIT ?1`
+  ).bind(LINK_CHECK_BATCH_SIZE).all<{ id: string; url: string; link_fail_count: number }>();
 
   for (const row of rows.results) {
-    let ok = false;
-    try {
-      const head = await fetch(row.url, { method: "HEAD", redirect: "follow" });
-      ok = head.ok;
-      if (!ok) {
-        const getRes = await fetch(row.url, { method: "GET", redirect: "follow" });
-        ok = getRes.ok;
-      }
-    } catch {
-      ok = false;
+    const result = await checkLink(row.url);
+
+    if (result === "unknown") {
+      await env.DB.prepare("UPDATE games SET last_checked_at = datetime('now') WHERE id = ?1").bind(row.id).run();
+      continue;
     }
 
-    if (ok) {
+    if (result === "ok") {
       await env.DB.prepare(
         "UPDATE games SET link_fail_count = 0, last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1"
       ).bind(row.id).run();
