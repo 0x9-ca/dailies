@@ -6,6 +6,7 @@ import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
 import { canonicalizeUrl, slugify } from "./lib/url";
 import { createSession, destroySession, randomToken, requireAuth, requireRole, sessionMiddleware } from "./lib/auth";
+import { ICON_PNG, ICON_SVG, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 
 type Bindings = Env;
@@ -528,9 +529,15 @@ app.get("/games", async (c) => {
     paginationMarkup += `</div>`;
   }
 
-  return c.html(await layout("Browse Games", user, `
+  const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
+  const pageTitle = activeCategory ? `Daily ${activeCategory.name} Games – Dailies (dles)` : "All Daily Games – Dailies (dles)";
+  const canonicalPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
+  const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
+  if (activeCategory) crumbs.push([activeCategory.name, canonicalPath]);
+  return c.html(await layout(pageTitle, user, `
     <main>
-      <h1>Browse Games</h1>
+      <h1>${activeCategory ? `Daily ${escapeHtml(activeCategory.name)} Games` : "Browse Games"}</h1>
+      ${activeCategory ? `<p>${totalGames} daily ${escapeHtml(activeCategory.name.toLowerCase())} game${totalGames === 1 ? "" : "s"}, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
       <form method="GET" action="/games">
         <input type="text" name="q" placeholder="Search" value="${escapeHtml(q || "")}" />
         <select name="sort">
@@ -552,7 +559,14 @@ app.get("/games", async (c) => {
       ${paginationMarkup}
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
-  `, c.env, { path: "/games", description: "Browse all daily games. Filter by category, sort by score, trending, or newest." }));
+  `, c.env, {
+    path: canonicalPath,
+    description: activeCategory
+      ? `Browse ${totalGames} daily ${activeCategory.name.toLowerCase()} games, ranked by community votes. Find your next daily puzzle on Dailies (dles).`
+      : "Browse all daily games. Filter by category, sort by score, trending, or newest.",
+    jsonLd: [breadcrumbLd(crumbs)],
+    noindex: !!q || hidePaywall || hideNsfw
+  }));
 });
 
 app.get("/games/:slug", async (c) => {
@@ -616,7 +630,19 @@ app.get("/games/:slug", async (c) => {
     userVote = vote?.value || 0;
   }
 
-  return c.html(await layout(game.title, user, `
+  const gameLd = {
+    "@context": "https://schema.org",
+    "@type": "VideoGame",
+    name: game.title,
+    ...(game.description ? { description: game.description } : {}),
+    url: game.url,
+    applicationCategory: "Game",
+    gamePlatform: "Web browser",
+    operatingSystem: "Any",
+    isAccessibleForFree: !game.paywall,
+    ...(categories.results.length > 0 ? { genre: categories.results.map((cat) => cat.name) } : {})
+  };
+  return c.html(await layout(`${game.title} – Daily Game | Dailies (dles)`, user, `
     <main>
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
@@ -1078,7 +1104,8 @@ app.get("/games/:slug", async (c) => {
             setButtonState(isFavorite());
           </script>`
     }
-  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on Dailies. Vote, favorite, and add to your rotation.` }));
+  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on Dailies. Vote, favorite, and add to your rotation.`,
+    jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
 
 app.get("/rotation/:shareToken", async (c) => {
@@ -1109,7 +1136,7 @@ app.get("/rotation/:shareToken", async (c) => {
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
   const ownerName = owner.display_name || owner.email.split('@')[0];
 
-  return c.html(await layout(`${escapeHtml(ownerName)}'s Rotation`, user, `
+  return c.html(await layout(`${ownerName}'s Rotation`, user, `
     <main>
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
@@ -1880,7 +1907,7 @@ app.get("/lists", async (c) => {
   }>();
 
   const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user));
-  return c.html(await layout("Curated Lists", user, `
+  return c.html(await layout("Curated Lists of Daily Games – Dailies (dles)", user, `
     <main>
       <h1>Curated Lists</h1>
       ${isAdminEditor ? `
@@ -1936,7 +1963,7 @@ app.get("/lists", async (c) => {
         });
       })();
     </script>
-  `, c.env, { path: "/lists", description: "Browse curated lists of daily games." }));
+  `, c.env, { path: "/lists", description: "Browse curated lists of daily games.", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"]])] }));
 });
 
 app.get("/lists/:slug", async (c) => {
@@ -1973,7 +2000,7 @@ app.get("/lists/:slug", async (c) => {
     adminGames = games.results;
   }
 
-  return c.html(await layout(list.title, user, `
+  return c.html(await layout(`${list.title} – Daily Game List | Dailies (dles)`, user, `
     <main>
       <h1>${escapeHtml(list.title)}</h1>
       <p>${escapeHtml(list.description || "")}</p>
@@ -2233,7 +2260,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}` }));
+  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}`, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]])] }));
 });
 
 // Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
@@ -2253,6 +2280,15 @@ app.get("/sitemap.xml", async (c) => {
     "SELECT slug, updated_at FROM curated_lists WHERE visibility = 'public' ORDER BY updated_at DESC"
   ).all<{ slug: string; updated_at: string }>();
 
+  const categoriesWithGames = await c.env.DB.prepare(
+    `SELECT DISTINCT categories.slug
+     FROM categories
+     JOIN game_categories ON game_categories.category_id = categories.id
+     JOIN games ON games.id = game_categories.game_id
+     WHERE categories.is_active = 1 AND games.status = 'approved'
+     ORDER BY categories.slug ASC`
+  ).all<{ slug: string }>();
+
   const toLastmod = (value: string) => value.replace(" ", "T") + "Z";
   const latest = (rows: Array<{ updated_at: string }>) => (rows.length > 0 ? toLastmod(rows[0].updated_at) : null);
   const latestGame = latest(games.results);
@@ -2262,6 +2298,7 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/", lastmod: latestAny },
     { loc: "/games", lastmod: latestGame },
     { loc: "/lists", lastmod: latestList },
+    ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: latestGame })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
     ...lists.results.map((list) => ({ loc: `/lists/${list.slug}`, lastmod: toLastmod(list.updated_at) }))
@@ -2283,6 +2320,12 @@ ${urls
     "Cache-Control": "public, max-age=3600"
   });
 });
+
+const IMMUTABLE_ASSET_CACHE = "public, max-age=86400";
+app.get("/og.png", (c) => c.body(OG_IMAGE_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/icon.png", (c) => c.body(ICON_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/favicon.ico", (c) => c.body(ICON_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/favicon.svg", (c) => c.body(ICON_SVG, 200, { "Content-Type": "image/svg+xml", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
 
 app.get("/robots.txt", (c) => {
   const body = `User-agent: *
@@ -5180,7 +5223,20 @@ async function hashAuthToken(secret: string, value: string): Promise<string> {
     .join("");
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string }): Promise<string> {
+function breadcrumbLd(items: Array<[string, string]>) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": items.map(([name, path], index) => ({
+      "@type": "ListItem",
+      position: index + 1,
+      name,
+      item: `https://dailies.0x9.ca${path}`
+    }))
+  };
+}
+
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean }): Promise<string> {
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
@@ -5204,9 +5260,19 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
+    ${opts?.noindex ? `<meta name="robots" content="noindex,follow" />` : ""}
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon.png" type="image/png" sizes="192x192" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <meta property="og:site_name" content="Dailies (dles)" />
+    <meta property="og:image" content="https://dailies.0x9.ca/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Dailies (dles) - a hub for daily games" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://dailies.0x9.ca/og.png" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <script type="application/ld+json">${JSON.stringify({
@@ -5221,6 +5287,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         "query-input": "required name=search_term_string"
       }
     })}</script>
+    ${(opts?.jsonLd ?? []).map((block) => `<script type="application/ld+json">${JSON.stringify(block).replace(/</g, "\\u003c")}</script>`).join("\n    ")}
     <style>
       :root {
         color-scheme: dark;
