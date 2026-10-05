@@ -530,14 +530,14 @@ app.get("/games", async (c) => {
   }
 
   const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
-  const pageTitle = activeCategory ? `Daily ${activeCategory.name} Games – Dailies (dles)` : "All Daily Games – Dailies (dles)";
+  const pageTitle = activeCategory ? `Daily ${activeCategory.name} – Dailies (dles)` : "All Daily Games – Dailies (dles)";
   const canonicalPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
   if (activeCategory) crumbs.push([activeCategory.name, canonicalPath]);
   return c.html(await layout(pageTitle, user, `
     <main>
-      <h1>${activeCategory ? `Daily ${escapeHtml(activeCategory.name)} Games` : "Browse Games"}</h1>
-      ${activeCategory ? `<p>${totalGames} daily ${escapeHtml(activeCategory.name.toLowerCase())} game${totalGames === 1 ? "" : "s"}, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
+      <h1>${activeCategory ? `Daily ${escapeHtml(activeCategory.name)}` : "Browse Games"}</h1>
+      ${activeCategory ? `<p>${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
       <form method="GET" action="/games">
         <input type="text" name="q" placeholder="Search" value="${escapeHtml(q || "")}" />
         <select name="sort">
@@ -562,7 +562,7 @@ app.get("/games", async (c) => {
   `, c.env, {
     path: canonicalPath,
     description: activeCategory
-      ? `Browse ${totalGames} daily ${activeCategory.name.toLowerCase()} games, ranked by community votes. Find your next daily puzzle on Dailies (dles).`
+      ? `Browse ${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes. Find your next daily puzzle on Dailies (dles).`
       : "Browse all daily games. Filter by category, sort by score, trending, or newest.",
     jsonLd: [breadcrumbLd(crumbs)],
     noindex: !!q || hidePaywall || hideNsfw
