@@ -42,3 +42,4 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+backups/

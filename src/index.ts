@@ -84,7 +84,7 @@ app.get("/auth/discord", async (c) => {
   url.searchParams.set("client_id", c.env.OAUTH_DISCORD_CLIENT_ID);
   url.searchParams.set("redirect_uri", `${c.env.APP_URL}/auth/discord/callback`);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "identify email guilds.members.read");
+  url.searchParams.set("scope", "identify guilds.members.read");
   url.searchParams.set("state", state);
   return c.redirect(url.toString());
 });
@@ -141,13 +141,8 @@ app.get("/auth/discord/callback", async (c) => {
     id: string;
     username?: string | null;
     global_name?: string | null;
-    email?: string | null;
     avatar?: string | null;
   };
-
-  if (!discordUser.email) {
-    return c.text("Discord account email unavailable", 400);
-  }
 
   // Check guild membership and roles
   const guildMemberRes = await fetch(
@@ -174,27 +169,21 @@ app.get("/auth/discord/callback", async (c) => {
   }
 
   // Create or update user
-  await upsertOAuthUser(c.env, {
+  const userId = await upsertOAuthUser(c.env, {
     provider: "discord",
     providerUserId: discordUser.id,
-    email: discordUser.email,
     displayName: discordUser.username || discordUser.global_name || null,
     avatarUrl: discordUser.avatar ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png` : null
   });
 
   // Update role if user is a guild member with special roles
-  const user = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(discordUser.email).first<{ id: string }>();
-  if (!user) {
-    return c.text("Unable to create user", 500);
-  }
-
   if (role !== "user") {
     await c.env.DB.prepare("UPDATE users SET role = ?1, updated_at = datetime('now') WHERE id = ?2")
-      .bind(role, user.id)
+      .bind(role, userId)
       .run();
   }
 
-  await createSession(c, user.id);
+  await createSession(c, userId);
   return c.redirect("/?importLocal=1");
 });
 
@@ -270,11 +259,11 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
-  return c.html(await layout("Dailies – Find the Best Daily Games", user, `
+  return c.html(await layout("Dailies (dles) – Find the Best Daily Games", user, `
     <main>
       <section class="hero">
-        <h1>Dailies</h1>
-        <p>Find the best daily games. No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
+        <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
+        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies. No login required (unless you really want to). Votes, favorites, etc. all stored locally.</p>
         <div class="actions">
           <a class="btn" href="/games">Browse games</a>
           <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -321,7 +310,7 @@ app.get("/", async (c) => {
       });
     </script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
-  `, c.env, { path: "/" }));
+  `, c.env, { path: "/", description: "Dailies (dles) is a hub for daily games. Browse, vote on, and favorite the best daily games, curated by the community." }));
 });
 
 app.get("/submit", async (c) => {
@@ -620,8 +609,8 @@ app.get("/games/:slug", async (c) => {
   return c.html(await layout(game.title, user, `
     <main>
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
+      ${renderCategoryPills(categories.results)}
       <p>${escapeHtml(game.description || "")}</p>
-      <p>${categories.results.map((cat) => `<span class="tag">${escapeHtml(cat.name)}</span>`).join(" ")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
       ${(() => {
         const resetLabel = getResetMetaLabel(game.reset_basis, game.reset_time_minutes);
@@ -883,9 +872,16 @@ app.get("/games/:slug", async (c) => {
                   body: JSON.stringify(payload)
                 });
                 if (response.ok) {
+                  const result = await response.json().catch(() => null);
                   setAdminStatus("Changes saved successfully.");
                   if (window.appToast) window.appToast("Game updated.", "success");
-                  setTimeout(() => window.location.reload(), 1000);
+                  setTimeout(() => {
+                    if (result && result.slug) {
+                      window.location.href = "/games/" + result.slug;
+                    } else {
+                      window.location.reload();
+                    }
+                  }, 1000);
                 } else {
                   setAdminStatus("Could not save changes.");
                   if (window.appToast) window.appToast("Could not save changes.", "error");
@@ -1099,9 +1095,10 @@ app.get("/rotation/:shareToken", async (c) => {
   )
     .bind(owner.id)
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
-  
+
+  const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
   const ownerName = owner.display_name || owner.email.split('@')[0];
-  
+
   return c.html(await layout(`${escapeHtml(ownerName)}'s Rotation`, user, `
     <main>
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
@@ -1111,8 +1108,13 @@ app.get("/rotation/:shareToken", async (c) => {
           ${favorites.results
             .map(
               (item) => `<li>
-                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
-                <a href="/games/${item.slug}" class="details-link">details</a>
+                <div class="item-main">
+                  <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                  ${renderCategoryPills(categoriesByGameId.get(item.id))}
+                </div>
+                <div class="card-actions">
+                  <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
+                </div>
               </li>`
             )
             .join("")}
@@ -1143,7 +1145,6 @@ app.get("/me/rotation", async (c) => {
         const storageKey = "dgl_local_favorites_v1";
         const list = document.getElementById("local-rotation-list");
         const status = document.getElementById("rotation-status");
-        let dragItem = null;
 
         const setStatus = (text) => {
           if (status) status.textContent = text;
@@ -1198,29 +1199,35 @@ app.get("/me/rotation", async (c) => {
           if (!list) return;
           const items = Array.from(list.querySelectorAll("li[data-game-id]"));
           items.forEach((item) => {
-            item.addEventListener("dragstart", () => {
-              dragItem = item;
+            const handle = item.querySelector(".drag");
+            handle?.addEventListener("pointerdown", (event) => {
+              if (event.pointerType === "mouse" && event.button !== 0) return;
+              event.preventDefault();
+              const pointerId = event.pointerId;
               item.classList.add("dragging");
-            });
-            item.addEventListener("dragend", () => {
-              item.classList.remove("dragging");
-              dragItem = null;
-              persistFromDom();
-            });
-            item.addEventListener("dragover", (event) => {
-              event.preventDefault();
-            });
-            item.addEventListener("drop", (event) => {
-              event.preventDefault();
-              if (!dragItem || dragItem === item) return;
-              const rect = item.getBoundingClientRect();
-              const before = event.clientY < rect.top + rect.height / 2;
-              if (before) {
-                list.insertBefore(dragItem, item);
-              } else {
-                list.insertBefore(dragItem, item.nextSibling);
-              }
-              persistFromDom();
+
+              const onPointerMove = (moveEvent) => {
+                if (moveEvent.pointerId !== pointerId) return;
+                const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+                const over = target && target.closest("li[data-game-id]");
+                if (!over || over === item || !list.contains(over)) return;
+                const rect = over.getBoundingClientRect();
+                const before = moveEvent.clientY < rect.top + rect.height / 2;
+                list.insertBefore(item, before ? over : over.nextSibling);
+              };
+
+              const onPointerUp = (upEvent) => {
+                if (upEvent.pointerId !== pointerId) return;
+                window.removeEventListener("pointermove", onPointerMove);
+                window.removeEventListener("pointerup", onPointerUp);
+                window.removeEventListener("pointercancel", onPointerUp);
+                item.classList.remove("dragging");
+                persistFromDom();
+              };
+
+              window.addEventListener("pointermove", onPointerMove);
+              window.addEventListener("pointerup", onPointerUp);
+              window.addEventListener("pointercancel", onPointerUp);
             });
 
             item.querySelectorAll("button[data-local-move]").forEach((button) => {
@@ -1250,7 +1257,6 @@ app.get("/me/rotation", async (c) => {
           list.innerHTML = "";
           favorites.forEach((item) => {
             const li = document.createElement("li");
-            li.draggable = true;
             li.setAttribute("data-game-id", item.id);
             li.setAttribute("data-game-slug", item.slug);
             li.setAttribute("data-game-title", item.title);
@@ -1260,10 +1266,20 @@ app.get("/me/rotation", async (c) => {
             drag.textContent = "::";
             li.appendChild(drag);
 
+            const itemMain = document.createElement("div");
+            itemMain.className = "item-main";
+
             const link = document.createElement("a");
             link.href = "/games/" + encodeURIComponent(item.slug);
             link.textContent = item.title;
-            li.appendChild(link);
+            itemMain.appendChild(link);
+
+            const pills = document.createElement("div");
+            pills.className = "category-pills";
+            pills.setAttribute("data-category-pills", item.id);
+            itemMain.appendChild(pills);
+
+            li.appendChild(itemMain);
 
             const reorder = document.createElement("div");
             reorder.className = "reorder-controls";
@@ -1288,6 +1304,39 @@ app.get("/me/rotation", async (c) => {
             list.appendChild(li);
           });
           wireInteractions();
+          loadCategoryPills(favorites.map((item) => item.id));
+        };
+
+        const categoryHue = (slug) => {
+          let hash = 0;
+          for (let i = 0; i < slug.length; i++) {
+            hash = (hash * 31 + slug.charCodeAt(i)) >>> 0;
+          }
+          return hash % 360;
+        };
+
+        const loadCategoryPills = async (gameIds) => {
+          if (!list || gameIds.length === 0) return;
+          try {
+            const response = await fetch("/api/games/categories?ids=" + gameIds.map(encodeURIComponent).join(","));
+            if (!response.ok) return;
+            const categoriesByGameId = await response.json();
+            Object.keys(categoriesByGameId).forEach((gameId) => {
+              const container = list.querySelector('[data-category-pills="' + CSS.escape(gameId) + '"]');
+              if (!container) return;
+              const categories = categoriesByGameId[gameId] || [];
+              container.innerHTML = categories
+                .map((cat) => {
+                  const hue = categoryHue(cat.slug);
+                  const style = "color:hsl(" + hue + ", 65%, 28%); background:hsl(" + hue + ", 65%, 90%); border-color:hsl(" + hue + ", 55%, 72%);";
+                  const name = cat.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                  return '<a href="/games?category=' + encodeURIComponent(cat.slug) + '" class="tag category-pill" style="' + style + '">' + name + '</a>';
+                })
+                .join("");
+            });
+          } catch {
+            // Category pills are a non-critical enhancement; ignore failures.
+          }
         };
 
         document.getElementById("export-btn")?.addEventListener("click", () => {
@@ -1363,6 +1412,8 @@ app.get("/me/rotation", async (c) => {
     .bind(user.id)
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
 
+  const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
+
   const userWithToken = await c.env.DB.prepare(
     "SELECT rotation_share_token FROM users WHERE id = ?1"
   )
@@ -1405,9 +1456,12 @@ app.get("/me/rotation", async (c) => {
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
-            (item) => `<li draggable="true" data-game-id="${item.id}">
+            (item) => `<li data-game-id="${item.id}">
               <span class="drag">::</span>
-              <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+              <div class="item-main">
+                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                ${renderCategoryPills(categoriesByGameId.get(item.id))}
+              </div>
               <div class="card-actions">
                 <div class="reorder-controls">
                   <button type="button" data-move="up" aria-label="Move up">↑</button>
@@ -1431,7 +1485,6 @@ app.get("/me/rotation", async (c) => {
       const importStatus = document.getElementById("rotation-local-import-status");
       const importButton = document.getElementById("rotation-local-import-btn");
       const importDismissButton = document.getElementById("rotation-local-import-dismiss");
-      let dragItem = null;
 
       const setStatus = (text) => {
         if (status) status.textContent = text;
@@ -1647,28 +1700,35 @@ app.get("/me/rotation", async (c) => {
       if (list) {
         const items = Array.from(list.querySelectorAll("li[data-game-id]"));
         items.forEach((item) => {
-          item.addEventListener("dragstart", () => {
-            dragItem = item;
+          const handle = item.querySelector(".drag");
+          handle?.addEventListener("pointerdown", (event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            event.preventDefault();
+            const pointerId = event.pointerId;
             item.classList.add("dragging");
-          });
-          item.addEventListener("dragend", () => {
-            item.classList.remove("dragging");
-            dragItem = null;
-            void saveOrder();
-          });
-          item.addEventListener("dragover", (event) => {
-            event.preventDefault();
-          });
-          item.addEventListener("drop", (event) => {
-            event.preventDefault();
-            if (!dragItem || dragItem === item) return;
-            const rect = item.getBoundingClientRect();
-            const before = event.clientY < rect.top + rect.height / 2;
-            if (before) {
-              list.insertBefore(dragItem, item);
-            } else {
-              list.insertBefore(dragItem, item.nextSibling);
-            }
+
+            const onPointerMove = (moveEvent) => {
+              if (moveEvent.pointerId !== pointerId) return;
+              const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY);
+              const over = target && target.closest("li[data-game-id]");
+              if (!over || over === item || !list.contains(over)) return;
+              const rect = over.getBoundingClientRect();
+              const before = moveEvent.clientY < rect.top + rect.height / 2;
+              list.insertBefore(item, before ? over : over.nextSibling);
+            };
+
+            const onPointerUp = (upEvent) => {
+              if (upEvent.pointerId !== pointerId) return;
+              window.removeEventListener("pointermove", onPointerMove);
+              window.removeEventListener("pointerup", onPointerUp);
+              window.removeEventListener("pointercancel", onPointerUp);
+              item.classList.remove("dragging");
+              void saveOrder();
+            };
+
+            window.addEventListener("pointermove", onPointerMove);
+            window.addEventListener("pointerup", onPointerUp);
+            window.addEventListener("pointercancel", onPointerUp);
           });
 
           item.querySelectorAll("button[data-move]").forEach((button) => {
@@ -1893,6 +1953,8 @@ app.get("/lists/:slug", async (c) => {
     .bind(list.id)
     .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; position: number }>();
 
+  const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
+
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
     const games = await c.env.DB.prepare(
@@ -1937,7 +1999,10 @@ app.get("/lists/:slug", async (c) => {
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
-          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+          <div class="item-main">
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+            ${renderCategoryPills(categoriesByGameId.get(item.id))}
+          </div>
           <div class="card-actions">
             ${isAdminEditor ? `
               <div class="reorder-controls">
@@ -2159,6 +2224,46 @@ app.get("/lists/:slug", async (c) => {
     </script>
     ` : ""}
   `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}` }));
+});
+
+// Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
+const SIBLING_SITE_URLS = [
+  "https://0x9.ca/",
+  "https://pilldle.0x9.ca/",
+  "https://gamba.0x9.ca/",
+  "https://waffledle.0x9.ca/"
+];
+
+app.get("/sitemap.xml", async (c) => {
+  const games = await c.env.DB.prepare(
+    "SELECT slug, updated_at FROM games WHERE status = 'approved' ORDER BY updated_at DESC"
+  ).all<{ slug: string; updated_at: string }>();
+  const lists = await c.env.DB.prepare(
+    "SELECT slug, updated_at FROM curated_lists WHERE visibility = 'public' ORDER BY updated_at DESC"
+  ).all<{ slug: string; updated_at: string }>();
+
+  const toLastmod = (value: string) => value.replace(" ", "T") + "Z";
+  const urls = [
+    { loc: "/", lastmod: null as string | null },
+    { loc: "/games", lastmod: null },
+    { loc: "/lists", lastmod: null },
+    ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
+    ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
+    ...lists.results.map((list) => ({ loc: `/lists/${list.slug}`, lastmod: toLastmod(list.updated_at) }))
+  ];
+
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls
+  .map(
+    (u) => `  <url>
+    <loc>${escapeHtml(u.loc.startsWith("http") ? u.loc : c.env.APP_URL + u.loc)}</loc>${u.lastmod ? `\n    <lastmod>${u.lastmod}</lastmod>` : ""}
+  </url>`
+  )
+  .join("\n")}
+</urlset>`;
+
+  return c.body(body, 200, { "Content-Type": "application/xml; charset=utf-8" });
 });
 
 // Admin SSR pages.
@@ -3017,6 +3122,20 @@ app.get("/api/games", async (c) => {
   return c.json({ results, page, perPage, hasMore, cached: false });
 });
 
+app.get("/api/games/categories", async (c) => {
+  const ids = (c.req.query("ids") || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+    .slice(0, 100);
+  const categoriesByGameId = await getCategoriesForGames(c.env, ids);
+  const result: Record<string, Array<{ slug: string; name: string }>> = {};
+  for (const id of ids) {
+    result[id] = categoriesByGameId.get(id) ?? [];
+  }
+  return c.json(result);
+});
+
 app.get("/api/categories", async (c) => {
   const rows = await c.env.DB.prepare("SELECT id, slug, name, description FROM categories WHERE is_active = 1 ORDER BY name").all();
   return c.json(rows);
@@ -3274,12 +3393,14 @@ app.put("/api/games/:id/admin-update", async (c) => {
   const game = await c.env.DB.prepare("SELECT slug FROM games WHERE id = ?1")
     .bind(gameId)
     .first<{ slug: string }>();
+  let slug = game?.slug ?? "";
   if (game) {
-    const newSlug = slugify(parsed.data.title);
+    const newSlug = uniqueSlug(parsed.data.title, gameId);
     if (newSlug !== game.slug) {
       await c.env.DB.prepare("UPDATE games SET slug = ?1 WHERE id = ?2")
         .bind(newSlug, gameId)
         .run();
+      slug = newSlug;
     }
   }
 
@@ -3295,7 +3416,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
-  return c.json({ ok: true });
+  return c.json({ ok: true, slug });
 });
 
 const importLocalFavoritesSchema = z.object({
@@ -3468,17 +3589,26 @@ app.post("/api/me/rotation/share", async (c) => {
   }
   
   // Check if user already has a share token
-  const existing = await c.env.DB.prepare("SELECT rotation_share_token FROM users WHERE id = ?1")
+  const existing = await c.env.DB.prepare("SELECT rotation_share_token, display_name FROM users WHERE id = ?1")
     .bind(auth.id)
-    .first<{ rotation_share_token: string | null }>();
-  
+    .first<{ rotation_share_token: string | null; display_name: string | null }>();
+
   if (existing?.rotation_share_token) {
     return c.json({ shareToken: existing.rotation_share_token });
   }
-  
-  // Generate a new random token
-  const token = crypto.randomUUID().replace(/-/g, '');
-  
+
+  // Prefer the bare display-name slug; only disambiguate if it's already taken.
+  const nameSlug = existing?.display_name ? slugify(existing.display_name) : "";
+  let token: string;
+  if (nameSlug) {
+    const taken = await c.env.DB.prepare("SELECT 1 FROM users WHERE rotation_share_token = ?1")
+      .bind(nameSlug)
+      .first();
+    token = taken ? `${nameSlug}-${auth.id.slice(0, 6)}` : nameSlug;
+  } else {
+    token = crypto.randomUUID().replace(/-/g, "").slice(0, 10);
+  }
+
   await c.env.DB.prepare("UPDATE users SET rotation_share_token = ?1 WHERE id = ?2")
     .bind(token, auth.id)
     .run();
@@ -4213,8 +4343,7 @@ async function runLinkChecks(env: Env): Promise<void> {
     `SELECT id, url, link_fail_count
      FROM games
      WHERE status = 'approved'
-     ORDER BY COALESCE(last_checked_at, '1970-01-01') ASC
-     LIMIT 30`
+     ORDER BY COALESCE(last_checked_at, '1970-01-01') ASC`
   ).all<{ id: string; url: string; link_fail_count: number }>();
 
   for (const row of rows.results) {
@@ -4316,6 +4445,54 @@ async function enforceRateLimit(
   return { ok: true, retryAfterSeconds: 0 };
 }
 
+async function getCategoriesForGames(
+  env: Env,
+  gameIds: string[]
+): Promise<Map<string, Array<{ slug: string; name: string }>>> {
+  const map = new Map<string, Array<{ slug: string; name: string }>>();
+  if (gameIds.length === 0) {
+    return map;
+  }
+  const uniqueIds = [...new Set(gameIds)];
+  const placeholders = uniqueIds.map((_id, index) => `?${index + 1}`).join(", ");
+  const rows = await env.DB.prepare(
+    `SELECT game_categories.game_id, categories.slug, categories.name
+     FROM game_categories
+     JOIN categories ON categories.id = game_categories.category_id
+     WHERE game_categories.game_id IN (${placeholders})
+     ORDER BY categories.name ASC`
+  )
+    .bind(...uniqueIds)
+    .all<{ game_id: string; slug: string; name: string }>();
+  for (const row of rows.results) {
+    const list = map.get(row.game_id) ?? [];
+    list.push({ slug: row.slug, name: row.name });
+    map.set(row.game_id, list);
+  }
+  return map;
+}
+
+function categoryHue(slug: string): number {
+  let hash = 0;
+  for (let i = 0; i < slug.length; i++) {
+    hash = (hash * 31 + slug.charCodeAt(i)) >>> 0;
+  }
+  return hash % 360;
+}
+
+function renderCategoryPills(categories: Array<{ slug: string; name: string }> | undefined): string {
+  if (!categories || categories.length === 0) {
+    return "";
+  }
+  return `<div class="category-pills">${categories
+    .map((cat) => {
+      const hue = categoryHue(cat.slug);
+      const style = `color:hsl(${hue}, 65%, 28%); background:hsl(${hue}, 65%, 90%); border-color:hsl(${hue}, 55%, 72%);`;
+      return `<a href="/games?category=${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}</a>`;
+    })
+    .join("")}</div>`;
+}
+
 async function listGames(
   env: Env,
   opts: {
@@ -4341,6 +4518,7 @@ async function listGames(
     resetTimeMinutes: number | null;
     paywall: boolean;
     nsfw: boolean;
+    categories: Array<{ slug: string; name: string }>;
   }>
 > {
   const sortSql =
@@ -4407,6 +4585,8 @@ async function listGames(
       nsfw: number;
     }>();
 
+  const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.id));
+
   return rows.results.map((row) => ({
     id: row.id,
     title: row.title,
@@ -4419,7 +4599,8 @@ async function listGames(
     resetBasis: row.reset_basis,
     resetTimeMinutes: row.reset_time_minutes,
     paywall: !!row.paywall,
-    nsfw: !!row.nsfw
+    nsfw: !!row.nsfw,
+    categories: categoriesByGameId.get(row.id) ?? []
   }));
 }
 
@@ -4533,6 +4714,7 @@ function renderCompactGameList(
     resetTimeMinutes: number | null;
     paywall: boolean;
     nsfw: boolean;
+    categories: Array<{ slug: string; name: string }>;
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
@@ -4555,6 +4737,7 @@ function renderCompactGameList(
               <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
               ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
               ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
+              ${renderCategoryPills(game.categories)}
               ${meta ? `<div class="meta">${meta}</div>` : ""}
             </div>
             <div class="compact-actions">
@@ -4862,6 +5045,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:type" content="website" />
@@ -4869,6 +5054,19 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <script type="application/ld+json">${JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Dailies",
+      "alternateName": "dles",
+      "url": "https://dailies.0x9.ca/",
+      "description": "Dailies (dles) is a hub for daily games. Browse, vote on, and favorite the best daily games.",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://dailies.0x9.ca/games?q={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    })}</script>
     <style>
       :root {
         color-scheme: dark;
@@ -5003,8 +5201,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
-      .rotation-list li > a { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .drag { cursor: grab; font-weight: 700; color:var(--muted); }
+      .rotation-list li > .item-main { flex: 1; min-width: 0; }
+      .rotation-list li > .item-main > a { display:block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .category-pills { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
+      .category-pills:empty { display:none; margin-top:0; }
+      .category-pills .tag { margin:0; }
+      .category-pill { text-decoration:none; font-weight:700; }
+      .drag { cursor: grab; font-weight: 700; color:var(--muted); touch-action: none; }
       .rotation-list li.dragging { opacity: 0.55; }
       .weekday-controls { display:flex; gap:0.4rem; flex-wrap:wrap; }
       .weekday-controls label { display:inline-flex; align-items:center; gap:0.2rem; font-size:0.85rem; color:var(--muted); }
@@ -5157,19 +5360,26 @@ async function upsertOAuthUser(
   args: {
     provider: "discord";
     providerUserId: string;
-    email: string;
     displayName: string | null;
     avatarUrl: string | null;
   }
-): Promise<void> {
-  const existing = await env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(args.email).first<{ id: string }>();
-  const userId = existing?.id || crypto.randomUUID();
+): Promise<string> {
+  const existingAccount = await env.DB.prepare(
+    "SELECT user_id FROM oauth_accounts WHERE provider = ?1 AND provider_user_id = ?2"
+  )
+    .bind(args.provider, args.providerUserId)
+    .first<{ user_id: string }>();
+  const userId = existingAccount?.user_id || crypto.randomUUID();
 
-  if (!existing) {
+  if (!existingAccount) {
+    // Discord accounts don't share an email with us; store a non-contactable
+    // placeholder so the NOT NULL/UNIQUE email column is satisfied without
+    // ever requesting or persisting the user's real address.
+    const placeholderEmail = `discord-${args.providerUserId}@users.noreply.dailies`;
     await env.DB.prepare(
       "INSERT INTO users (id, email, display_name, avatar_url, role) VALUES (?1, ?2, ?3, ?4, 'user')"
     )
-      .bind(userId, args.email, args.displayName, args.avatarUrl)
+      .bind(userId, placeholderEmail, args.displayName, args.avatarUrl)
       .run();
   } else {
     await env.DB.prepare(
@@ -5186,4 +5396,6 @@ async function upsertOAuthUser(
   )
     .bind(crypto.randomUUID(), userId, args.provider, args.providerUserId)
     .run();
+
+  return userId;
 }
