@@ -2264,7 +2264,25 @@ ${urls
   .join("\n")}
 </urlset>`;
 
-  return c.body(body, 200, { "Content-Type": "application/xml; charset=utf-8" });
+  return c.body(body, 200, {
+    "Content-Type": "application/xml; charset=utf-8",
+    "Cache-Control": "public, max-age=3600"
+  });
+});
+
+app.get("/robots.txt", (c) => {
+  const body = `User-agent: *
+Disallow: /api/
+Disallow: /admin
+Disallow: /me
+Disallow: /login
+
+Sitemap: ${c.env.APP_URL}/sitemap.xml
+`;
+  return c.body(body, 200, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "public, max-age=3600"
+  });
 });
 
 // Admin SSR pages.
