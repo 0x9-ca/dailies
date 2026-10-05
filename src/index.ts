@@ -1141,14 +1141,14 @@ app.get("/rotation/:shareToken", async (c) => {
   }
   
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(owner.id)
-    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
   const ownerName = owner.display_name || owner.email.split('@')[0];
@@ -1158,23 +1158,32 @@ app.get("/rotation/:shareToken", async (c) => {
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
       ${favorites.results.length > 0 ? `
-        <ol class="rotation-list">
+        ${renderListSortControl()}
+        <ol class="rotation-list" id="shared-rotation-list">
           ${favorites.results
             .map(
-              (item) => `<li>
+              (item) => {
+                const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
+                return `<li data-game-id="${item.id}" ${reset.attrs}>
                 <div class="item-main">
                   <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                   ${renderCategoryPills(categoriesByGameId.get(item.id))}
+                  ${reset.label ? `<div class="meta">${escapeHtml(reset.label)}</div>` : ""}
                 </div>
                 <div class="card-actions">
                   <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
                 </div>
-              </li>`
+              </li>`;
+              }
             )
             .join("")}
         </ol>
       ` : '<p>No favorites in this rotation yet.</p>'}
     </main>
+    <script>
+      ${LIST_SORT_SCRIPT}
+      window.dglListSort.init(document.getElementById("shared-rotation-list"), document.getElementById("list-sort-select"));
+    </script>
   `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.` }));
 });
 
@@ -1192,12 +1201,15 @@ app.get("/me/rotation", async (c) => {
           <input type="file" id="import-file" accept=".json" hidden>
         </div>
         <p id="import-status" class="status" aria-live="polite"></p>
+        ${renderListSortControl()}
         <ol id="local-rotation-list" class="rotation-list"></ol>
         <p id="rotation-status" class="status" aria-live="polite"></p>
       </main>
       <script>
+        ${LIST_SORT_SCRIPT}
         const storageKey = "dgl_local_favorites_v1";
         const list = document.getElementById("local-rotation-list");
+        const listSorter = window.dglListSort.init(list, document.getElementById("list-sort-select"));
         const status = document.getElementById("rotation-status");
 
         const setStatus = (text) => {
@@ -1358,7 +1370,45 @@ app.get("/me/rotation", async (c) => {
             list.appendChild(li);
           });
           wireInteractions();
+          listSorter.refresh();
           loadCategoryPills(favorites.map((item) => item.id));
+          loadResetInfo(favorites.map((item) => item.id));
+        };
+
+        const resetInfoCache = new Map();
+        const applyResetInfo = () => {
+          if (!list) return;
+          list.querySelectorAll("li[data-game-id]").forEach((li) => {
+            const info = resetInfoCache.get(li.getAttribute("data-game-id"));
+            if (!info) return;
+            li.dataset.resetKind = info.kind;
+            li.dataset.resetMin = String(info.min);
+            const itemMain = li.querySelector(".item-main");
+            if (itemMain && !itemMain.querySelector(".meta")) {
+              const meta = document.createElement("div");
+              meta.className = "meta";
+              meta.textContent = info.label;
+              itemMain.appendChild(meta);
+            }
+          });
+          listSorter.apply();
+        };
+
+        const loadResetInfo = async (gameIds) => {
+          const missing = gameIds.filter((id) => !resetInfoCache.has(id));
+          if (missing.length === 0) { applyResetInfo(); return; }
+          try {
+            for (let i = 0; i < missing.length; i += 50) {
+              const chunk = missing.slice(i, i + 50);
+              const response = await fetch("/api/games/reset-info?ids=" + chunk.map(encodeURIComponent).join(","));
+              if (!response.ok) continue;
+              const body = await response.json();
+              chunk.forEach((id) => resetInfoCache.set(id, body[id] || null));
+            }
+            applyResetInfo();
+          } catch {
+            // Reset times are a non-critical enhancement; ignore failures.
+          }
         };
 
         const categoryHue = (slug) => {
@@ -1457,14 +1507,14 @@ app.get("/me/rotation", async (c) => {
   }
 
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, favorites.position
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(user.id)
-    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
 
@@ -1507,14 +1557,18 @@ app.get("/me/rotation", async (c) => {
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
       <p id="import-status" class="status" aria-live="polite"></p>
+      ${renderListSortControl()}
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
-            (item) => `<li data-game-id="${item.id}">
+            (item) => {
+              const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
+              return `<li data-game-id="${item.id}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
                 <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                 ${renderCategoryPills(categoriesByGameId.get(item.id))}
+                ${reset.label ? `<div class="meta">${escapeHtml(reset.label)}</div>` : ""}
               </div>
               <div class="card-actions">
                 <div class="reorder-controls">
@@ -1524,12 +1578,17 @@ app.get("/me/rotation", async (c) => {
                 <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
                 <button type="button" data-unfavorite="${item.id}">X</button>
               </div>
-            </li>`
+            </li>`;
+            }
           )
           .join("")}
       </ol>
       <p id="rotation-status" class="status" aria-live="polite"></p>
     </main>
+    <script>
+      ${LIST_SORT_SCRIPT}
+      window.dglListSort.init(document.getElementById("rotation-list"), document.getElementById("list-sort-select"));
+    </script>
     <script>
       const list = document.getElementById("rotation-list");
       const status = document.getElementById("rotation-status");
@@ -2053,8 +2112,9 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
+      ${!isAdminEditor && items.results.length > 1 ? renderListSortControl() : ""}
       <ol class="rotation-list" id="list-items">
-        ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}">
+        ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}" ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
@@ -2078,6 +2138,10 @@ app.get("/lists/:slug", async (c) => {
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
     </main>
+    ${!isAdminEditor && items.results.length > 1 ? `<script>
+      ${LIST_SORT_SCRIPT}
+      window.dglListSort.init(document.getElementById("list-items"), document.getElementById("list-sort-select"));
+    </script>` : ""}
     ${isAdminEditor ? `
     <script>
       (() => {
@@ -3250,6 +3314,29 @@ app.get("/api/games/categories", async (c) => {
   const result: Record<string, Array<{ slug: string; name: string }>> = {};
   for (const id of ids) {
     result[id] = categoriesByGameId.get(id) ?? [];
+  }
+  return c.json(result);
+});
+
+// Reset timing for a set of games; used by the local (anonymous) rotation page to sort and label items.
+app.get("/api/games/reset-info", async (c) => {
+  const ids = (c.req.query("ids") || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+    .slice(0, 90);
+  const result: Record<string, { kind: "utc" | "local"; min: number; label: string } | null> = {};
+  if (ids.length > 0) {
+    const placeholders = ids.map((_id, index) => `?${index + 1}`).join(", ");
+    const rows = await c.env.DB.prepare(
+      `SELECT id, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE status = 'approved' AND id IN (${placeholders})`
+    )
+      .bind(...ids)
+      .all<{ id: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+    for (const row of rows.results) {
+      const data = getResetSortData(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
+      result[row.id] = data ? { ...data, label: getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone) } : null;
+    }
   }
   return c.json(result);
 });
@@ -5368,6 +5455,97 @@ function renderTimeZoneField(inputName: string, value: string | null | undefined
   </label>`;
 }
 
+type ResetSortData = { kind: "utc" | "local"; min: number };
+
+/**
+ * Where a game's daily reset falls on a 24h clock, for client-side "resetting soonest" sorting.
+ * Server-time resets are converted to a UTC minute-of-day using the zone's current offset (DST-aware);
+ * local-time resets stay in the viewer's own clock.
+ */
+function getResetSortData(
+  basis: "local" | "server" | null | undefined,
+  minutes: number | null | undefined,
+  timeZone?: string | null
+): ResetSortData | null {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes < 0 || minutes > 1439) {
+    return null;
+  }
+  if (basis === "local") {
+    return { kind: "local", min: minutes };
+  }
+  const offset = basis === "server" && timeZone ? timeZoneOffsetMinutes(timeZone) : 0;
+  return { kind: "utc", min: (((minutes - offset) % 1440) + 1440) % 1440 };
+}
+
+function renderResetItemData(
+  basis: "local" | "server" | null | undefined,
+  minutes: number | null | undefined,
+  timeZone?: string | null
+): { attrs: string; label: string } {
+  const data = getResetSortData(basis, minutes, timeZone);
+  return {
+    attrs: data ? `data-reset-kind="${data.kind}" data-reset-min="${data.min}"` : "",
+    label: getResetMetaLabel(basis, minutes, timeZone)
+  };
+}
+
+// Client helper: toggles a list between its manual order and "resetting soonest" order.
+const LIST_SORT_SCRIPT = `
+  window.dglListSort = (() => {
+    const KEY = "dgl_list_sort_v1";
+    const readMode = () => {
+      try { return window.localStorage.getItem(KEY) === "reset" ? "reset" : "default"; } catch { return "default"; }
+    };
+    const writeMode = (mode) => {
+      try { window.localStorage.setItem(KEY, mode); } catch {}
+    };
+    const minutesUntilReset = (li, now) => {
+      const kind = li.dataset.resetKind;
+      const min = Number(li.dataset.resetMin);
+      if (!kind || li.dataset.resetMin === undefined || !Number.isFinite(min)) return Infinity;
+      const current = kind === "utc" ? now.getUTCHours() * 60 + now.getUTCMinutes() : now.getHours() * 60 + now.getMinutes();
+      return (((min - current) % 1440) + 1440) % 1440;
+    };
+    const init = (list, select) => {
+      if (!list || !select) return { refresh() {} };
+      const items = () => Array.from(list.children).filter((el) => el.tagName === "LI" && el.hasAttribute("data-game-id"));
+      const apply = () => {
+        const mode = select.value === "reset" ? "reset" : "default";
+        const now = new Date();
+        list.classList.toggle("sorted-by-reset", mode === "reset");
+        const sorted = items().sort((a, b) => {
+          const indexDiff = Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex);
+          if (mode !== "reset") return indexDiff;
+          const ua = minutesUntilReset(a, now);
+          const ub = minutesUntilReset(b, now);
+          if (ua === ub) return indexDiff;
+          return ua < ub ? -1 : 1;
+        });
+        sorted.forEach((li) => list.appendChild(li));
+      };
+      // Re-capture the manual order from the DOM (call after the list is rebuilt in its manual order).
+      const refresh = () => {
+        items().forEach((li, index) => { li.dataset.defaultIndex = String(index); });
+        apply();
+      };
+      select.value = readMode();
+      select.addEventListener("change", () => { writeMode(select.value); apply(); });
+      refresh();
+      return { refresh, apply };
+    };
+    return { init };
+  })();
+`;
+
+function renderListSortControl(): string {
+  return `<label class="list-sort">Sort
+    <select id="list-sort-select" aria-label="Sort order">
+      <option value="default">Default order</option>
+      <option value="reset">Resetting soonest</option>
+    </select>
+  </label>`;
+}
+
 function getResetMetaLabel(
   resetBasis: "local" | "server" | null | undefined,
   resetTimeMinutes: number | null | undefined,
@@ -5525,6 +5703,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       ul.games.compact { gap: 0.45rem; }
       ul.games.compact li { padding: 0.5rem 0.6rem; border-radius: 10px; }
       .game-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center; }
+      .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
+      .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
       .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; flex-wrap: nowrap; }
       .game-row .compact-actions button { padding: 0.3rem 0.45rem; font-size: 0.78rem; }
