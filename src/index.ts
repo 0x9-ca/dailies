@@ -290,6 +290,16 @@ app.get("/", async (c) => {
         <h2>Newly Added</h2>
         ${newGamesMarkup}
       </section>
+      <section class="about">
+        <h2>About Dailies</h2>
+        <p>A daily game (or "dle") is a short puzzle that resets once a day, usually with the same challenge for every player. Wordle started the trend, and now there are hundreds of them covering words, geography, movies, music, logic, math and more. Dailies is a community-run directory that keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
+        <h3>How games are ranked</h3>
+        <p>Every game has a community score based on up and down votes, so a game with a few votes can't outrank one that many people like. Newer games get a small freshness boost, and games that are frequently reported or whose links stop working are ranked lower. Anyone can vote, with or without an account.</p>
+        <h3>Build your daily rotation</h3>
+        <p>Favorite the games you play and arrange them into a personal rotation, in your own order and even by weekday. Without an account, your favorites are stored in your browser. Sign in with Discord to keep them across devices, and export or import your rotation as a file whenever you like.</p>
+        <h3>Find something new</h3>
+        <p>Browse the <a href="/games">full game list</a>, filter by category, or explore <a href="/lists">curated lists</a> put together by our editors. Some games are marked <span class="paywall-badge" title="This game requires payment to play">$</span> if they require payment, and NSFW games are labelled. Know a daily we're missing? <a href="/submit">Submit it</a> and, once reviewed, it will show up in the directory.</p>
+      </section>
     </main>
     <script>
       document.getElementById("feeling-auspicious-btn")?.addEventListener("click", async () => {
@@ -2244,10 +2254,14 @@ app.get("/sitemap.xml", async (c) => {
   ).all<{ slug: string; updated_at: string }>();
 
   const toLastmod = (value: string) => value.replace(" ", "T") + "Z";
+  const latest = (rows: Array<{ updated_at: string }>) => (rows.length > 0 ? toLastmod(rows[0].updated_at) : null);
+  const latestGame = latest(games.results);
+  const latestList = latest(lists.results);
+  const latestAny = [latestGame, latestList].filter((v): v is string => !!v).sort().pop() ?? null;
   const urls = [
-    { loc: "/", lastmod: null as string | null },
-    { loc: "/games", lastmod: null },
-    { loc: "/lists", lastmod: null },
+    { loc: "/", lastmod: latestAny },
+    { loc: "/games", lastmod: latestGame },
+    { loc: "/lists", lastmod: latestList },
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
     ...lists.results.map((list) => ({ loc: `/lists/${list.slug}`, lastmod: toLastmod(list.updated_at) }))
@@ -5251,6 +5265,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .hero { margin-top: 0; }
       .hero h1 { margin-top: 0; }
       .hero p { color: var(--muted); }
+      .about { margin-top: 2rem; }
+      .about p { color: var(--muted); max-width: 70ch; line-height: 1.6; }
       .btn {
         display: inline-block;
         padding: 0.55rem 0.9rem;
