@@ -56,7 +56,7 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 1. Logged-in user submits game via `/api/games`.
 2. URL is canonicalized and checked for duplicates.
 3. Category suggestions are attached when valid.
-4. Optional reset metadata can be included (`resetBasis`, `resetTime`).
+4. Optional reset metadata can be included (`resetBasis`, `resetTime`, `resetTimezone`).
 5. Role behavior:
    - `user`: created as `pending`
    - `editor/admin`: auto-approved and scored immediately
@@ -72,7 +72,8 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 ## Reset metadata and sorting
 
 - Games can store `reset_basis` (`local` or `server`) and `reset_time_minutes`.
-- Browse and API support `sort=reset` to order by next reset time (soonest first).
+- Server-time resets can also store `reset_timezone`, an IANA zone name such as `America/New_York` (validated with `Intl`). It is cleared when the basis is not `server`; a `server` game with no zone is treated as UTC.
+- Browse and API support `sort=reset` to order by next reset time (soonest first). Each zone's current UTC offset (DST-aware) is computed in the Worker and applied in the SQL ordering.
 - Admin moderation page can update reset metadata per game.
 
 ## Scheduled jobs

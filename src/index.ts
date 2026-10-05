@@ -351,8 +351,9 @@ app.get("/submit", async (c) => {
           </fieldset>
           <fieldset>
             <legend>Reset timing (optional)</legend>
+            <div data-reset-group>
             <label>Time basis
-              <select name="resetBasis">
+              <select name="resetBasis" data-basis-select>
                 <option value="">Unknown</option>
                 <option value="local">Local time</option>
                 <option value="server">Server time</option>
@@ -361,6 +362,9 @@ app.get("/submit", async (c) => {
             <label>Reset time
               <input type="time" name="resetTime" />
             </label>
+            ${renderTimeZoneField("resetTimezone", null)}
+            </div>
+            ${renderTimeZoneDatalist()}
           </fieldset>
           <label class="check"><input type="checkbox" name="paywall" value="1" /> This game is paywalled</label>
           <label class="check"><input type="checkbox" name="nsfw" value="1" /> This game is NSFW</label>
@@ -370,6 +374,7 @@ app.get("/submit", async (c) => {
       </section>
     </main>
     <script>
+      ${RESET_TIMEZONE_TOGGLE_SCRIPT}
       const form = document.getElementById("submission-form");
       const status = document.getElementById("submission-status");
       form?.addEventListener("submit", async (event) => {
@@ -378,6 +383,7 @@ app.get("/submit", async (c) => {
         const formData = new FormData(form);
         const resetBasis = String(formData.get("resetBasis") || "").trim();
         const resetTime = String(formData.get("resetTime") || "").trim();
+        const resetTimezone = String(formData.get("resetTimezone") || "").trim();
         const payload = {
           title: String(formData.get("title") || ""),
           url: String(formData.get("url") || ""),
@@ -385,6 +391,7 @@ app.get("/submit", async (c) => {
           categories: formData.getAll("categories").map((v) => String(v)),
           resetBasis: resetBasis || undefined,
           resetTime: resetTime || undefined,
+          resetTimezone: resetBasis === "server" && resetTimezone ? resetTimezone : undefined,
           paywall: formData.has("paywall"),
           nsfw: formData.has("nsfw")
         };
@@ -574,7 +581,7 @@ app.get("/games/:slug", async (c) => {
   const user = c.get("user");
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
-    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, paywall, nsfw
+    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
      FROM games
      WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
   )
@@ -591,6 +598,7 @@ app.get("/games/:slug", async (c) => {
       report_count: number;
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
+      reset_timezone: string | null;
       paywall: number;
       nsfw: number;
     }>();
@@ -649,8 +657,10 @@ app.get("/games/:slug", async (c) => {
       <p>${escapeHtml(game.description || "")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
       ${(() => {
-        const resetLabel = getResetMetaLabel(game.reset_basis, game.reset_time_minutes);
-        return resetLabel ? `<p>${escapeHtml(resetLabel)}</p>` : "";
+        const resetLabel = getResetMetaLabel(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+        if (!resetLabel) return "";
+        const zoneNote = game.reset_basis === "server" && game.reset_timezone ? ` <small>(${escapeHtml(game.reset_timezone)})</small>` : "";
+        return `<p>${escapeHtml(resetLabel)}${zoneNote}</p>`;
       })()}
       <p>Votes: +<span id="vote-up-count">${game.vote_up_count}</span> / -<span id="vote-down-count">${game.vote_down_count}</span> | Reports: ${game.report_count}</p>
       ${
@@ -716,8 +726,9 @@ app.get("/games/:slug", async (c) => {
                      <option value="disabled" ${game.status === "disabled" ? "selected" : ""}>Disabled</option>
                    </select>
                  </label>
+                 <div data-reset-group>
                  <label>Reset Basis
-                   <select name="reset_basis">
+                   <select name="reset_basis" data-basis-select>
                      <option value="" ${!game.reset_basis ? "selected" : ""}>None</option>
                      <option value="local" ${game.reset_basis === "local" ? "selected" : ""}>Local</option>
                      <option value="server" ${game.reset_basis === "server" ? "selected" : ""}>Server</option>
@@ -726,6 +737,9 @@ app.get("/games/:slug", async (c) => {
                   <label>Reset Time (minutes since midnight, 0-1439)
                     <input type="number" name="reset_time_minutes" min="0" max="1439" value="${game.reset_time_minutes ?? ""}" />
                   </label>
+                  ${renderTimeZoneField("reset_timezone", game.reset_timezone)}
+                  </div>
+                  ${renderTimeZoneDatalist()}
                   <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
                   <label style="display:block;"><input type="checkbox" name="nsfw" value="1" ${game.nsfw ? "checked" : ""} /> NSFW</label>
                  <fieldset>
@@ -879,6 +893,7 @@ app.get("/games/:slug", async (c) => {
 
             const adminEditForm = document.getElementById("admin-edit-form");
             if (adminEditForm) {
+              ${RESET_TIMEZONE_TOGGLE_SCRIPT}
               const adminStatus = document.getElementById("admin-edit-status");
               const setAdminStatus = (text) => {
                 if (adminStatus) adminStatus.textContent = text;
@@ -890,6 +905,7 @@ app.get("/games/:slug", async (c) => {
                 const categories = formData.getAll("categories");
                 const resetBasis = formData.get("reset_basis");
                 const resetTimeMinutes = formData.get("reset_time_minutes");
+                const resetTimezone = String(formData.get("reset_timezone") || "").trim();
                 const payload = {
                   title: String(formData.get("title") || ""),
                   url: String(formData.get("url") || ""),
@@ -897,6 +913,7 @@ app.get("/games/:slug", async (c) => {
                   status: String(formData.get("status") || "approved"),
                   reset_basis: resetBasis ? String(resetBasis) : null,
                   reset_time_minutes: resetTimeMinutes && String(resetTimeMinutes).trim() ? Number(resetTimeMinutes) : null,
+                  reset_timezone: resetBasis === "server" && resetTimezone ? resetTimezone : null,
                   paywall: formData.has("paywall"),
                   nsfw: formData.has("nsfw"),
                   category_ids: categories.map(c => String(c))
@@ -2370,7 +2387,7 @@ app.get("/admin/submissions", async (c) => {
   const q = (c.req.query("q") || "").trim();
   const rows = q
     ? await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, paywall, nsfw
+        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
          FROM games
          WHERE status = ?1
            AND (title LIKE ?2 OR url LIKE ?2 OR description LIKE ?2)
@@ -2378,16 +2395,16 @@ app.get("/admin/submissions", async (c) => {
          LIMIT 200`
       )
         .bind(status, `%${q}%`)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; paywall: number; nsfw: number }>()
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>()
     : await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, paywall, nsfw
+        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
          FROM games
          WHERE status = ?1
          ORDER BY created_at DESC
          LIMIT 200`
       )
         .bind(status)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; paywall: number; nsfw: number }>();
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>();
 
   return c.html(await layout("Admin Submissions", auth, `
     <main>
@@ -2417,16 +2434,19 @@ app.get("/admin/submissions", async (c) => {
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
               ${(() => {
-                const resetLabel = getResetMetaLabel(row.reset_basis, row.reset_time_minutes);
+                const resetLabel = getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
                 return resetLabel ? `<p>${escapeHtml(resetLabel)}</p>` : "";
               })()}
               <div class="actions">
-                <select data-reset-basis="${row.id}">
+                <span data-reset-group>
+                <select data-reset-basis="${row.id}" data-basis-select>
                   <option value="" ${!row.reset_basis ? "selected" : ""}>Unknown</option>
                   <option value="local" ${row.reset_basis === "local" ? "selected" : ""}>Local</option>
                   <option value="server" ${row.reset_basis === "server" ? "selected" : ""}>Server</option>
                 </select>
                 <input type="time" data-reset-time="${row.id}" value="${row.reset_time_minutes === null ? "" : escapeHtml(formatResetTime(row.reset_time_minutes))}" />
+                <span data-tz-wrap><input type="text" list="tz-list" data-tz-input data-reset-timezone="${row.id}" placeholder="Time zone, e.g. America/New_York" maxlength="64" value="${escapeHtml(row.reset_timezone || "")}" /></span>
+                </span>
                 <button type="button" data-reset-save="${row.id}">Save reset</button>
               </div>
               <label class="check"><input type="checkbox" data-game-select value="${row.id}" /> Select</label>
@@ -2441,8 +2461,10 @@ app.get("/admin/submissions", async (c) => {
           .join("")}
       </div>
       <p id="admin-submissions-status" class="status" aria-live="polite"></p>
+      ${renderTimeZoneDatalist()}
     </main>
     <script>
+      ${RESET_TIMEZONE_TOGGLE_SCRIPT}
       const statusNode = document.getElementById("admin-submissions-status");
       const setStatus = (text) => {
         if (statusNode) statusNode.textContent = text;
@@ -2526,7 +2548,8 @@ app.get("/admin/submissions", async (c) => {
           if (!gameId) return;
           const basisNode = document.querySelector("select[data-reset-basis='" + gameId + "']");
           const timeNode = document.querySelector("input[data-reset-time='" + gameId + "']");
-          if (!(basisNode instanceof HTMLSelectElement) || !(timeNode instanceof HTMLInputElement)) {
+          const zoneNode = document.querySelector("input[data-reset-timezone='" + gameId + "']");
+          if (!(basisNode instanceof HTMLSelectElement) || !(timeNode instanceof HTMLInputElement) || !(zoneNode instanceof HTMLInputElement)) {
             return;
           }
           setStatus("Saving reset settings...");
@@ -2535,11 +2558,13 @@ app.get("/admin/submissions", async (c) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               resetBasis: basisNode.value || null,
-              resetTime: timeNode.value || null
+              resetTime: timeNode.value || null,
+              resetTimezone: basisNode.value === "server" ? (zoneNode.value.trim() || null) : null
             })
           });
           if (!response.ok) {
-            setStatus("Could not save reset settings.");
+            const body = await response.json().catch(() => ({}));
+            setStatus(body.error || "Could not save reset settings.");
             return;
           }
           setStatus("Reset settings saved.");
@@ -3175,6 +3200,7 @@ const submissionSchema = z.object({
   categories: z.array(z.string()).max(8).optional(),
   resetBasis: z.enum(["local", "server"]).optional(),
   resetTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  resetTimezone: z.string().max(64).optional(),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false)
 });
@@ -3267,6 +3293,10 @@ app.post("/api/games", async (c) => {
   if (parsed.data.resetTime && resetTimeMinutes === null) {
     return c.json({ error: "Invalid reset time. Use HH:MM" }, 400);
   }
+  const resetTimezone = normalizeResetTimeZone(resetBasis, parsed.data.resetTimezone);
+  if (!resetTimezone.ok) {
+    return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
+  }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -3276,18 +3306,18 @@ app.post("/api/games", async (c) => {
   if (bypassModeration) {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11, ?12, ?13)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11, ?12, ?13, ?14)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value)
       .run();
   } else {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10, ?11, ?12)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10, ?11, ?12, ?13)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value)
       .run();
   }
 
@@ -3434,6 +3464,7 @@ const adminGameUpdateSchema = z.object({
   status: z.enum(["pending", "approved", "rejected", "disabled"]),
   reset_basis: z.enum(["local", "server"]).nullable(),
   reset_time_minutes: z.number().int().min(0).max(1439).nullable(),
+  reset_timezone: z.string().max(64).nullable().optional(),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false),
   category_ids: z.array(z.string().uuid()).max(20)
@@ -3453,11 +3484,20 @@ app.put("/api/games/:id/admin-update", async (c) => {
 
   const canonicalUrl = canonicalizeUrl(parsed.data.url);
 
+  // Omitted time zone keeps the stored one (older clients); an explicit null clears it.
+  const existingZone = parsed.data.reset_timezone === undefined
+    ? (await c.env.DB.prepare("SELECT reset_timezone FROM games WHERE id = ?1").bind(gameId).first<{ reset_timezone: string | null }>())?.reset_timezone ?? null
+    : parsed.data.reset_timezone;
+  const resetTimezone = normalizeResetTimeZone(parsed.data.reset_basis, existingZone);
+  if (!resetTimezone.ok) {
+    return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
+  }
+
   // Update game
   await c.env.DB.prepare(
     `UPDATE games
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, status = ?5,
-         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, updated_at = datetime('now')
+         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, reset_timezone = ?11, updated_at = datetime('now')
      WHERE id = ?8`
   )
     .bind(
@@ -3470,7 +3510,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
       parsed.data.reset_time_minutes,
       gameId,
       parsed.data.paywall ? 1 : 0,
-      parsed.data.nsfw ? 1 : 0
+      parsed.data.nsfw ? 1 : 0,
+      resetTimezone.value
     )
     .run();
 
@@ -4071,7 +4112,7 @@ app.get("/api/admin/submissions", async (c) => {
   const q = (c.req.query("q") || "").trim();
   const rows = q
     ? await c.env.DB.prepare(
-        `SELECT id, title, slug, url, status, moderation_note, created_at, reset_basis, reset_time_minutes
+        `SELECT id, title, slug, url, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone
          FROM games
          WHERE status = ?1
            AND (title LIKE ?2 OR url LIKE ?2 OR description LIKE ?2)
@@ -4081,7 +4122,7 @@ app.get("/api/admin/submissions", async (c) => {
         .bind(status, `%${q}%`)
         .all()
     : await c.env.DB.prepare(
-        "SELECT id, title, slug, url, status, moderation_note, created_at, reset_basis, reset_time_minutes FROM games WHERE status = ?1 ORDER BY created_at DESC LIMIT 200"
+        "SELECT id, title, slug, url, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE status = ?1 ORDER BY created_at DESC LIMIT 200"
       )
         .bind(status)
         .all();
@@ -4090,7 +4131,8 @@ app.get("/api/admin/submissions", async (c) => {
 
 const adminResetSchema = z.object({
   resetBasis: z.union([z.literal("local"), z.literal("server"), z.null()]).optional(),
-  resetTime: z.union([z.string().regex(/^\d{2}:\d{2}$/), z.null()]).optional()
+  resetTime: z.union([z.string().regex(/^\d{2}:\d{2}$/), z.null()]).optional(),
+  resetTimezone: z.union([z.string().max(64), z.null()]).optional()
 });
 
 app.patch("/api/admin/games/:id/reset", async (c) => {
@@ -4110,21 +4152,26 @@ app.patch("/api/admin/games/:id/reset", async (c) => {
   }
 
   const gameId = c.req.param("id");
-  const existing = await c.env.DB.prepare("SELECT reset_basis, reset_time_minutes FROM games WHERE id = ?1")
+  const existing = await c.env.DB.prepare("SELECT reset_basis, reset_time_minutes, reset_timezone FROM games WHERE id = ?1")
     .bind(gameId)
-    .first<{ reset_basis: "local" | "server" | null; reset_time_minutes: number | null }>();
+    .first<{ reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
   }
 
   const nextBasis = resetBasis === undefined ? existing.reset_basis : resetBasis;
   const nextResetTime = resetTimeMinutes === undefined ? existing.reset_time_minutes : resetTimeMinutes;
+  const requestedZone = parsed.data.resetTimezone === undefined ? existing.reset_timezone : parsed.data.resetTimezone;
+  const nextZone = normalizeResetTimeZone(nextBasis, requestedZone);
+  if (!nextZone.ok) {
+    return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
+  }
   await c.env.DB.prepare(
-    "UPDATE games SET reset_basis = ?1, reset_time_minutes = ?2, updated_at = datetime('now') WHERE id = ?3"
+    "UPDATE games SET reset_basis = ?1, reset_time_minutes = ?2, reset_timezone = ?4, updated_at = datetime('now') WHERE id = ?3"
   )
-    .bind(nextBasis, nextResetTime, gameId)
+    .bind(nextBasis, nextResetTime, gameId, nextZone.value)
     .run();
-  await writeAudit(c.env, auth.id, "game", gameId, "update_reset", { resetBasis: nextBasis, resetTimeMinutes: nextResetTime });
+  await writeAudit(c.env, auth.id, "game", gameId, "update_reset", { resetBasis: nextBasis, resetTimeMinutes: nextResetTime, resetTimezone: nextZone.value });
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -4704,11 +4751,27 @@ async function listGames(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    resetTimezone: string | null;
     paywall: boolean;
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
   }>
 > {
+  // Server-time resets are stored in their own time zone; convert to UTC using each zone's current offset.
+  let resetOffsetSql = "0";
+  const sortParams: Array<string | number> = [];
+  if (opts.sort === "reset") {
+    const zones = await env.DB.prepare(
+      "SELECT DISTINCT reset_timezone AS tz FROM games WHERE reset_basis = 'server' AND reset_timezone IS NOT NULL LIMIT 50"
+    ).all<{ tz: string }>();
+    if (zones.results.length > 0) {
+      const whens = zones.results.map((zone) => {
+        sortParams.push(zone.tz);
+        return `WHEN ? THEN ${Math.trunc(timeZoneOffsetMinutes(zone.tz))}`;
+      });
+      resetOffsetSql = `CASE WHEN games.reset_basis = 'server' THEN CASE games.reset_timezone ${whens.join(" ")} ELSE 0 END ELSE 0 END`;
+    }
+  }
   const sortSql =
     opts.sort === "new"
       ? "games.created_at DESC"
@@ -4718,7 +4781,7 @@ async function listGames(
       ? `CASE WHEN games.reset_time_minutes IS NULL THEN 1 ELSE 0 END ASC,
          CASE
            WHEN games.reset_time_minutes IS NULL THEN 9999
-           ELSE ((games.reset_time_minutes - ((CAST(strftime('%H','now') AS INTEGER) * 60) + CAST(strftime('%M','now') AS INTEGER)) + 1440) % 1440)
+           ELSE ((((games.reset_time_minutes - (${resetOffsetSql}) - ((CAST(strftime('%H','now') AS INTEGER) * 60) + CAST(strftime('%M','now') AS INTEGER))) % 1440) + 1440) % 1440)
          END ASC,
          games.title ASC`
       : "games.score DESC, games.vote_up_count DESC";
@@ -4741,12 +4804,12 @@ async function listGames(
     whereSql += " AND games.nsfw = 0";
   }
 
-  params.push(opts.limit, opts.offset || 0);
+  params.push(...sortParams, opts.limit, opts.offset || 0);
 
   const sql = `
     SELECT DISTINCT games.id, games.title, games.slug, games.url, games.description,
            games.score, games.vote_up_count, games.vote_down_count,
-           games.reset_basis, games.reset_time_minutes, games.paywall, games.nsfw
+           games.reset_basis, games.reset_time_minutes, games.reset_timezone, games.paywall, games.nsfw
     FROM games
     LEFT JOIN game_categories ON games.id = game_categories.game_id
     LEFT JOIN categories ON categories.id = game_categories.category_id
@@ -4769,6 +4832,7 @@ async function listGames(
       vote_down_count: number;
       reset_basis: "local" | "server" | null;
       reset_time_minutes: number | null;
+      reset_timezone: string | null;
       paywall: number;
       nsfw: number;
     }>();
@@ -4786,6 +4850,7 @@ async function listGames(
     voteDownCount: row.vote_down_count,
     resetBasis: row.reset_basis,
     resetTimeMinutes: row.reset_time_minutes,
+    resetTimezone: row.reset_timezone,
     paywall: !!row.paywall,
     nsfw: !!row.nsfw,
     categories: categoriesByGameId.get(row.id) ?? []
@@ -4861,6 +4926,7 @@ function renderGames(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    resetTimezone: string | null;
     paywall: boolean;
   }>
 ): string {
@@ -4876,7 +4942,7 @@ function renderGames(
           <a href="/games/${game.slug}" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
           <p>${escapeHtml(game.description || "")}</p>
           ${(() => {
-            const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
+            const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
             const meta = `Score ${game.score.toFixed(3)}${resetLabel ? ` | ${resetLabel}` : ""}`;
             return `<small>${escapeHtml(meta)}</small>`;
           })()}
@@ -4908,6 +4974,7 @@ function renderCompactGameList(
     voteDownCount: number;
     resetBasis: "local" | "server" | null;
     resetTimeMinutes: number | null;
+    resetTimezone: string | null;
     paywall: boolean;
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
@@ -4925,7 +4992,7 @@ function renderCompactGameList(
       .map((game) => {
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
-        const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes);
+        const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
         const meta = `Score ${game.score.toFixed(2)}${resetLabel ? ` | ${resetLabel}` : ""}`;
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
@@ -5200,10 +5267,111 @@ function formatResetTime(minutes: number | null | undefined): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function getResetMetaLabel(resetBasis: "local" | "server" | null | undefined, resetTimeMinutes: number | null | undefined): string {
+const COMMON_TIME_ZONES = [
+  "UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Anchorage",
+  "America/Toronto", "America/Mexico_City", "America/Sao_Paulo", "Europe/London", "Europe/Paris", "Europe/Berlin",
+  "Europe/Moscow", "Africa/Johannesburg", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "Asia/Shanghai",
+  "Asia/Tokyo", "Australia/Sydney", "Pacific/Auckland"
+];
+
+function listTimeZones(): string[] {
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf?.("timeZone");
+    if (supported && supported.length > 0) {
+      return supported.includes("UTC") ? supported : ["UTC", ...supported];
+    }
+  } catch {
+    // fall through to the common list
+  }
+  return COMMON_TIME_ZONES;
+}
+
+function isValidTimeZone(value: string): boolean {
+  if (!/^[A-Za-z0-9_+\-\/]{1,64}$/.test(value)) {
+    return false;
+  }
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Returns the zone to store: null unless the basis is "server" and a zone was given. */
+function normalizeResetTimeZone(
+  basis: "local" | "server" | null | undefined,
+  value: string | null | undefined
+): { ok: true; value: string | null } | { ok: false } {
+  const trimmed = (value || "").trim();
+  if (basis !== "server" || !trimmed) {
+    return { ok: true, value: null };
+  }
+  return isValidTimeZone(trimmed) ? { ok: true, value: trimmed } : { ok: false };
+}
+
+function timeZoneOffsetMinutes(timeZone: string, at: Date = new Date()): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric"
+    }).formatToParts(at);
+    const get = (type: string) => Number(parts.find((part) => part.type === type)?.value);
+    const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+    return Math.round((asUtc - Math.floor(at.getTime() / 1000) * 1000) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
+function timeZoneAbbreviation(timeZone: string, at: Date = new Date()): string | null {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "short" })
+      .formatToParts(at)
+      .find((p) => p.type === "timeZoneName");
+    return part?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function renderTimeZoneDatalist(): string {
+  return `<datalist id="tz-list">${listTimeZones().map((zone) => `<option value="${escapeHtml(zone)}"></option>`).join("")}</datalist>`;
+}
+
+// Shows the time zone input only while the reset basis is "server".
+const RESET_TIMEZONE_TOGGLE_SCRIPT = `
+  document.querySelectorAll("[data-reset-group]").forEach((group) => {
+    const basis = group.querySelector("[data-basis-select]");
+    const zoneWrap = group.querySelector("[data-tz-wrap]");
+    const zoneInput = group.querySelector("[data-tz-input]");
+    if (!basis || !zoneWrap) return;
+    const sync = () => {
+      const isServer = basis.value === "server";
+      zoneWrap.hidden = !isServer;
+      if (!isServer && zoneInput) zoneInput.value = "";
+    };
+    basis.addEventListener("change", sync);
+    sync();
+  });
+`;
+
+function renderTimeZoneField(inputName: string, value: string | null | undefined, extraAttrs = ""): string {
+  return `<label data-tz-wrap>Time zone (server time)
+    <input type="text" name="${inputName}" list="tz-list" data-tz-input placeholder="e.g. America/New_York" maxlength="64" value="${escapeHtml(value || "")}" ${extraAttrs} />
+  </label>`;
+}
+
+function getResetMetaLabel(
+  resetBasis: "local" | "server" | null | undefined,
+  resetTimeMinutes: number | null | undefined,
+  resetTimeZone?: string | null
+): string {
   const time = formatResetTime(resetTimeMinutes);
   if (time === "Unknown") {
     return "";
+  }
+  if (resetBasis === "server" && resetTimeZone) {
+    return `Reset ${time} ${timeZoneAbbreviation(resetTimeZone) ?? resetTimeZone}`;
   }
   if (resetBasis === "local" || resetBasis === "server") {
     return `Reset ${time} (${resetBasis.toUpperCase()})`;
