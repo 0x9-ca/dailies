@@ -5097,7 +5097,7 @@ function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
   if (!twitchLogin) {
     return "";
   }
-  return `<span class="verified-badge" title="Verified: curated by Twitch user ${escapeHtml(twitchLogin)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="11" fill="#1d9bf0"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+  return `<span class="verified-badge" title="Verified: curated by Twitch user ${escapeHtml(twitchLogin)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
 }
 
 async function enforceRateLimit(
