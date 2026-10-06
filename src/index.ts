@@ -4,7 +4,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
-import { canonicalizeUrl, slugify } from "./lib/url";
+import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from "./lib/url";
 import { createSession, destroySession, randomToken, requireAuth, requireRole, sessionMiddleware } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
@@ -422,7 +422,7 @@ app.get("/submit", async (c) => {
       <section class="panel">
         <form id="submission-form" class="stack-form">
           <input type="text" name="title" placeholder="Game title" required />
-          <input type="url" name="url" placeholder="https://example.com/game" required />
+          <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="url" placeholder="example.com/game" required />
           <textarea name="description" placeholder="Why it is good (optional)" rows="3"></textarea>
           <fieldset>
             <legend>Suggested categories</legend>
@@ -865,7 +865,7 @@ app.get("/games/:slug", async (c) => {
                    <input type="text" name="title" value="${escapeHtml(game.title)}" required />
                  </label>
                  <label>URL
-                   <input type="url" name="url" value="${escapeHtml(game.url)}" required />
+                   <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="url" value="${escapeHtml(game.url)}" required />
                  </label>
                  <label>Description
                    <textarea name="description" rows="3">${escapeHtml(game.description || "")}</textarea>
@@ -3516,25 +3516,18 @@ app.get("/admin/lists", async (c) => {
 });
 
 // JSON API routes.
-// Be forgiving about input a browser may send: pad/trim times, assume https:// when the scheme is missing.
-const normalizeSubmittedUrl = (value: unknown) => {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
-  return trimmed && !/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? `https://${trimmed}` : trimmed;
-};
-const normalizeSubmittedTime = (value: unknown) => {
-  if (typeof value !== "string") return value;
-  const match = /^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(value.trim());
-  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : value.trim();
-};
+// Be forgiving about input a browser may send: trim text, pad times, assume https:// when the scheme is missing.
+const trimInput = (value: unknown) => (typeof value === "string" ? value.trim() : value);
+const trimToUndefined = (value: unknown) => (typeof value === "string" ? value.trim() || undefined : value);
+const MAX_SUBMISSION_CATEGORIES = 30;
 
 const submissionSchema = z.object({
-  title: z.preprocess((v) => (typeof v === "string" ? v.trim() : v), z.string().min(2).max(120)),
-  url: z.preprocess(normalizeSubmittedUrl, z.string().url()),
-  description: z.string().max(500).optional(),
-  categories: z.array(z.string()).max(30).optional(),
+  title: z.preprocess(trimInput, z.string().min(2).max(120)),
+  url: z.preprocess(normalizeUrlInput, z.string().url()),
+  description: z.preprocess(trimToUndefined, z.string().max(500).optional()),
+  categories: z.array(z.string()).max(MAX_SUBMISSION_CATEGORIES).optional(),
   resetBasis: z.enum(["local", "server"]).optional(),
-  resetTime: z.preprocess(normalizeSubmittedTime, z.string().regex(/^\d{2}:\d{2}$/)).optional(),
+  resetTime: z.preprocess(normalizeTimeInput, z.string().regex(/^\d{2}:\d{2}$/).optional()),
   resetTimezone: z.string().max(64).optional(),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false)
@@ -3630,20 +3623,41 @@ app.post("/api/games", async (c) => {
   if (!submitRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: submitRate.retryAfterSeconds }, 429);
   }
-  const parsed = submissionSchema.safeParse(await c.req.json());
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Request body must be valid JSON" }, 400);
+  }
+  const parsed = submissionSchema.safeParse(body);
   if (!parsed.success) {
-    const fields = Object.keys(parsed.error.flatten().fieldErrors);
     console.warn("Submission rejected:", JSON.stringify(parsed.error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code }))));
-    const labels: Record<string, string> = {
-      title: "Title must be 2-120 characters",
-      url: "Enter a valid game URL",
-      description: "Description must be 500 characters or fewer",
-      categories: "Too many categories selected",
-      resetTime: "Reset time is not valid",
-      resetBasis: "Reset basis is not valid",
-      resetTimezone: "Time zone is too long"
+    const describeIssue = (issue: z.ZodIssue): string => {
+      const field = issue.path[0];
+      switch (field) {
+        case undefined:
+          return "Submission must be a JSON object";
+        case "title":
+          return "Title must be 2-120 characters";
+        case "url":
+          return "Enter a valid game URL";
+        case "description":
+          return "Description must be 500 characters or fewer";
+        case "categories":
+          return issue.code === "too_big"
+            ? `Select at most ${MAX_SUBMISSION_CATEGORIES} categories`
+            : "Categories must be a list of category names";
+        case "resetTime":
+          return "Reset time must be HH:MM";
+        case "resetBasis":
+          return "Reset basis must be local or server";
+        case "resetTimezone":
+          return "Time zone is not valid";
+        default:
+          return `Invalid ${String(field)}`;
+      }
     };
-    const message = fields.map((field) => labels[field] || `Invalid ${field}`).join(". ");
+    const message = Array.from(new Set(parsed.error.issues.map(describeIssue))).join(". ");
     return c.json({ error: message || "Invalid submission", issues: parsed.error.flatten() }, 400);
   }
   let canonicalUrl: string;
@@ -3692,16 +3706,17 @@ app.post("/api/games", async (c) => {
       .run();
   }
 
-  if (parsed.data.categories && parsed.data.categories.length > 0 && user) {
-    for (const categorySlug of parsed.data.categories) {
-      const category = await c.env.DB.prepare("SELECT id FROM categories WHERE slug = ?1 AND is_active = 1").bind(categorySlug).first<{ id: string }>();
-      if (category) {
-        await c.env.DB.prepare(
-          "INSERT OR IGNORE INTO game_categories (game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3)"
-        )
-          .bind(id, category.id, user.id)
-          .run();
-      }
+  const categorySlugs = Array.from(new Set(parsed.data.categories || []));
+  if (categorySlugs.length > 0 && user) {
+    const placeholders = categorySlugs.map((_, index) => `?${index + 1}`).join(", ");
+    const categories = await c.env.DB.prepare(`SELECT id FROM categories WHERE is_active = 1 AND slug IN (${placeholders})`)
+      .bind(...categorySlugs)
+      .all<{ id: string }>();
+    if (categories.results.length > 0) {
+      const insertCategory = c.env.DB.prepare(
+        "INSERT OR IGNORE INTO game_categories (game_id, category_id, assigned_by_user_id) VALUES (?1, ?2, ?3)"
+      );
+      await c.env.DB.batch(categories.results.map((category) => insertCategory.bind(id, category.id, user.id)));
     }
   }
 
@@ -3839,9 +3854,9 @@ app.delete("/api/games/:id/favorite-anon", async (c) => {
 });
 
 const adminGameUpdateSchema = z.object({
-  title: z.string().min(1).max(200),
-  url: z.string().url(),
-  description: z.string().max(1000).nullable(),
+  title: z.preprocess(trimInput, z.string().min(1).max(200)),
+  url: z.preprocess(normalizeUrlInput, z.string().url()),
+  description: z.preprocess(trimInput, z.string().max(1000).nullable()),
   status: z.enum(["pending", "approved", "rejected", "disabled"]),
   reset_basis: z.enum(["local", "server"]).nullable(),
   reset_time_minutes: z.number().int().min(0).max(1439).nullable(),
@@ -3863,7 +3878,12 @@ app.put("/api/games/:id/admin-update", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
 
-  const canonicalUrl = canonicalizeUrl(parsed.data.url);
+  let canonicalUrl: string;
+  try {
+    canonicalUrl = canonicalizeUrl(parsed.data.url);
+  } catch {
+    return c.json({ error: "Invalid URL" }, 400);
+  }
 
   // Omitted time zone keeps the stored one (older clients); an explicit null clears it.
   const existingZone = parsed.data.reset_timezone === undefined
@@ -4577,7 +4597,10 @@ app.get("/api/admin/submissions", async (c) => {
 
 const adminResetSchema = z.object({
   resetBasis: z.union([z.literal("local"), z.literal("server"), z.null()]).optional(),
-  resetTime: z.union([z.string().regex(/^\d{2}:\d{2}$/), z.null()]).optional(),
+  resetTime: z.preprocess(
+    (value) => (typeof value === "string" && !value.trim() ? null : normalizeTimeInput(value)),
+    z.union([z.string().regex(/^\d{2}:\d{2}$/), z.null()]).optional()
+  ),
   resetTimezone: z.union([z.string().max(64), z.null()]).optional()
 });
 
