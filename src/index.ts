@@ -6438,7 +6438,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         const btn = document.getElementById("theme-toggle");
         if (!btn) return;
         const root = document.documentElement;
-        const render = () => { btn.textContent = root.dataset.theme === "light" ? "\u{1F319} Dark" : "\u2600\uFE0F Light"; };
+        const render = () => { btn.textContent = root.dataset.theme === "light" ? "\u{1F319}" : "\u2600\uFE0F"; };
         btn.addEventListener("click", () => {
           const next = root.dataset.theme === "light" ? "dark" : "light";
           if (next === "light") root.dataset.theme = "light"; else delete root.dataset.theme;
