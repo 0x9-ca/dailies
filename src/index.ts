@@ -657,10 +657,8 @@ app.get("/games/:slug", async (c) => {
       <p>${escapeHtml(game.description || "")}</p>
       <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
       ${(() => {
-        const resetLabel = getResetMetaLabel(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
-        if (!resetLabel) return "";
-        const zoneNote = game.reset_basis === "server" && game.reset_timezone ? ` <small>(${escapeHtml(game.reset_timezone)})</small>` : "";
-        return `<p>${escapeHtml(resetLabel)}${zoneNote}</p>`;
+        const resetSpan = renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+        return resetSpan ? `<p>${resetSpan}</p>` : "";
       })()}
       <p>Votes: +<span id="vote-up-count">${game.vote_up_count}</span> / -<span id="vote-down-count">${game.vote_down_count}</span> | Reports: ${game.report_count}</p>
       ${
@@ -734,8 +732,8 @@ app.get("/games/:slug", async (c) => {
                      <option value="server" ${game.reset_basis === "server" ? "selected" : ""}>Server</option>
                    </select>
                  </label>
-                  <label>Reset Time (minutes since midnight, 0-1439)
-                    <input type="number" name="reset_time_minutes" min="0" max="1439" value="${game.reset_time_minutes ?? ""}" />
+                  <label>Reset Time (in the zone above for Server, otherwise viewer's local time)
+                    <input type="time" name="reset_time" value="${game.reset_time_minutes === null ? "" : escapeHtml(formatResetTime(game.reset_time_minutes))}" />
                   </label>
                   ${renderTimeZoneField("reset_timezone", game.reset_timezone)}
                   </div>
@@ -904,7 +902,9 @@ app.get("/games/:slug", async (c) => {
                 const formData = new FormData(adminEditForm);
                 const categories = formData.getAll("categories");
                 const resetBasis = formData.get("reset_basis");
-                const resetTimeMinutes = formData.get("reset_time_minutes");
+                const resetTimeValue = String(formData.get("reset_time") || "").trim();
+                const resetTimeParts = /^(\\d{1,2}):(\\d{2})/.exec(resetTimeValue);
+                const resetTimeMinutes = resetTimeParts ? Number(resetTimeParts[1]) * 60 + Number(resetTimeParts[2]) : null;
                 const resetTimezone = String(formData.get("reset_timezone") || "").trim();
                 const payload = {
                   title: String(formData.get("title") || ""),
@@ -912,7 +912,7 @@ app.get("/games/:slug", async (c) => {
                   description: String(formData.get("description") || "").trim() || null,
                   status: String(formData.get("status") || "approved"),
                   reset_basis: resetBasis ? String(resetBasis) : null,
-                  reset_time_minutes: resetTimeMinutes && String(resetTimeMinutes).trim() ? Number(resetTimeMinutes) : null,
+                  reset_time_minutes: resetTimeMinutes,
                   reset_timezone: resetBasis === "server" && resetTimezone ? resetTimezone : null,
                   paywall: formData.has("paywall"),
                   nsfw: formData.has("nsfw"),
@@ -1168,7 +1168,7 @@ app.get("/rotation/:shareToken", async (c) => {
                 <div class="item-main">
                   <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                   ${renderCategoryPills(categoriesByGameId.get(item.id))}
-                  ${reset.label ? `<div class="meta">${escapeHtml(reset.label)}</div>` : ""}
+                  ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
                 <div class="card-actions">
                   <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
@@ -1387,7 +1387,7 @@ app.get("/me/rotation", async (c) => {
             if (itemMain && !itemMain.querySelector(".meta")) {
               const meta = document.createElement("div");
               meta.className = "meta";
-              meta.textContent = info.label;
+              meta.textContent = window.dglResetText(info.kind, info.min) || info.label;
               itemMain.appendChild(meta);
             }
           });
@@ -1568,7 +1568,7 @@ app.get("/me/rotation", async (c) => {
               <div class="item-main">
                 <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                 ${renderCategoryPills(categoriesByGameId.get(item.id))}
-                ${reset.label ? `<div class="meta">${escapeHtml(reset.label)}</div>` : ""}
+                ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
               </div>
               <div class="card-actions">
                 <div class="reorder-controls">
@@ -2120,8 +2120,8 @@ app.get("/lists/:slug", async (c) => {
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
             ${(() => {
-              const resetLabel = getResetMetaLabel(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              return resetLabel ? `<div class="meta">${escapeHtml(resetLabel)}</div>` : "";
+              const resetSpan = renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
+              return resetSpan ? `<div class="meta">${resetSpan}</div>` : "";
             })()}
           </div>
           <div class="card-actions">
@@ -5036,9 +5036,8 @@ function renderGames(
           <a href="/games/${game.slug}" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
           <p>${escapeHtml(game.description || "")}</p>
           ${(() => {
-            const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
-            const meta = `Score ${game.score.toFixed(3)}${resetLabel ? ` | ${resetLabel}` : ""}`;
-            return `<small>${escapeHtml(meta)}</small>`;
+            const resetSpan = renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
+            return `<small>${escapeHtml(`Score ${game.score.toFixed(3)}`)}${resetSpan ? ` | ${resetSpan}` : ""}</small>`;
           })()}
         </li>
       `
@@ -5086,8 +5085,8 @@ function renderCompactGameList(
       .map((game) => {
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
-        const resetLabel = getResetMetaLabel(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
-        const meta = `Score ${game.score.toFixed(2)}${resetLabel ? ` | ${resetLabel}` : ""}`;
+        const resetSpan = renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
+        const meta = `${escapeHtml(`Score ${game.score.toFixed(2)}`)}${resetSpan ? ` | ${resetSpan}` : ""}`;
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div>
@@ -5481,13 +5480,59 @@ function renderResetItemData(
   basis: "local" | "server" | null | undefined,
   minutes: number | null | undefined,
   timeZone?: string | null
-): { attrs: string; label: string } {
+): { attrs: string; label: string; span: string } {
   const data = getResetSortData(basis, minutes, timeZone);
   return {
     attrs: data ? `data-reset-kind="${data.kind}" data-reset-min="${data.min}"` : "",
-    label: getResetMetaLabel(basis, minutes, timeZone)
+    label: getResetMetaLabel(basis, minutes, timeZone),
+    span: renderResetSpan(basis, minutes, timeZone)
   };
 }
+
+/**
+ * A reset label the browser rewrites in the viewer's local time (see RESET_LOCALIZE_SCRIPT).
+ * The text content is the server-rendered fallback for no-JS clients.
+ */
+function renderResetSpan(
+  basis: "local" | "server" | null | undefined,
+  minutes: number | null | undefined,
+  timeZone?: string | null
+): string {
+  const data = getResetSortData(basis, minutes, timeZone);
+  const label = getResetMetaLabel(basis, minutes, timeZone);
+  if (!data || !label) {
+    return "";
+  }
+  return `<span data-reset-at-kind="${data.kind}" data-reset-at="${data.min}">${escapeHtml(label)}</span>`;
+}
+
+// Converts reset times to the viewer's local clock. "utc" minutes are shifted to local; "local" ones are already local.
+const RESET_LOCALIZE_SCRIPT = `
+  window.dglResetText = (kind, min) => {
+    const m = Number(min);
+    if (!Number.isFinite(m)) return "";
+    let h = Math.floor(m / 60);
+    let mm = m % 60;
+    if (kind === "utc") {
+      const d = new Date();
+      d.setUTCHours(h, mm, 0, 0);
+      h = d.getHours();
+      mm = d.getMinutes();
+    }
+    const d2 = new Date();
+    d2.setHours(h, mm, 0, 0);
+    return "Reset " + d2.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  };
+  window.dglLocalizeResets = (root) => {
+    (root || document).querySelectorAll("[data-reset-at]").forEach((el) => {
+      const text = window.dglResetText(el.getAttribute("data-reset-at-kind"), el.getAttribute("data-reset-at"));
+      if (!text) return;
+      if (!el.title) el.title = el.textContent;
+      el.textContent = text;
+    });
+  };
+  window.dglLocalizeResets();
+`;
 
 // Client helper: toggles a list between its manual order and "resetting soonest" order.
 const LIST_SORT_SCRIPT = `
@@ -5922,6 +5967,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         };
       })();
     </script>
+    <script>${RESET_LOCALIZE_SCRIPT}</script>
   </body>
 </html>`;
 }
