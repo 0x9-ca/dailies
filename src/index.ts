@@ -417,6 +417,76 @@ app.get("/submit", async (c) => {
   `, c.env, { path: "/submit", description: "Submit a daily game for the community to discover." }));
 });
 
+const MOD_LOG_LABELS: Record<string, string> = {
+  approve: "Approved",
+  reject: "Denied",
+  disable: "Hidden",
+  restore: "Restored",
+  delete: "Deleted",
+  nsfw_add: "Marked NSFW",
+  nsfw_remove: "NSFW label removed",
+  paywall_add: "Marked as paywalled",
+  paywall_remove: "Paywall label removed"
+};
+
+app.get("/mod-log", async (c) => {
+  const user = c.get("user");
+  const page = Math.max(1, parsePositiveInt(c.req.query("page"), 1));
+  const perPage = 50;
+  const showActor = !!user && (user.role === "editor" || user.role === "admin");
+  const actions = Object.keys(MOD_LOG_LABELS);
+  // actor_name is only selected for editors/admins; it is never sent to anyone else.
+  const rows = await c.env.DB.prepare(
+    `SELECT audit_log.id, audit_log.action, audit_log.created_at,
+            COALESCE(json_extract(audit_log.metadata_json, '$.title'), games.title, '(deleted game)') AS game_title,
+            COALESCE(json_extract(audit_log.metadata_json, '$.slug'), games.slug) AS game_slug,
+            games.status AS current_status,
+            ${showActor ? "COALESCE(users.display_name, users.email)" : "NULL"} AS actor_name
+     FROM audit_log
+     LEFT JOIN games ON games.id = audit_log.entity_id
+     ${showActor ? "LEFT JOIN users ON users.id = audit_log.actor_user_id" : ""}
+     WHERE audit_log.entity_type = 'game' AND audit_log.entity_id != 'bulk'
+       AND audit_log.action IN (${actions.map((_, i) => `?${i + 3}`).join(",")})
+     ORDER BY audit_log.created_at DESC, audit_log.rowid DESC
+     LIMIT ?1 OFFSET ?2`
+  )
+    .bind(perPage + 1, (page - 1) * perPage, ...actions)
+    .all<{ id: string; game_title: string; game_slug: string | null; action: string; created_at: string; current_status: string | null; actor_name: string | null }>();
+  const hasNext = rows.results.length > perPage;
+  const entries = rows.results.slice(0, perPage);
+  const pager = page > 1 || hasNext
+    ? `<div class="pagination">
+         ${page > 1 ? `<a href="/mod-log?page=${page - 1}">&larr; Newer</a>` : ""}
+         <span>Page ${page}</span>
+         ${hasNext ? `<a href="/mod-log?page=${page + 1}">Older &rarr;</a>` : ""}
+       </div>`
+    : "";
+  return c.html(await layout("Mod Log | Dailies (dles)", user, `
+    <main>
+      <h1>Mod Log</h1>
+      <p>A public record of games being approved, denied, hidden, restored, or deleted, and of NSFW and paywall label changes. Newest first.${showActor ? " <em>Editors and admins can also see who made each change.</em>" : ""}</p>
+      ${entries.length === 0 ? "<p>Nothing has been logged yet.</p>" : `<ul class="games">
+        ${entries
+          .map((entry) => {
+            const title = entry.current_status === "approved" && entry.game_slug
+              ? `<a href="/games/${escapeHtml(entry.game_slug)}">${escapeHtml(entry.game_title)}</a>`
+              : escapeHtml(entry.game_title);
+            const iso = entry.created_at.replace(" ", "T") + "Z";
+            return `<li><strong>${escapeHtml(MOD_LOG_LABELS[entry.action] || entry.action)}</strong>: ${title} <small><time datetime="${escapeHtml(iso)}" data-mod-time>${escapeHtml(entry.created_at)} UTC</time>${showActor ? ` · by ${escapeHtml(entry.actor_name || "unknown")}` : ""}</small></li>`;
+          })
+          .join("")}
+      </ul>`}
+      ${pager}
+    </main>
+    <script>
+      document.querySelectorAll("[data-mod-time]").forEach((el) => {
+        const d = new Date(el.getAttribute("datetime"));
+        if (!Number.isNaN(d.getTime())) el.textContent = d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      });
+    </script>
+  `, c.env, { path: "/mod-log", description: "A public log of moderation changes to games on Dailies (dles)." }));
+});
+
 app.get("/games", async (c) => {
   const user = c.get("user");
   const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "reset";
@@ -2386,6 +2456,7 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/", lastmod: latestAny },
     { loc: "/games", lastmod: latestGame },
     { loc: "/lists", lastmod: latestList },
+    { loc: "/mod-log", lastmod: null as string | null },
     ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: latestGame })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
@@ -3587,6 +3658,24 @@ app.put("/api/games/:id/admin-update", async (c) => {
     return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
   }
 
+  const before = await c.env.DB.prepare("SELECT title, slug, status, paywall, nsfw FROM games WHERE id = ?1")
+    .bind(gameId)
+    .first<{ title: string; slug: string; status: string; paywall: number; nsfw: number }>();
+  if (before) {
+    if (before.status !== parsed.data.status) {
+      const statusAction = ({ approved: "approve", rejected: "reject", disabled: "disable" } as Record<string, "approve" | "reject" | "disable">)[parsed.data.status];
+      if (statusAction) {
+        await logGameEvents(c.env, auth.id, [gameId], statusAction);
+      }
+    }
+    const flagEvents: GameEventAction[] = [];
+    if (!!before.nsfw !== parsed.data.nsfw) flagEvents.push(parsed.data.nsfw ? "nsfw_add" : "nsfw_remove");
+    if (!!before.paywall !== parsed.data.paywall) flagEvents.push(parsed.data.paywall ? "paywall_add" : "paywall_remove");
+    for (const flagAction of flagEvents) {
+      await writeAudit(c.env, auth.id, "game", gameId, flagAction, { title: parsed.data.title, slug: before.slug });
+    }
+  }
+
   // Update game
   await c.env.DB.prepare(
     `UPDATE games
@@ -4286,6 +4375,7 @@ app.post("/api/admin/games/bulk", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
 
+  await logGameEvents(c.env, auth.id, parsed.data.ids, parsed.data.action, parsed.data.note ? { note: parsed.data.note } : {});
   const statements = parsed.data.ids.map((gameId) => {
     if (parsed.data.action === "approve") {
       return c.env.DB.prepare(
@@ -4311,10 +4401,6 @@ app.post("/api/admin/games/bulk", async (c) => {
     }
   }
 
-  await writeAudit(c.env, auth.id, "game", "bulk", parsed.data.action, {
-    count: parsed.data.ids.length,
-    note: parsed.data.note || null
-  });
   await invalidateGameCaches(c.env);
   return c.json({ ok: true, count: parsed.data.ids.length });
 });
@@ -4325,6 +4411,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
     return auth;
   }
   const gameId = c.req.param("id");
+  await logGameEvents(c.env, auth.id, [gameId], "approve");
   await c.env.DB.prepare(
     `UPDATE games
      SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now')
@@ -4333,7 +4420,6 @@ app.post("/api/admin/games/:id/approve", async (c) => {
     .bind(auth.id, gameId)
     .run();
   await updateGameScore(c.env, gameId);
-  await writeAudit(c.env, auth.id, "game", gameId, "approve", {});
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -4348,12 +4434,12 @@ app.post("/api/admin/games/:id/reject", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const gameId = c.req.param("id");
+  await logGameEvents(c.env, auth.id, [gameId], "reject", note.data.note ? { note: note.data.note } : {});
   await c.env.DB.prepare(
     "UPDATE games SET status = 'rejected', moderation_note = ?1, updated_at = datetime('now') WHERE id = ?2"
   )
     .bind(note.data.note || null, gameId)
     .run();
-  await writeAudit(c.env, auth.id, "game", gameId, "reject", { note: note.data.note || null });
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -4364,8 +4450,8 @@ app.post("/api/admin/games/:id/disable", async (c) => {
     return auth;
   }
   const gameId = c.req.param("id");
+  await logGameEvents(c.env, auth.id, [gameId], "disable");
   await c.env.DB.prepare("UPDATE games SET status = 'disabled', updated_at = datetime('now') WHERE id = ?1").bind(gameId).run();
-  await writeAudit(c.env, auth.id, "game", gameId, "disable", {});
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -4376,8 +4462,8 @@ app.post("/api/admin/games/:id/restore", async (c) => {
     return auth;
   }
   const gameId = c.req.param("id");
+  await logGameEvents(c.env, auth.id, [gameId], "restore");
   await c.env.DB.prepare("UPDATE games SET status = 'approved', updated_at = datetime('now') WHERE id = ?1").bind(gameId).run();
-  await writeAudit(c.env, auth.id, "game", gameId, "restore", {});
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -4437,6 +4523,7 @@ async function applyGameActionForReports(env: Env, userId: string, reportIds: st
   if (gameIds.length === 0) {
     return 0;
   }
+  await logGameEvents(env, userId, gameIds, action === "hide" ? "disable" : "delete", { via: "report" });
   const statements: D1PreparedStatement[] = [];
   for (const gameId of gameIds) {
     if (action === "hide") {
@@ -4451,9 +4538,6 @@ async function applyGameActionForReports(env: Env, userId: string, reportIds: st
     }
   }
   await env.DB.batch(statements);
-  for (const gameId of gameIds) {
-    await writeAudit(env, userId, "game", gameId, action === "hide" ? "disable" : "delete", { via: "report" });
-  }
   await invalidateGameCaches(env);
   return gameIds.length;
 }
@@ -4990,6 +5074,50 @@ async function recalculateAllScores(env: Env): Promise<void> {
   const games = await env.DB.prepare("SELECT id FROM games WHERE status = 'approved'").all<{ id: string }>();
   for (const game of games.results) {
     await updateGameScore(env, game.id);
+  }
+}
+
+type GameEventAction =
+  | "approve" | "reject" | "disable" | "restore" | "delete"
+  | "nsfw_add" | "nsfw_remove" | "paywall_add" | "paywall_remove";
+
+const GAME_STATUS_FOR_ACTION: Record<string, string> = { approve: "approved", restore: "approved", reject: "rejected", disable: "disabled" };
+
+/**
+ * Writes per-game moderation events to audit_log (the source for the public /mod-log page).
+ * Status actions must be logged BEFORE the change is applied: current rows are read to skip no-ops,
+ * snapshot the title (so deleted games stay named), and label an approval of a hidden game as "restore".
+ */
+async function logGameEvents(
+  env: Env,
+  actorUserId: string,
+  gameIds: string[],
+  action: "approve" | "reject" | "disable" | "restore" | "delete",
+  extra: Record<string, unknown> = {}
+): Promise<void> {
+  const ids = [...new Set(gameIds)];
+  const target = GAME_STATUS_FOR_ACTION[action];
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const placeholders = chunk.map((_, index) => `?${index + 1}`).join(",");
+    const rows = await env.DB.prepare(`SELECT id, title, slug, status FROM games WHERE id IN (${placeholders})`)
+      .bind(...chunk)
+      .all<{ id: string; title: string; slug: string; status: string }>();
+    for (const row of rows.results) {
+      if (target && row.status === target) {
+        continue;
+      }
+      const label = target === "approved" ? (row.status === "disabled" ? "restore" : "approve") : action;
+      statements.push(
+        env.DB.prepare(
+          "INSERT INTO audit_log (id, actor_user_id, entity_type, entity_id, action, metadata_json) VALUES (?1, ?2, 'game', ?3, ?4, ?5)"
+        ).bind(crypto.randomUUID(), actorUserId, row.id, label, JSON.stringify({ title: row.title, slug: row.slug, ...extra }))
+      );
+    }
+  }
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
   }
 }
 
@@ -5898,6 +6026,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/submit">Submit</a>
         <a href="/me/rotation">My Rotation</a>
         ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
+        <a href="/mod-log">Mod Log</a>
         ${user ? `<a href="/me/settings">Settings</a>` : ""}
         ${isAdminEditor ? `<a href="/admin">Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>` : ""}
         ${!user ? `<a href="/login">Login</a>` : ""}
@@ -5906,9 +6035,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         ${
           user
             ? `Signed in as ${escapeHtml(user.displayName || user.email)} (${user.role}) - <a href="/auth/logout">Logout</a>`
-            : isDevEnv(env) 
-                ? `Sign in: <a href="/login">Login page</a> | Dev: <a href="/auth/mock-login/user">User</a> <a href="/auth/mock-login/editor">Editor</a> <a href="/auth/mock-login/admin">Admin</a>`
-                : `Sign in: <a href="/login">Login page</a>`
+            : isDevEnv(env)
+                ? `Dev: <a href="/auth/mock-login/user">User</a> <a href="/auth/mock-login/editor">Editor</a> <a href="/auth/mock-login/admin">Admin</a>`
+                : ""
         }
       </div>
     </header>
