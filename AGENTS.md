@@ -34,7 +34,8 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 
 - Editor/admin submissions are auto-approved.
 - Standard user submissions are `pending` until moderated.
-- Private curated lists are visible to owner + editor/admin only.
+- Private curated lists are visible to owner + editor/admin only (and the list's tagged Twitch user).
+- Curated lists can be tagged with a Twitch user by editors/admins (`PATCH /api/lists/:id/twitch`, resolved via Helix to a stable `twitch_user_id`). Tagged lists show a blue verified check and a Twitch channel button. The matching Twitch-login user (via `oauth_accounts`) can edit the list's games, title and description (`requireListEditor`), but not slug, visibility, deletion, or the tag itself.
 - Favorites support manual ordering and weekday masks.
 - Anonymous favorites are local-first and can sync after login; anonymous votes are limited to one vote per game per IP hash.
 - Login supports Discord and Twitch OAuth via `/login`. Twitch requests no scopes (no email) and always yields role `user`; each provider creates its own separate account with a placeholder email. Twitch needs `OAUTH_TWITCH_CLIENT_ID` (var) and `OAUTH_TWITCH_CLIENT_SECRET` (secret); the button is hidden when the client ID is unset.
