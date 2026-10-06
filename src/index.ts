@@ -2220,16 +2220,43 @@ app.get("/lists/:slug", async (c) => {
   // Everyone who can edit views the list normally and opts in to edit mode with ?edit=1.
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone,
+            games.score, games.vote_up_count, games.vote_down_count, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; score: number; vote_up_count: number; vote_down_count: number; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
+
+  // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
+  const userVotes = new Map<string, -1 | 1>();
+  const userFavorites = new Set<string>();
+  const itemIds = items.results.map((item) => item.id).slice(0, 90);
+  if (!isAdminEditor && itemIds.length > 0) {
+    const placeholders = itemIds.map((_id, index) => `?${index + 2}`).join(", ");
+    const voteRows = user
+      ? await c.env.DB.prepare(`SELECT game_id, value FROM votes WHERE user_id = ?1 AND game_id IN (${placeholders})`)
+          .bind(user.id, ...itemIds)
+          .all<{ game_id: string; value: -1 | 1 }>()
+      : await c.env.DB.prepare(`SELECT game_id, value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`)
+          .bind(await getAnonymousVoteKey(c), ...itemIds)
+          .all<{ game_id: string; value: -1 | 1 }>();
+    for (const row of voteRows.results) {
+      userVotes.set(row.game_id, row.value);
+    }
+    if (user) {
+      const favoriteRows = await c.env.DB.prepare(`SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (${placeholders})`)
+        .bind(user.id, ...itemIds)
+        .all<{ game_id: string }>();
+      for (const row of favoriteRows.results) {
+        userFavorites.add(row.game_id);
+      }
+    }
+  }
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -2285,17 +2312,28 @@ app.get("/lists/:slug", async (c) => {
       ` : ""}
       ${!isAdminEditor && items.results.length > 1 ? renderListSortControl() : ""}
       <ol class="rotation-list" id="list-items">
-        ${items.results.map((item, idx) => `<li draggable="${isAdminEditor}" data-game-id="${item.id}" ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
+        ${items.results.map((item, idx) => {
+          const currentVote = userVotes.get(item.id) || 0;
+          const currentFavorite = userFavorites.has(item.id);
+          return `<li draggable="${isAdminEditor}" data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
             ${(() => {
               const resetSpan = renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              return resetSpan ? `<div class="meta">${resetSpan}</div>` : "";
+              const meta = `${isAdminEditor ? "" : escapeHtml(`Score ${item.score.toFixed(2)}`)}${resetSpan ? `${isAdminEditor ? "" : " | "}${resetSpan}` : ""}`;
+              return meta ? `<div class="meta">${meta}</div>` : "";
             })()}
           </div>
           <div class="card-actions">
+            ${isAdminEditor ? "" : `
+              <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}">+ <span data-up-count>${item.vote_up_count}</span></button>
+              <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}">- <span data-down-count>${item.vote_down_count}</span></button>
+              ${user
+                ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}">${currentFavorite ? "★" : "☆"}</button>`
+                : `<button type="button" data-local-favorite="no">☆</button>`}
+            `}
             ${isAdminEditor ? `
               <div class="reorder-controls">
                 <button type="button" data-move="up">↑</button>
@@ -2305,7 +2343,8 @@ app.get("/lists/:slug", async (c) => {
             <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
-        </li>`).join("")}
+        </li>`;
+        }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
     </main>
@@ -2313,6 +2352,7 @@ app.get("/lists/:slug", async (c) => {
       ${LIST_SORT_SCRIPT}
       window.dglListSort.init(document.getElementById("list-items"), document.getElementById("list-sort-select"));
     </script>` : ""}
+    ${!isAdminEditor ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
     ${isAdminEditor ? `
     <script>
       (() => {
@@ -6105,6 +6145,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
@@ -6150,6 +6191,22 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --card: #1e1e1e;
         --border: #444444;
         --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+        --header-bg: rgba(18, 18, 18, 0.85);
+        --on-accent: #121212;
+      }
+      html[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f5f5f7;
+        --bg-soft: #ececf0;
+        --ink: #1c1c1e;
+        --muted: #5c5c63;
+        --accent: #4b5563;
+        --accent-strong: #374151;
+        --card: #ffffff;
+        --border: #c9c9d1;
+        --shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
+        --header-bg: rgba(245, 245, 247, 0.85);
+        --on-accent: #ffffff;
       }
       * { box-sizing: border-box; }
       body {
@@ -6164,7 +6221,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         align-items: center;
         padding: 1rem 1.5rem;
         border-bottom: 1px solid var(--border);
-        background: rgba(18, 18, 18, 0.85);
+        background: var(--header-bg);
         backdrop-filter: blur(10px);
         position: sticky;
         top: 0;
@@ -6191,7 +6248,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         padding: 0.55rem 0.9rem;
         border-radius: 9px;
         background: var(--accent);
-        color: #121212;
+        color: var(--on-accent);
         font-weight: 700;
         text-decoration: none;
       }
@@ -6254,7 +6311,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .status { min-height: 1.2rem; color:var(--accent); font-weight: 600; }
       .status.error { color: #cc6666; }
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
-      button.active { background: var(--accent); color: #121212; }
+      button.active { background: var(--accent); color: var(--on-accent); }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
       .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
@@ -6357,6 +6414,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         ${!user ? `<a href="/login">Login</a>` : ""}
       </nav>
       <div>
+        <button type="button" id="theme-toggle" aria-label="Toggle light/dark mode" title="Toggle light/dark mode" style="margin-right:0.5rem;padding:0.25rem 0.5rem;cursor:pointer;"></button>
         ${
           user
             ? `Signed in as ${escapeHtml(user.displayName || user.email)} (${user.role}) - <a href="/auth/logout">Logout</a>`
@@ -6375,6 +6433,21 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+    <script>
+      (() => {
+        const btn = document.getElementById("theme-toggle");
+        if (!btn) return;
+        const root = document.documentElement;
+        const render = () => { btn.textContent = root.dataset.theme === "light" ? "\u{1F319} Dark" : "\u2600\uFE0F Light"; };
+        btn.addEventListener("click", () => {
+          const next = root.dataset.theme === "light" ? "dark" : "light";
+          if (next === "light") root.dataset.theme = "light"; else delete root.dataset.theme;
+          try { localStorage.setItem("dgl_theme", next); } catch (e) {}
+          render();
+        });
+        render();
+      })();
+    </script>
     <script>
       (() => {
         const stack = document.getElementById("toast-stack");
