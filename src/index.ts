@@ -188,6 +188,84 @@ app.get("/auth/discord/callback", async (c) => {
   return c.redirect("/?importLocal=1");
 });
 
+// Twitch OAuth. Requests no scopes, so Twitch never shares the user's email; role is always "user".
+app.get("/auth/twitch", async (c) => {
+  if (!c.env.OAUTH_TWITCH_CLIENT_ID) {
+    return c.text("Twitch OAuth not configured", 501);
+  }
+  const state = crypto.randomUUID();
+  setCookie(c, "oauth_state_twitch", state, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: c.env.APP_URL.startsWith("https://"),
+    maxAge: 600
+  });
+  const url = new URL("https://id.twitch.tv/oauth2/authorize");
+  url.searchParams.set("client_id", c.env.OAUTH_TWITCH_CLIENT_ID);
+  url.searchParams.set("redirect_uri", `${c.env.APP_URL}/auth/twitch/callback`);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "");
+  url.searchParams.set("state", state);
+  return c.redirect(url.toString());
+});
+
+app.get("/auth/twitch/callback", async (c) => {
+  const state = c.req.query("state");
+  const code = c.req.query("code");
+  const stored = getCookie(c, "oauth_state_twitch");
+  deleteCookie(c, "oauth_state_twitch", { path: "/" });
+  if (!state || !code || !stored || state !== stored) {
+    return c.text("Invalid OAuth state", 400);
+  }
+  if (!c.env.OAUTH_TWITCH_CLIENT_ID || !c.env.OAUTH_TWITCH_CLIENT_SECRET) {
+    return c.text("Twitch OAuth not configured", 501);
+  }
+
+  const tokenRes = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: c.env.OAUTH_TWITCH_CLIENT_ID,
+      client_secret: c.env.OAUTH_TWITCH_CLIENT_SECRET,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: `${c.env.APP_URL}/auth/twitch/callback`
+    })
+  });
+  if (!tokenRes.ok) {
+    console.error("Twitch token exchange failed:", tokenRes.status, await tokenRes.text());
+    return c.text("OAuth token exchange failed", 400);
+  }
+  const tokenJson = (await tokenRes.json()) as { access_token?: string };
+  if (!tokenJson.access_token) {
+    return c.text("OAuth token missing", 400);
+  }
+
+  const userRes = await fetch("https://api.twitch.tv/helix/users", {
+    headers: { Authorization: `Bearer ${tokenJson.access_token}`, "Client-Id": c.env.OAUTH_TWITCH_CLIENT_ID }
+  });
+  if (!userRes.ok) {
+    return c.text("OAuth profile fetch failed", 400);
+  }
+  const twitchUser = ((await userRes.json()) as {
+    data?: Array<{ id: string; login?: string; display_name?: string; profile_image_url?: string }>;
+  }).data?.[0];
+  if (!twitchUser?.id) {
+    return c.text("OAuth profile fetch failed", 400);
+  }
+
+  const userId = await upsertOAuthUser(c.env, {
+    provider: "twitch",
+    providerUserId: twitchUser.id,
+    displayName: twitchUser.display_name || twitchUser.login || null,
+    avatarUrl: twitchUser.profile_image_url || null
+  });
+
+  await createSession(c, userId);
+  return c.redirect("/?importLocal=1");
+});
+
 app.get("/auth/logout", async (c) => {
   await destroySession(c);
   return c.redirect("/");
@@ -207,11 +285,15 @@ app.get("/login", async (c) => {
       body > footer { margin-top: 0 !important; padding: 1rem !important; }
     </style>
     <main>
-      <div>
+      <div style="display:flex;flex-direction:column;gap:0.75rem;align-items:stretch;">
           <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;gap:0.5rem;text-decoration:none;">
             <svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true" focusable="false"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
             Login using Discord
           </a>
+          ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;gap:0.5rem;text-decoration:none;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>
+            Login using Twitch
+          </a>` : ""}
       </div>
     </main>
   `, c.env, { path: "/login", description: "Sign in to Dailies to save your rotation and manage curated lists." }));
@@ -6116,7 +6198,7 @@ function escapeHtml(value: string): string {
 async function upsertOAuthUser(
   env: Env,
   args: {
-    provider: "discord";
+    provider: "discord" | "twitch";
     providerUserId: string;
     displayName: string | null;
     avatarUrl: string | null;
@@ -6130,10 +6212,10 @@ async function upsertOAuthUser(
   const userId = existingAccount?.user_id || crypto.randomUUID();
 
   if (!existingAccount) {
-    // Discord accounts don't share an email with us; store a non-contactable
+    // OAuth accounts don't share an email with us; store a non-contactable
     // placeholder so the NOT NULL/UNIQUE email column is satisfied without
     // ever requesting or persisting the user's real address.
-    const placeholderEmail = `discord-${args.providerUserId}@users.noreply.dailies`;
+    const placeholderEmail = `${args.provider}-${args.providerUserId}@users.noreply.dailies`;
     await env.DB.prepare(
       "INSERT INTO users (id, email, display_name, avatar_url, role) VALUES (?1, ?2, ?3, ?4, 'user')"
     )
