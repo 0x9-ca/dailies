@@ -264,14 +264,10 @@ app.get("/", async (c) => {
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
   return c.html(await layout("Dailies (dles) – Find the Best Daily Games", user, `
     <main>
-      <section class="hero">
-        <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
-        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
-        <div class="actions">
-          <a class="btn" href="/games">Browse games</a>
-          <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
-        </div>
-      </section>
+      <div class="actions">
+        <a class="btn" href="/games">Browse games</a>
+        <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
+      </div>
       ${
         user
           ? `<section id="local-favorites-import-panel" class="panel" ${shouldPromptImport ? "" : "hidden"}>
@@ -292,6 +288,10 @@ app.get("/", async (c) => {
       <section>
         <h2>Newly Added</h2>
         ${newGamesMarkup}
+      </section>
+      <section>
+        <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
+        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
       </section>
       <section class="about">
         <h2>About Dailies</h2>
