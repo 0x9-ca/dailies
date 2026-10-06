@@ -38,7 +38,7 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Curated lists can be tagged with a Twitch user by editors/admins (`PATCH /api/lists/:id/twitch`, resolved via Helix to a stable `twitch_user_id`). Tagged lists show a blue verified check and a Twitch channel button. The matching Twitch-login user (via `oauth_accounts`) can edit the list's games, title and description (`requireListEditor`), but not slug, visibility, deletion, or the tag itself.
 - Favorites support manual ordering and weekday masks.
 - Anonymous favorites are local-first and can sync after login; anonymous votes are limited to one vote per game per IP hash.
-- Login supports Discord and Twitch OAuth via `/login`. Twitch requests no scopes (no email) and always yields role `user`; each provider creates its own separate account with a placeholder email. Twitch needs `OAUTH_TWITCH_CLIENT_ID` (var) and `OAUTH_TWITCH_CLIENT_SECRET` (secret); the button is hidden when the client ID is unset.
+- Login supports Discord and Twitch OAuth via `/login` (shared helpers `beginOAuth`/`readOAuthCallback`/`exchangeOAuthCode`/`revokeOAuthToken`). Provider access tokens are revoked right after the profile read and never stored. Discord roles are re-synced on every login. Logout is `POST /auth/logout`. Twitch requests no scopes (no email) and always yields role `user`; each provider creates its own separate account with a placeholder email. Twitch needs `OAUTH_TWITCH_CLIENT_ID` (var) and `OAUTH_TWITCH_CLIENT_SECRET` (secret); the button is hidden when the client ID is unset.
 - Games can be marked as `paywall` by editors/admins; a green `$` badge renders after the title on all card views.
 - Server-time resets can carry a `reset_timezone` (IANA name; only kept when `reset_basis = server`, null means UTC). Reset sort converts via per-zone UTC offsets computed in the Worker.
 - Click tracking: `POST /api/games/:id/click` increments `click_count`; score computation factors in click count and list membership.
@@ -64,6 +64,8 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 ## Safe editing notes for agents
 
 - Keep SQL parameterized with D1 prepared statements.
+- Embed server values in inline `<script>` blocks with `scriptJson(...)`, never raw `JSON.stringify(...)`; in client code, put user text in the DOM with `textContent`, not `innerHTML`.
+- Mock login (`/auth/mock-login/:role`) only works when `APP_ENV` is development and the request host matches `APP_URL`. Never deploy the default (dev) wrangler env: all envs share one D1 database.
 - Update both server route behavior and inline client script behavior together.
 - If adding mutating APIs, ensure CSRF and auth/role checks are included.
 - If adding public list queries, consider cache invalidation with `invalidateGameCaches`.

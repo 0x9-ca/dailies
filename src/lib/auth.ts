@@ -10,7 +10,7 @@ function encodeBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
-async function hashToken(secret: string, token: string): Promise<string> {
+export async function hashToken(secret: string, token: string): Promise<string> {
   const data = new TextEncoder().encode(`${secret}:${token}`);
   const hash = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(hash)).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -23,7 +23,17 @@ export function randomToken(): string {
   return encodeBase64Url(bytes);
 }
 
+export function wantsSecureCookies(env: Env): boolean {
+  return env.APP_URL.startsWith("https://");
+}
+
 export async function createSession(c: Context<{ Bindings: Env; Variables: AppVariables }>, userId: string): Promise<void> {
+  // Logging in again replaces any session this browser already had rather than leaving it orphaned in D1.
+  const previousToken = getCookie(c, c.env.SESSION_COOKIE_NAME);
+  if (previousToken) {
+    await c.env.DB.prepare("DELETE FROM sessions WHERE id = ?1").bind(await hashToken(c.env.SESSION_SECRET, previousToken)).run();
+  }
+
   // Store only a hash of the session token in D1 so leaked DB rows cannot be replayed.
   const token = randomToken();
   const tokenHash = await hashToken(c.env.SESSION_SECRET, token);
@@ -33,11 +43,10 @@ export async function createSession(c: Context<{ Bindings: Env; Variables: AppVa
     .bind(tokenHash, userId, expiresAt)
     .run();
 
-  const secureCookies = c.env.APP_URL.startsWith("https://");
   setCookie(c, c.env.SESSION_COOKIE_NAME, token, {
     path: "/",
     httpOnly: true,
-    secure: secureCookies,
+    secure: wantsSecureCookies(c.env),
     sameSite: "Lax",
     expires: new Date(expiresAt)
   });
@@ -63,11 +72,12 @@ export const sessionMiddleware = createMiddleware<{ Bindings: Env; Variables: Ap
   }
 
   const tokenHash = await hashToken(c.env.SESSION_SECRET, token);
+  // datetime() normalises the stored ISO-8601 expiry; comparing the raw strings would let sessions outlive it by up to a day.
   const row = await c.env.DB.prepare(
     `SELECT users.id, users.email, users.display_name, users.role
      FROM sessions
      JOIN users ON users.id = sessions.user_id
-     WHERE sessions.id = ?1 AND sessions.expires_at > datetime('now')`
+     WHERE sessions.id = ?1 AND datetime(sessions.expires_at) > datetime('now')`
   )
     .bind(tokenHash)
     .first<{ id: string; email: string; display_name: string | null; role: AppUser["role"] }>();
