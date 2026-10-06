@@ -3589,6 +3589,16 @@ app.post("/api/games", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
+  c.executionCtx.waitUntil(
+    notifyNewSubmission(c.env, {
+      title: parsed.data.title,
+      url: parsed.data.url,
+      description: parsed.data.description || null,
+      status: bypassModeration ? "approved" : "pending",
+      submitter: user ? `${user.displayName || "(no name)"} (${user.role})` : "anonymous",
+      slug
+    })
+  );
   return c.json({ id, status: bypassModeration ? "approved" : "pending" }, 201);
 });
 
@@ -5203,6 +5213,46 @@ async function logGameEvents(
   }
   if (statements.length > 0) {
     await env.DB.batch(statements);
+  }
+}
+
+/** Emails the site owner about a new submission. Best-effort: failures are logged and never affect the submission. */
+async function notifyNewSubmission(
+  env: Env,
+  game: { title: string; url: string; description: string | null; status: "approved" | "pending"; submitter: string; slug: string }
+): Promise<void> {
+  if (!env.EMAIL || !env.NOTIFY_EMAIL_TO || !env.NOTIFY_EMAIL_FROM) {
+    return;
+  }
+  const oneLine = (value: string) => value.replace(/[\r\n]+/g, " ").trim();
+  const prefix = env.APP_ENV === "production" ? "" : `[${env.APP_ENV}] `;
+  const moderateUrl = `${env.APP_URL}/admin/submissions`;
+  const lines = [
+    `Title: ${oneLine(game.title)}`,
+    `URL: ${game.url}`,
+    `Description: ${game.description ? oneLine(game.description) : "(none)"}`,
+    `Status: ${game.status}`,
+    `Submitted by: ${oneLine(game.submitter)}`,
+    "",
+    game.status === "pending" ? `Review it: ${moderateUrl}` : `Auto-approved: ${env.APP_URL}/games/${game.slug}`
+  ];
+  const html = `<p><strong>${escapeHtml(oneLine(game.title))}</strong></p>
+<p><a href="${escapeHtml(game.url)}">${escapeHtml(game.url)}</a></p>
+<p>${escapeHtml(game.description ? oneLine(game.description) : "(no description)")}</p>
+<p>Status: ${game.status}<br>Submitted by: ${escapeHtml(oneLine(game.submitter))}</p>
+<p>${game.status === "pending"
+    ? `<a href="${escapeHtml(moderateUrl)}">Review it</a>`
+    : `<a href="${escapeHtml(`${env.APP_URL}/games/${game.slug}`)}">Auto-approved: view game</a>`}</p>`;
+  try {
+    await env.EMAIL.send({
+      to: env.NOTIFY_EMAIL_TO,
+      from: { email: env.NOTIFY_EMAIL_FROM, name: "Dailies" },
+      subject: `${prefix}New game submitted: ${oneLine(game.title).slice(0, 120)}`,
+      text: lines.join("\n"),
+      html
+    });
+  } catch (error) {
+    console.error("Submission notification email failed:", error);
   }
 }
 

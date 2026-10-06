@@ -2,6 +2,9 @@ export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
   APP_ENV: string;
+  EMAIL?: SendEmail;
+  NOTIFY_EMAIL_TO?: string;
+  NOTIFY_EMAIL_FROM?: string;
   APP_URL: string;
   SESSION_COOKIE_NAME: string;
   OAUTH_DISCORD_CLIENT_ID: string;

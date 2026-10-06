@@ -24,12 +24,15 @@
       "id": "59fe208f58e2486884a6f2460f415b7a"
     }
   ],
+  "send_email": [{ "name": "EMAIL" }],
   "vars": {
     "APP_ENV": "development",
     "APP_URL": "http://192.168.17.2:8787",
     "SESSION_COOKIE_NAME": "dgl_session",
     "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
     "OAUTH_TWITCH_CLIENT_ID": "4egm1grcln4984wbsp1s49pa738jhm",
+    "NOTIFY_EMAIL_TO": "dles@0x9.ca",
+    "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
     "DISCORD_GUILD_ID": "1544140186915700859",
     "DISCORD_ROLE_ADMIN": "1544140573491863662",
     "DISCORD_ROLE_EDITOR": "1544140999671156908"
@@ -56,12 +59,15 @@
           "id": "59fe208f58e2486884a6f2460f415b7a"
         }
       ],
+      "send_email": [{ "name": "EMAIL" }],
       "vars": {
         "APP_ENV": "staging",
         "APP_URL": "https://dailies-stg.0x9.ca",
         "SESSION_COOKIE_NAME": "dgl_session",
         "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
         "OAUTH_TWITCH_CLIENT_ID": "4egm1grcln4984wbsp1s49pa738jhm",
+        "NOTIFY_EMAIL_TO": "dles@0x9.ca",
+        "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908"
@@ -83,12 +89,15 @@
           "id": "59fe208f58e2486884a6f2460f415b7a"
         }
       ],
+      "send_email": [{ "name": "EMAIL" }],
       "vars": {
         "APP_ENV": "production",
         "APP_URL": "https://dailies.0x9.ca",
         "SESSION_COOKIE_NAME": "dgl_session",
         "OAUTH_DISCORD_CLIENT_ID": "1544140841214410854",
         "OAUTH_TWITCH_CLIENT_ID": "4egm1grcln4984wbsp1s49pa738jhm",
+        "NOTIFY_EMAIL_TO": "dles@0x9.ca",
+        "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908"
