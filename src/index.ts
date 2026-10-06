@@ -6427,7 +6427,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     ${body}
     <footer style="text-align: center; padding: 2rem 1rem; margin-top: 4rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem;">
       <p>
-        <a href="https://github.com/mr-delayer/dailies" target="_blank" rel="noopener noreferrer">github</a>
+        <a href="https://github.com/0x9-ca/dailies" target="_blank" rel="noopener noreferrer">github</a>
         |
         <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">discord</a>
       </p>
