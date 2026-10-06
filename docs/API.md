@@ -12,12 +12,14 @@
 - `POST /api/games/:id/vote` (anonymous by IP hash or authenticated by user ID; repeat vote updates existing value)
 - `POST /api/games/:id/favorite-anon`
 - `DELETE /api/games/:id/favorite-anon`
-- `POST /api/games/:id/click` (increments click count for scoring)
+- `POST /api/games/:id/click` (increments click count for scoring; capped per visitor per game)
 
 ## Auth pages/routes
 
 - `GET /login`
-- `GET /auth/logout`
+- `GET /auth/discord`, `GET /auth/discord/callback`
+- `GET /auth/twitch`, `GET /auth/twitch/callback`
+- `POST /auth/logout`
 
 ## Authenticated user
 
@@ -65,4 +67,6 @@
 - Mutating `/api/*` endpoints require `x-csrf-token` matching `csrf_token` cookie.
 - User/session checks are enforced by `requireAuth` and `requireRole` where required (for example, favorites/report/admin endpoints).
 - Anonymous vote identity is derived server-side from client IP and stored as a hash (`anon_ip_hash`).
+- OAuth logins check a per-provider `state` cookie, revoke the provider access token right after reading the profile, and store only the provider user id and initial display name.
+- Discord editor/admin roles are re-synced from the guild on every Discord login (losing the Discord role demotes the user).
 - Games can have a `paywall` flag set via admin update; rendered as a green `$` badge on cards.

@@ -38,6 +38,7 @@ chmod 600 "$tmp_dev_vars"
 write_dev_var "$tmp_dev_vars" "APP_URL" "${APP_URL_DEV:-${APP_URL:-http://192.168.17.2:8787}}"
 write_dev_var "$tmp_dev_vars" "SESSION_SECRET" "${SESSION_SECRET:-}"
 write_dev_var "$tmp_dev_vars" "OAUTH_DISCORD_CLIENT_SECRET" "${OAUTH_DISCORD_CLIENT_SECRET:-}"
+write_dev_var "$tmp_dev_vars" "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET:-}"
 
 mv "$tmp_dev_vars" "$DEV_VARS_PATH"
 echo "Wrote local dev vars to $DEV_VARS_PATH"
@@ -144,21 +145,20 @@ put_secret() {
   chmod 600 "$tmp_file"
   printf "%s" "$secret_value" > "$tmp_file"
 
-  if [[ -n "$env_name" ]]; then
-    npx wrangler secret put "$secret_name" --env "$env_name" < "$tmp_file"
-  else
-    npx wrangler secret put "$secret_name" --env "" < "$tmp_file"
-  fi
+  npx wrangler secret put "$secret_name" --env "$env_name" < "$tmp_file"
 
   rm -f "$tmp_file"
 }
 
-put_secret "SESSION_SECRET" "${SESSION_SECRET:-}" ""
+# Only staging and production are deployed. The default (development) config is for `wrangler dev` and reads
+# .dev.vars; pushing secrets to it would create a live dev-mode worker (mock logins) on the shared database.
 put_secret "SESSION_SECRET" "${SESSION_SECRET_STAGING:-${SESSION_SECRET:-}}" "staging"
 put_secret "SESSION_SECRET" "${SESSION_SECRET_PRODUCTION:-${SESSION_SECRET:-}}" "production"
 
-put_secret "OAUTH_DISCORD_CLIENT_SECRET" "${OAUTH_DISCORD_CLIENT_SECRET:-}" ""
 put_secret "OAUTH_DISCORD_CLIENT_SECRET" "${OAUTH_DISCORD_CLIENT_SECRET_STAGING:-${OAUTH_DISCORD_CLIENT_SECRET:-}}" "staging"
 put_secret "OAUTH_DISCORD_CLIENT_SECRET" "${OAUTH_DISCORD_CLIENT_SECRET_PRODUCTION:-${OAUTH_DISCORD_CLIENT_SECRET:-}}" "production"
 
-echo "Secrets uploaded for default, staging, and production environments."
+put_secret "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET_STAGING:-${OAUTH_TWITCH_CLIENT_SECRET:-}}" "staging"
+put_secret "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET_PRODUCTION:-${OAUTH_TWITCH_CLIENT_SECRET:-}}" "production"
+
+echo "Secrets uploaded for staging and production environments."

@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
 import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from "./lib/url";
-import { createSession, destroySession, randomToken, requireAuth, requireRole, sessionMiddleware } from "./lib/auth";
+import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 
@@ -24,7 +24,7 @@ app.use("*", async (c, next) => {
     setCookie(c, "csrf_token", csrfToken, {
       path: "/",
       sameSite: "Lax",
-      secure: c.env.APP_URL.startsWith("https://"),
+      secure: wantsSecureCookies(c.env),
       httpOnly: false,
       maxAge: 60 * 60 * 24 * 30
     });
@@ -48,10 +48,11 @@ app.use("/api/*", async (c, next) => {
 
 app.get("/health", (c) => c.json({ ok: true }));
 
-// Development-only quick role login helper.
+// Development-only quick role login helper. Besides APP_ENV, the request must arrive on APP_URL's own host, so a
+// dev-config build that ends up deployed (e.g. reachable on workers.dev) can never hand out sessions.
 app.get("/auth/mock-login/:role", async (c) => {
-  if (!isDevEnv(c.env)) {
-    return c.text("Mock login is only available in development environment", 404);
+  if (!isDevEnv(c.env) || new URL(c.req.url).hostname !== new URL(c.env.APP_URL).hostname) {
+    return c.text("Not found", 404);
   }
   const role = c.req.param("role") as AppUser["role"];
   if (!role || !["user", "editor", "admin"].includes(role)) {
@@ -68,205 +69,108 @@ app.get("/auth/mock-login/:role", async (c) => {
   return c.redirect("/");
 });
 
-// Discord OAuth
-app.get("/auth/discord", async (c) => {
+// Discord OAuth. Scopes: identify (user id + name) and guilds.members.read (roles in our guild, for editor/admin).
+app.get("/auth/discord", (c) => {
   if (!c.env.OAUTH_DISCORD_CLIENT_ID) {
     return c.text("Discord OAuth not configured", 501);
   }
-  const state = crypto.randomUUID();
-  setCookie(c, "oauth_state_discord", state, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "Lax",
-    secure: c.env.APP_URL.startsWith("https://"),
-    maxAge: 600
-  });
-  const url = new URL("https://discord.com/api/oauth2/authorize");
-  url.searchParams.set("client_id", c.env.OAUTH_DISCORD_CLIENT_ID);
-  url.searchParams.set("redirect_uri", `${c.env.APP_URL}/auth/discord/callback`);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "identify guilds.members.read");
-  url.searchParams.set("state", state);
-  return c.redirect(url.toString());
+  return beginOAuth(c, "discord", "https://discord.com/api/oauth2/authorize", c.env.OAUTH_DISCORD_CLIENT_ID, "identify guilds.members.read");
 });
 
 app.get("/auth/discord/callback", async (c) => {
-  const state = c.req.query("state");
-  const code = c.req.query("code");
-  const stored = getCookie(c, "oauth_state_discord");
-  deleteCookie(c, "oauth_state_discord", { path: "/" });
-  if (!state || !code || !stored || state !== stored) {
-    return c.text("Invalid OAuth state", 400);
+  const code = readOAuthCallback(c, "discord");
+  if (code instanceof Response) {
+    return code;
   }
-  if (!c.env.OAUTH_DISCORD_CLIENT_SECRET) {
-    return c.text("Discord OAuth secret not configured", 501);
+  if (!c.env.OAUTH_DISCORD_CLIENT_ID || !c.env.OAUTH_DISCORD_CLIENT_SECRET) {
+    return c.text("Discord OAuth not configured", 501);
   }
   if (!c.env.DISCORD_GUILD_ID) {
     return c.text("Discord guild not configured", 501);
   }
 
-  // Exchange code for access token
-  const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: c.env.OAUTH_DISCORD_CLIENT_ID,
-      client_secret: c.env.OAUTH_DISCORD_CLIENT_SECRET,
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: `${c.env.APP_URL}/auth/discord/callback`
-    })
-  });
-  if (!tokenRes.ok) {
-    const errText = await tokenRes.text();
-    console.error("Discord token exchange failed:", tokenRes.status, errText);
-    if (tokenRes.status === 429) {
-      return c.text("Discord rate limit exceeded. Please try again in a few minutes.", 429);
+  const accessToken = await exchangeOAuthCode(c, "discord", "https://discord.com/api/oauth2/token", c.env.OAUTH_DISCORD_CLIENT_ID, c.env.OAUTH_DISCORD_CLIENT_SECRET, code);
+  if (accessToken instanceof Response) {
+    return accessToken;
+  }
+  try {
+    const authHeaders = { Authorization: `Bearer ${accessToken}` };
+    const userRes = await fetch("https://discord.com/api/users/@me", { headers: authHeaders });
+    const discordUser = userRes.ok ? ((await userRes.json()) as { id?: string; username?: string | null; global_name?: string | null }) : null;
+    if (!discordUser?.id) {
+      return c.text("OAuth profile fetch failed", 400);
     }
-    return c.text("OAuth token exchange failed", 400);
+
+    // Role mirrors the user's current guild roles on every login, so removing a Discord role also revokes
+    // editor/admin here. Not being in the guild (or Discord failing to answer) means a plain user.
+    const memberRes = await fetch(`https://discord.com/api/users/@me/guilds/${c.env.DISCORD_GUILD_ID}/member`, { headers: authHeaders });
+    const memberRoles = memberRes.ok ? ((await memberRes.json()) as { roles?: string[] }).roles ?? [] : [];
+    const role: AppUser["role"] =
+      c.env.DISCORD_ROLE_ADMIN && memberRoles.includes(c.env.DISCORD_ROLE_ADMIN)
+        ? "admin"
+        : c.env.DISCORD_ROLE_EDITOR && memberRoles.includes(c.env.DISCORD_ROLE_EDITOR)
+          ? "editor"
+          : "user";
+
+    const userId = await upsertOAuthUser(c.env, {
+      provider: "discord",
+      providerUserId: discordUser.id,
+      displayName: discordUser.username || discordUser.global_name || null,
+      role
+    });
+    await createSession(c, userId);
+    return c.redirect("/?importLocal=1");
+  } finally {
+    revokeOAuthToken(c, "discord", accessToken);
   }
-  const tokenJson = (await tokenRes.json()) as { access_token?: string; error?: string; error_description?: string };
-  if (!tokenJson.access_token) {
-    console.error("Discord token missing access_token:", JSON.stringify(tokenJson));
-    return c.text("OAuth token missing", 400);
-  }
-
-  // Get user profile
-  const userRes = await fetch("https://discord.com/api/users/@me", {
-    headers: { Authorization: `Bearer ${tokenJson.access_token}` }
-  });
-  if (!userRes.ok) {
-    return c.text("OAuth profile fetch failed", 400);
-  }
-  const discordUser = (await userRes.json()) as {
-    id: string;
-    username?: string | null;
-    global_name?: string | null;
-    avatar?: string | null;
-  };
-
-  // Check guild membership and roles
-  const guildMemberRes = await fetch(
-    `https://discord.com/api/users/@me/guilds/${c.env.DISCORD_GUILD_ID}/member`,
-    {
-      headers: { Authorization: `Bearer ${tokenJson.access_token}` }
-    }
-  );
-
-  let role: "user" | "editor" | "admin" = "user";
-  if (guildMemberRes.ok) {
-    const memberData = (await guildMemberRes.json()) as { roles?: string[] };
-    const userRoles = memberData.roles || [];
-    
-    // Check for admin or editor roles
-    const adminRoleId = c.env.DISCORD_ROLE_ADMIN || "";
-    const editorRoleId = c.env.DISCORD_ROLE_EDITOR || "";
-    
-    if (adminRoleId && userRoles.includes(adminRoleId)) {
-      role = "admin";
-    } else if (editorRoleId && userRoles.includes(editorRoleId)) {
-      role = "editor";
-    }
-  }
-
-  // Create or update user
-  const userId = await upsertOAuthUser(c.env, {
-    provider: "discord",
-    providerUserId: discordUser.id,
-    displayName: discordUser.username || discordUser.global_name || null,
-    avatarUrl: discordUser.avatar ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png` : null
-  });
-
-  // Update role if user is a guild member with special roles
-  if (role !== "user") {
-    await c.env.DB.prepare("UPDATE users SET role = ?1, updated_at = datetime('now') WHERE id = ?2")
-      .bind(role, userId)
-      .run();
-  }
-
-  await createSession(c, userId);
-  return c.redirect("/?importLocal=1");
 });
 
 // Twitch OAuth. Requests no scopes, so Twitch never shares the user's email; role is always "user".
-app.get("/auth/twitch", async (c) => {
+app.get("/auth/twitch", (c) => {
   if (!c.env.OAUTH_TWITCH_CLIENT_ID) {
     return c.text("Twitch OAuth not configured", 501);
   }
-  const state = crypto.randomUUID();
-  setCookie(c, "oauth_state_twitch", state, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "Lax",
-    secure: c.env.APP_URL.startsWith("https://"),
-    maxAge: 600
-  });
-  const url = new URL("https://id.twitch.tv/oauth2/authorize");
-  url.searchParams.set("client_id", c.env.OAUTH_TWITCH_CLIENT_ID);
-  url.searchParams.set("redirect_uri", `${c.env.APP_URL}/auth/twitch/callback`);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", "");
-  url.searchParams.set("state", state);
-  return c.redirect(url.toString());
+  return beginOAuth(c, "twitch", "https://id.twitch.tv/oauth2/authorize", c.env.OAUTH_TWITCH_CLIENT_ID, "");
 });
 
 app.get("/auth/twitch/callback", async (c) => {
-  const state = c.req.query("state");
-  const code = c.req.query("code");
-  const stored = getCookie(c, "oauth_state_twitch");
-  deleteCookie(c, "oauth_state_twitch", { path: "/" });
-  if (!state || !code || !stored || state !== stored) {
-    return c.text("Invalid OAuth state", 400);
+  const code = readOAuthCallback(c, "twitch");
+  if (code instanceof Response) {
+    return code;
   }
   if (!c.env.OAUTH_TWITCH_CLIENT_ID || !c.env.OAUTH_TWITCH_CLIENT_SECRET) {
     return c.text("Twitch OAuth not configured", 501);
   }
 
-  const tokenRes = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: c.env.OAUTH_TWITCH_CLIENT_ID,
-      client_secret: c.env.OAUTH_TWITCH_CLIENT_SECRET,
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: `${c.env.APP_URL}/auth/twitch/callback`
-    })
-  });
-  if (!tokenRes.ok) {
-    console.error("Twitch token exchange failed:", tokenRes.status, await tokenRes.text());
-    return c.text("OAuth token exchange failed", 400);
+  const accessToken = await exchangeOAuthCode(c, "twitch", "https://id.twitch.tv/oauth2/token", c.env.OAUTH_TWITCH_CLIENT_ID, c.env.OAUTH_TWITCH_CLIENT_SECRET, code);
+  if (accessToken instanceof Response) {
+    return accessToken;
   }
-  const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) {
-    return c.text("OAuth token missing", 400);
-  }
+  try {
+    const userRes = await fetch("https://api.twitch.tv/helix/users", {
+      headers: { Authorization: `Bearer ${accessToken}`, "Client-Id": c.env.OAUTH_TWITCH_CLIENT_ID }
+    });
+    const twitchUser = userRes.ok
+      ? ((await userRes.json()) as { data?: Array<{ id: string; login?: string; display_name?: string }> }).data?.[0]
+      : undefined;
+    if (!twitchUser?.id) {
+      return c.text("OAuth profile fetch failed", 400);
+    }
 
-  const userRes = await fetch("https://api.twitch.tv/helix/users", {
-    headers: { Authorization: `Bearer ${tokenJson.access_token}`, "Client-Id": c.env.OAUTH_TWITCH_CLIENT_ID }
-  });
-  if (!userRes.ok) {
-    return c.text("OAuth profile fetch failed", 400);
+    const userId = await upsertOAuthUser(c.env, {
+      provider: "twitch",
+      providerUserId: twitchUser.id,
+      displayName: twitchUser.display_name || twitchUser.login || null
+    });
+    await createSession(c, userId);
+    return c.redirect("/?importLocal=1");
+  } finally {
+    revokeOAuthToken(c, "twitch", accessToken);
   }
-  const twitchUser = ((await userRes.json()) as {
-    data?: Array<{ id: string; login?: string; display_name?: string; profile_image_url?: string }>;
-  }).data?.[0];
-  if (!twitchUser?.id) {
-    return c.text("OAuth profile fetch failed", 400);
-  }
-
-  const userId = await upsertOAuthUser(c.env, {
-    provider: "twitch",
-    providerUserId: twitchUser.id,
-    displayName: twitchUser.display_name || twitchUser.login || null,
-    avatarUrl: twitchUser.profile_image_url || null
-  });
-
-  await createSession(c, userId);
-  return c.redirect("/?importLocal=1");
 });
 
-app.get("/auth/logout", async (c) => {
+// POST so other sites can't log people out with a link or image; the SameSite=Lax session cookie is not sent on cross-site POSTs.
+app.post("/auth/logout", async (c) => {
   await destroySession(c);
   return c.redirect("/");
 });
@@ -294,6 +198,7 @@ app.get("/login", async (c) => {
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>
             Login using Twitch
           </a>` : ""}
+          <p style="max-width:22rem;margin:0.5rem 0 0;font-size:0.85rem;text-align:center;">We only receive your account ID and username (and, for Discord, your roles in our server). We never see your password or email, and we don't keep access to your account after you sign in.</p>
       </div>
     </main>
   `, c.env, { path: "/login", description: "Sign in to Dailies to save your rotation and manage curated lists." }));
@@ -525,7 +430,7 @@ app.get("/mod-log", async (c) => {
             COALESCE(json_extract(audit_log.metadata_json, '$.title'), games.title, '(deleted game)') AS game_title,
             COALESCE(json_extract(audit_log.metadata_json, '$.slug'), games.slug) AS game_slug,
             games.status AS current_status,
-            ${showActor ? "COALESCE(users.display_name, users.email)" : "NULL"} AS actor_name
+            ${showActor ? "users.display_name" : "NULL"} AS actor_name
      FROM audit_log
      LEFT JOIN games ON games.id = audit_log.entity_id
      ${showActor ? "LEFT JOIN users ON users.id = audit_log.actor_user_id" : ""}
@@ -927,7 +832,7 @@ app.get("/games/:slug", async (c) => {
     ${
       user
         ? `<script>
-            const gameId = ${JSON.stringify(game.id)};
+            const gameId = ${scriptJson(game.id)};
             const status = document.getElementById("game-action-status");
             const upCountNode = document.getElementById("vote-up-count");
             const downCountNode = document.getElementById("vote-down-count");
@@ -1137,9 +1042,9 @@ app.get("/games/:slug", async (c) => {
         : `<script>
             const storageKey = "dgl_local_favorites_v1";
             const game = {
-              id: ${JSON.stringify(game.id)},
-              title: ${JSON.stringify(game.title)},
-              slug: ${JSON.stringify(game.slug)}
+              id: ${scriptJson(game.id)},
+              title: ${scriptJson(game.title)},
+              slug: ${scriptJson(game.slug)}
             };
             const status = document.getElementById("game-action-status");
             const upCountNode = document.getElementById("vote-up-count");
@@ -1285,10 +1190,10 @@ app.get("/rotation/:shareToken", async (c) => {
   
   // Find the user with this share token
   const owner = await c.env.DB.prepare(
-    "SELECT id, display_name, email FROM users WHERE rotation_share_token = ?1"
+    "SELECT id, display_name FROM users WHERE rotation_share_token = ?1"
   )
     .bind(shareToken)
-    .first<{ id: string; display_name: string | null; email: string }>();
+    .first<{ id: string; display_name: string | null }>();
   
   if (!owner) {
     return c.text("Rotation not found or link has been disabled", 404);
@@ -1305,7 +1210,7 @@ app.get("/rotation/:shareToken", async (c) => {
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
-  const ownerName = owner.display_name || owner.email.split('@')[0];
+  const ownerName = owner.display_name || "Someone";
 
   return c.html(await layout(`${ownerName}'s Rotation`, user, `
     <main>
@@ -2036,11 +1941,11 @@ app.get("/me/settings", async (c) => {
   }
 
   const sessionToken = getCookie(c, c.env.SESSION_COOKIE_NAME) || "";
-  const currentSessionId = sessionToken ? await hashAuthToken(c.env.SESSION_SECRET, sessionToken) : "";
+  const currentSessionId = sessionToken ? await hashToken(c.env.SESSION_SECRET, sessionToken) : "";
   const sessions = await c.env.DB.prepare(
     `SELECT id, created_at, expires_at
      FROM sessions
-     WHERE user_id = ?1
+     WHERE user_id = ?1 AND datetime(expires_at) > datetime('now')
      ORDER BY created_at DESC
      LIMIT 30`
   )
@@ -2312,7 +2217,7 @@ app.get("/lists/:slug", async (c) => {
       ` : ""}
       ${!isAdminEditor && items.results.length > 1 ? renderListSortControl() : ""}
       <ol class="rotation-list" id="list-items">
-        ${items.results.map((item, idx) => {
+        ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
           const currentFavorite = userFavorites.has(item.id);
           return `<li draggable="${isAdminEditor}" data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
@@ -2356,7 +2261,7 @@ app.get("/lists/:slug", async (c) => {
     ${isAdminEditor ? `
     <script>
       (() => {
-        const listId = ${JSON.stringify(list.id)};
+        const listId = ${scriptJson(list.id)};
         const status = document.getElementById("list-edit-status");
         const setStatus = (t) => { if (status) status.textContent = t; };
 
@@ -2375,7 +2280,7 @@ app.get("/lists/:slug", async (c) => {
           });
           if (res.ok) {
             setStatus("Saved.");
-            window.location.href = "/lists/" + encodeURIComponent(String(fd.get("slug") || ${JSON.stringify(list.slug)})) + "?edit=1";
+            window.location.href = "/lists/" + encodeURIComponent(String(fd.get("slug") || ${scriptJson(list.slug)})) + "?edit=1";
           } else {
             const body = await res.json().catch(() => ({}));
             setStatus(body.error || "Could not save.");
@@ -2405,7 +2310,7 @@ app.get("/lists/:slug", async (c) => {
           const res = await fetch("/api/lists/" + listId + "/visibility", {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ visibility: ${JSON.stringify(list.visibility === "public" ? "private" : "public")} })
+            body: JSON.stringify({ visibility: ${scriptJson(list.visibility === "public" ? "private" : "public")} })
           });
           if (res.ok) { window.location.reload(); } else { setStatus("Could not update visibility."); }
         });
@@ -2502,7 +2407,7 @@ app.get("/lists/:slug", async (c) => {
           });
         }
 
-        const allGames = ${JSON.stringify(adminGames.map(g => ({ id: g.id, title: g.title, slug: g.slug })))};
+        const allGames = ${scriptJson(adminGames.map(g => ({ id: g.id, title: g.title, slug: g.slug })))};
         const searchInput = document.getElementById("game-search-input");
         const searchList = document.getElementById("game-search-list");
         const selectedInput = document.getElementById("game-search-selected");
@@ -2539,7 +2444,13 @@ app.get("/lists/:slug", async (c) => {
           searchList.classList.remove("open");
           const tag = document.createElement("div");
           tag.className = "game-search-selected";
-          tag.innerHTML = "Selected: <strong>" + g.title + '</strong> <button type="button" id="clear-game-selection">change</button>';
+          const strong = document.createElement("strong");
+          strong.textContent = g.title;
+          const clearButton = document.createElement("button");
+          clearButton.type = "button";
+          clearButton.id = "clear-game-selection";
+          clearButton.textContent = "change";
+          tag.append("Selected: ", strong, " ", clearButton);
           searchList.parentNode.appendChild(tag);
           document.getElementById("clear-game-selection")?.addEventListener("click", () => {
             selectedGame = null;
@@ -3615,7 +3526,6 @@ app.get("/api/games/random", async (c) => {
 
 app.post("/api/games", async (c) => {
   const user = c.get("user");
-  const isAnon = !user;
   const submitRateKey = user
     ? `submit:${user.id}`
     : `submit:anon:${await getAnonymousVoteKey(c)}`;
@@ -3793,6 +3703,10 @@ app.post("/api/games/:id/favorite", async (c) => {
     return auth;
   }
   const gameId = c.req.param("id");
+  const game = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'").bind(gameId).first<{ id: string }>();
+  if (!game) {
+    return c.json({ error: "Not found" }, 404);
+  }
   const maxPosRow = await c.env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS maxPosition FROM favorites WHERE user_id = ?1")
     .bind(auth.id)
     .first<{ maxPosition: number }>();
@@ -4230,7 +4144,7 @@ app.delete("/api/me/sessions/:id", async (c) => {
 
   const token = getCookie(c, c.env.SESSION_COOKIE_NAME) || "";
   if (token) {
-    const currentSessionId = await hashAuthToken(c.env.SESSION_SECRET, token);
+    const currentSessionId = await hashToken(c.env.SESSION_SECRET, token);
     if (currentSessionId === sessionId) {
       deleteCookie(c, c.env.SESSION_COOKIE_NAME, { path: "/" });
     }
@@ -4292,6 +4206,11 @@ app.post("/api/games/:id/report", async (c) => {
 
 app.post("/api/games/:id/click", async (c) => {
   const gameId = c.req.param("id");
+  // Clicks feed the score, so cap how many one visitor can contribute per game.
+  const clickRate = await enforceRateLimit(c.env, `click:${await getAnonymousVoteKey(c)}:${gameId}`, 5, 60 * 60);
+  if (!clickRate.ok) {
+    return c.json({ ok: true });
+  }
   await c.env.DB.prepare("UPDATE games SET click_count = click_count + 1 WHERE id = ?1").bind(gameId).run();
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
@@ -5083,7 +5002,10 @@ async function runLinkChecks(env: Env): Promise<void> {
     }
   }
 
-  await env.DB.prepare("DELETE FROM rate_limits WHERE updated_at < datetime('now', '-2 days')").run();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM rate_limits WHERE updated_at < datetime('now', '-2 days')"),
+    env.DB.prepare("DELETE FROM sessions WHERE datetime(expires_at) <= datetime('now')")
+  ]);
   await invalidateGameCaches(env);
 }
 
@@ -5123,12 +5045,11 @@ async function getUserTwitchId(env: Env, user: AppUser | null): Promise<string |
 
 /**
  * Staff can always edit a list. The Twitch user a list is tagged with (matched by stable Twitch id, not
- * username) can edit its games, title and description unless staffOnly is set.
+ * username) can edit its games, title and description.
  */
 async function requireListEditor(
   c: Context<{ Bindings: Env; Variables: AppVariables }>,
-  listId: string,
-  opts: { staffOnly?: boolean } = {}
+  listId: string
 ): Promise<AppUser | Response> {
   const auth = requireAuth(c);
   if (auth instanceof Response) {
@@ -5137,18 +5058,16 @@ async function requireListEditor(
   if (auth.role === "editor" || auth.role === "admin") {
     return auth;
   }
-  if (!opts.staffOnly) {
-    const owns = await c.env.DB.prepare(
-      `SELECT 1 AS ok
-       FROM curated_lists
-       JOIN oauth_accounts ON oauth_accounts.provider = 'twitch' AND oauth_accounts.provider_user_id = curated_lists.twitch_user_id
-       WHERE curated_lists.id = ?1 AND oauth_accounts.user_id = ?2`
-    )
-      .bind(listId, auth.id)
-      .first();
-    if (owns) {
-      return auth;
-    }
+  const owns = await c.env.DB.prepare(
+    `SELECT 1 AS ok
+     FROM curated_lists
+     JOIN oauth_accounts ON oauth_accounts.provider = 'twitch' AND oauth_accounts.provider_user_id = curated_lists.twitch_user_id
+     WHERE curated_lists.id = ?1 AND oauth_accounts.user_id = ?2`
+  )
+    .bind(listId, auth.id)
+    .first();
+  if (owns) {
+    return auth;
   }
   return c.json({ error: "Forbidden" }, 403);
 }
@@ -5569,45 +5488,6 @@ async function writeAudit(
     .run();
 }
 
-function renderGames(
-  games: Array<{
-    id: string;
-    title: string;
-    slug: string;
-    url: string;
-    description: string | null;
-    score: number;
-    voteUpCount: number;
-    voteDownCount: number;
-    resetBasis: "local" | "server" | null;
-    resetTimeMinutes: number | null;
-    resetTimezone: string | null;
-    paywall: boolean;
-  }>
-): string {
-  if (games.length === 0) {
-    return "<p>No games found.</p>";
-  }
-  return `
-    <ul class="games">
-      ${games
-        .map(
-          (game) => `
-        <li>
-          <a href="/games/${game.slug}" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</a>
-          <p>${escapeHtml(game.description || "")}</p>
-          ${(() => {
-            const resetSpan = renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
-            return `<small>${escapeHtml(`Score ${game.score.toFixed(3)}`)}${resetSpan ? ` | ${resetSpan}` : ""}</small>`;
-          })()}
-        </li>
-      `
-        )
-        .join("")}
-    </ul>
-  `;
-}
-
 function gameAriaLabel(game: { title: string; description: string | null; score: number; voteUpCount: number }): string {
   const description = (game.description || "").trim();
   const votes = `${game.voteUpCount} upvote${game.voteUpCount === 1 ? "" : "s"}`;
@@ -5885,7 +5765,7 @@ function getClientIp(c: Context<{ Bindings: Bindings; Variables: AppVariables }>
 
 async function getAnonymousVoteKey(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): Promise<string> {
   const ip = getClientIp(c);
-  return hashAuthToken(c.env.SESSION_SECRET, `anon-vote:${ip}`);
+  return hashToken(c.env.SESSION_SECRET, `anon-vote:${ip}`);
 }
 
 function parsePositiveInt(value: string | undefined, fallbackValue: number): number {
@@ -6175,13 +6055,6 @@ function isDevEnv(env: Env): boolean {
   return appEnv === "dev" || appEnv === "development";
 }
 
-async function hashAuthToken(secret: string, value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${secret}:${value}`));
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 function breadcrumbLd(items: Array<[string, string]>) {
   return {
     "@context": "https://schema.org",
@@ -6238,7 +6111,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="twitter:image" content="https://dailies.0x9.ca/og.png" />
     <meta name="twitter:title" content="${escapeHtml(title)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
-    <script type="application/ld+json">${JSON.stringify({
+    <script type="application/ld+json">${scriptJson({
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "Dailies (dles)",
@@ -6250,7 +6123,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         "query-input": "required name=search_term_string"
       }
     })}</script>
-    ${(opts?.jsonLd ?? []).map((block) => `<script type="application/ld+json">${JSON.stringify(block).replace(/</g, "\\u003c")}</script>`).join("\n    ")}
+    ${(opts?.jsonLd ?? []).map((block) => `<script type="application/ld+json">${scriptJson(block)}</script>`).join("\n    ")}
     <style>
       :root {
         color-scheme: dark;
@@ -6489,7 +6362,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <button type="button" id="theme-toggle" aria-label="Toggle light/dark mode" title="Toggle light/dark mode" style="margin-right:0.5rem;padding:0.25rem 0.5rem;cursor:pointer;"></button>
         ${
           user
-            ? `Signed in as ${escapeHtml(user.displayName || user.email)} (${user.role}) - <a href="/auth/logout">Logout</a>`
+            ? `Signed in as ${escapeHtml(user.displayName || "your account")} (${user.role}) - <form method="post" action="/auth/logout" style="display:inline;margin:0"><button type="submit" style="background:none;border:none;padding:0;color:var(--accent);text-decoration:underline;font:inherit;cursor:pointer">Logout</button></form>`
             : isDevEnv(env)
                 ? `Dev: <a href="/auth/mock-login/user">User</a> <a href="/auth/mock-login/editor">Editor</a> <a href="/auth/mock-login/admin">Admin</a>`
                 : ""
@@ -6571,6 +6444,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
 </html>`;
 }
 
+// JSON for an inline <script>: escaping "<" stops a value such as a game title from closing the tag.
+function scriptJson(value: unknown): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -6580,47 +6458,144 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;");
 }
 
+type OAuthProvider = "discord" | "twitch";
+
+function oauthRedirectUri(env: Env, provider: OAuthProvider): string {
+  return `${env.APP_URL}/auth/${provider}/callback`;
+}
+
+function beginOAuth(
+  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
+  provider: OAuthProvider,
+  authorizeUrl: string,
+  clientId: string,
+  scope: string
+): Response {
+  // The state cookie ties the callback to this browser, so nobody can log someone else into an attacker's account.
+  const state = randomToken();
+  setCookie(c, `oauth_state_${provider}`, state, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "Lax",
+    secure: wantsSecureCookies(c.env),
+    maxAge: 600
+  });
+  const url = new URL(authorizeUrl);
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, provider));
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", scope);
+  url.searchParams.set("state", state);
+  return c.redirect(url.toString());
+}
+
+/** The authorization code from a provider callback, or the Response to send instead. */
+function readOAuthCallback(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider): string | Response {
+  const state = c.req.query("state");
+  const code = c.req.query("code");
+  const stored = getCookie(c, `oauth_state_${provider}`);
+  deleteCookie(c, `oauth_state_${provider}`, { path: "/" });
+  if (c.req.query("error")) {
+    // The user pressed cancel on the provider's consent screen.
+    return c.redirect("/login");
+  }
+  if (!state || !code || !stored || state !== stored) {
+    return c.text("Invalid OAuth state", 400);
+  }
+  return code;
+}
+
+/** Exchanges an authorization code for an access token, or returns the error Response to send. */
+async function exchangeOAuthCode(
+  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
+  provider: OAuthProvider,
+  tokenUrl: string,
+  clientId: string,
+  clientSecret: string,
+  code: string
+): Promise<string | Response> {
+  const res = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: oauthRedirectUri(c.env, provider)
+    })
+  });
+  if (!res.ok) {
+    console.error(`${provider} token exchange failed:`, res.status, await res.text());
+    return res.status === 429
+      ? c.text("Login is rate limited right now. Please try again in a few minutes.", 429)
+      : c.text("OAuth token exchange failed", 400);
+  }
+  const json = (await res.json()) as { access_token?: string };
+  return json.access_token || c.text("OAuth token missing", 400);
+}
+
+// The access token is only needed to read the profile once; revoking it means we never hold access to the account.
+function revokeOAuthToken(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider, token: string): void {
+  const request =
+    provider === "discord"
+      ? fetch("https://discord.com/api/oauth2/token/revoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            client_id: c.env.OAUTH_DISCORD_CLIENT_ID,
+            client_secret: c.env.OAUTH_DISCORD_CLIENT_SECRET,
+            token,
+            token_type_hint: "access_token"
+          })
+        })
+      : fetch("https://id.twitch.tv/oauth2/revoke", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ client_id: c.env.OAUTH_TWITCH_CLIENT_ID ?? "", token })
+        });
+  c.executionCtx.waitUntil(
+    request
+      .then((res) => {
+        if (!res.ok) console.warn(`${provider} token revoke failed:`, res.status);
+      })
+      .catch((error) => console.warn(`${provider} token revoke failed:`, error))
+  );
+}
+
+/**
+ * Finds or creates the local user for a provider account. The provider's name is only used as the initial display
+ * name, so a name the user later changes in Settings is never overwritten. `role`, when given, is re-applied on
+ * every login (Discord guild roles).
+ */
 async function upsertOAuthUser(
   env: Env,
-  args: {
-    provider: "discord" | "twitch";
-    providerUserId: string;
-    displayName: string | null;
-    avatarUrl: string | null;
-  }
+  args: { provider: OAuthProvider; providerUserId: string; displayName: string | null; role?: AppUser["role"] }
 ): Promise<string> {
-  const existingAccount = await env.DB.prepare(
+  const existing = await env.DB.prepare(
     "SELECT user_id FROM oauth_accounts WHERE provider = ?1 AND provider_user_id = ?2"
   )
     .bind(args.provider, args.providerUserId)
     .first<{ user_id: string }>();
-  const userId = existingAccount?.user_id || crypto.randomUUID();
 
-  if (!existingAccount) {
-    // OAuth accounts don't share an email with us; store a non-contactable
-    // placeholder so the NOT NULL/UNIQUE email column is satisfied without
-    // ever requesting or persisting the user's real address.
-    const placeholderEmail = `${args.provider}-${args.providerUserId}@users.noreply.dailies`;
-    await env.DB.prepare(
-      "INSERT INTO users (id, email, display_name, avatar_url, role) VALUES (?1, ?2, ?3, ?4, 'user')"
-    )
-      .bind(userId, placeholderEmail, args.displayName, args.avatarUrl)
-      .run();
-  } else {
-    await env.DB.prepare(
-      "UPDATE users SET display_name = COALESCE(?1, display_name), avatar_url = COALESCE(?2, avatar_url), updated_at = datetime('now') WHERE id = ?3"
-    )
-      .bind(args.displayName, args.avatarUrl, userId)
-      .run();
+  if (existing) {
+    if (args.role) {
+      await env.DB.prepare("UPDATE users SET role = ?1, updated_at = datetime('now') WHERE id = ?2 AND role != ?1")
+        .bind(args.role, existing.user_id)
+        .run();
+    }
+    return existing.user_id;
   }
 
-  await env.DB.prepare(
-    `INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id)
-     VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT(provider, provider_user_id) DO UPDATE SET user_id = excluded.user_id`
-  )
-    .bind(crypto.randomUUID(), userId, args.provider, args.providerUserId)
-    .run();
-
+  // OAuth accounts don't share an email with us; store a non-contactable placeholder so the NOT NULL/UNIQUE
+  // email column is satisfied without ever requesting or persisting the user's real address.
+  const userId = crypto.randomUUID();
+  const placeholderEmail = `${args.provider}-${args.providerUserId}@users.noreply.dailies`;
+  await env.DB.batch([
+    env.DB.prepare("INSERT INTO users (id, email, display_name, role) VALUES (?1, ?2, ?3, ?4)")
+      .bind(userId, placeholderEmail, args.displayName, args.role ?? "user"),
+    env.DB.prepare("INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id) VALUES (?1, ?2, ?3, ?4)")
+      .bind(crypto.randomUUID(), userId, args.provider, args.providerUserId)
+  ]);
   return userId;
 }
