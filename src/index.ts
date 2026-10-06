@@ -6,7 +6,7 @@ import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
 import { canonicalizeUrl, slugify } from "./lib/url";
 import { createSession, destroySession, randomToken, requireAuth, requireRole, sessionMiddleware } from "./lib/auth";
-import { ICON_PNG, ICON_SVG, OG_IMAGE_PNG } from "./lib/assets";
+import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 
 type Bindings = Env;
@@ -2641,9 +2641,31 @@ ${urls
 
 const IMMUTABLE_ASSET_CACHE = "public, max-age=86400";
 app.get("/og.png", (c) => c.body(OG_IMAGE_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
-app.get("/icon.png", (c) => c.body(ICON_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
-app.get("/favicon.ico", (c) => c.body(ICON_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
-app.get("/favicon.svg", (c) => c.body(ICON_SVG, 200, { "Content-Type": "image/svg+xml", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/icon.png", (c) => c.body(ICON_512, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/icon-192.png", (c) => c.body(ICON_192, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/apple-touch-icon.png", (c) => c.body(ICON_180, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+app.get("/favicon.ico", (c) => c.body(ICON_48, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+
+app.get("/manifest.webmanifest", (c) =>
+  c.body(
+    JSON.stringify({
+      name: "0x9 dles",
+      short_name: "0x9 dles",
+      description: "A hub for daily games: browse, vote on, and favorite the best dailies.",
+      start_url: "/",
+      scope: "/",
+      display: "standalone",
+      background_color: "#121212",
+      theme_color: "#121212",
+      icons: [
+        { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+        { src: "/icon.png", sizes: "512x512", type: "image/png", purpose: "any" }
+      ]
+    }),
+    200,
+    { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+  )
+);
 
 app.get("/robots.txt", (c) => {
   const body = `User-agent: *
@@ -6152,9 +6174,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     ${opts?.noindex ? `<meta name="robots" content="noindex,follow" />` : ""}
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="icon" href="/icon.png" type="image/png" sizes="192x192" />
-    <link rel="apple-touch-icon" href="/icon.png" />
+    <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
+    <link rel="icon" href="/favicon.ico" type="image/png" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#121212" />
+    <meta name="apple-mobile-web-app-title" content="0x9 dles" />
     <meta property="og:site_name" content="Dailies (dles)" />
     <meta property="og:image" content="https://dailies.0x9.ca/og.png" />
     <meta property="og:image:width" content="1200" />
