@@ -3516,13 +3516,25 @@ app.get("/admin/lists", async (c) => {
 });
 
 // JSON API routes.
+// Be forgiving about input a browser may send: pad/trim times, assume https:// when the scheme is missing.
+const normalizeSubmittedUrl = (value: unknown) => {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  return trimmed && !/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? `https://${trimmed}` : trimmed;
+};
+const normalizeSubmittedTime = (value: unknown) => {
+  if (typeof value !== "string") return value;
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(value.trim());
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : value.trim();
+};
+
 const submissionSchema = z.object({
-  title: z.string().min(2).max(120),
-  url: z.string().url(),
+  title: z.preprocess((v) => (typeof v === "string" ? v.trim() : v), z.string().min(2).max(120)),
+  url: z.preprocess(normalizeSubmittedUrl, z.string().url()),
   description: z.string().max(500).optional(),
-  categories: z.array(z.string()).max(8).optional(),
+  categories: z.array(z.string()).max(30).optional(),
   resetBasis: z.enum(["local", "server"]).optional(),
-  resetTime: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  resetTime: z.preprocess(normalizeSubmittedTime, z.string().regex(/^\d{2}:\d{2}$/)).optional(),
   resetTimezone: z.string().max(64).optional(),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false)
@@ -3620,7 +3632,19 @@ app.post("/api/games", async (c) => {
   }
   const parsed = submissionSchema.safeParse(await c.req.json());
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
+    const fields = Object.keys(parsed.error.flatten().fieldErrors);
+    console.warn("Submission rejected:", JSON.stringify(parsed.error.issues.map((issue) => ({ path: issue.path.join("."), code: issue.code }))));
+    const labels: Record<string, string> = {
+      title: "Title must be 2-120 characters",
+      url: "Enter a valid game URL",
+      description: "Description must be 500 characters or fewer",
+      categories: "Too many categories selected",
+      resetTime: "Reset time is not valid",
+      resetBasis: "Reset basis is not valid",
+      resetTimezone: "Time zone is too long"
+    };
+    const message = fields.map((field) => labels[field] || `Invalid ${field}`).join(". ");
+    return c.json({ error: message || "Invalid submission", issues: parsed.error.flatten() }, 400);
   }
   let canonicalUrl: string;
   try {
