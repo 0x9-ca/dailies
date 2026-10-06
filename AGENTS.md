@@ -37,7 +37,7 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Private curated lists are visible to owner + editor/admin only.
 - Favorites support manual ordering and weekday masks.
 - Anonymous favorites are local-first and can sync after login; anonymous votes are limited to one vote per game per IP hash.
-- Login supports Discord OAuth only via `/login`.
+- Login supports Discord and Twitch OAuth via `/login`. Twitch requests no scopes (no email) and always yields role `user`; each provider creates its own separate account with a placeholder email. Twitch needs `OAUTH_TWITCH_CLIENT_ID` (var) and `OAUTH_TWITCH_CLIENT_SECRET` (secret); the button is hidden when the client ID is unset.
 - Games can be marked as `paywall` by editors/admins; a green `$` badge renders after the title on all card views.
 - Server-time resets can carry a `reset_timezone` (IANA name; only kept when `reset_basis = server`, null means UTC). Reset sort converts via per-zone UTC offsets computed in the Worker.
 - Click tracking: `POST /api/games/:id/click` increments `click_count`; score computation factors in click count and list membership.

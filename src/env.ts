@@ -6,6 +6,8 @@ export interface Env {
   SESSION_COOKIE_NAME: string;
   OAUTH_DISCORD_CLIENT_ID: string;
   OAUTH_DISCORD_CLIENT_SECRET: string;
+  OAUTH_TWITCH_CLIENT_ID?: string;
+  OAUTH_TWITCH_CLIENT_SECRET?: string;
   DISCORD_GUILD_ID: string;
   DISCORD_ROLE_ADMIN: string;
   DISCORD_ROLE_EDITOR: string;
