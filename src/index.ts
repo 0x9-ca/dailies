@@ -2124,7 +2124,7 @@ app.get("/lists", async (c) => {
   const user = c.get("user");
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   const lists = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id
+    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id
      FROM curated_lists
      ORDER BY updated_at DESC`
   ).all<{
@@ -2134,9 +2134,12 @@ app.get("/lists", async (c) => {
     description: string | null;
     visibility: "public" | "private";
     owner_user_id: string;
+    twitch_login: string | null;
+    twitch_user_id: string | null;
   }>();
 
-  const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user));
+  const userTwitchId = await getUserTwitchId(c.env, user);
+  const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }));
   return c.html(await layout("Curated Lists of Daily Games – Dailies (dles)", user, `
     <main>
       <h1>Curated Lists</h1>
@@ -2158,7 +2161,7 @@ app.get("/lists", async (c) => {
       ${visible.length > 0 ? `
         <ul>
           ${visible
-            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a> (${row.visibility})</li>`)
+            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${renderVerifiedBadge(row.twitch_login)} (${row.visibility})</li>`)
             .join("")}
         </ul>
       ` : `<p>No curated lists yet.</p>`}
@@ -2199,19 +2202,23 @@ app.get("/lists", async (c) => {
 app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
-  const canEdit = !!user && (user.role === "editor" || user.role === "admin");
-  // Editors/admins view the list normally and opt in to edit mode with ?edit=1.
-  const isAdminEditor = canEdit && c.req.query("edit") === "1";
+  const isStaff = !!user && (user.role === "editor" || user.role === "admin");
   const list = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id
+    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id
      FROM curated_lists
      WHERE slug = ?1`
   )
     .bind(slug)
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string }>();
-  if (!list || !canViewList(list.visibility, list.owner_user_id, user)) {
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null }>();
+  const userTwitchId = await getUserTwitchId(c.env, user);
+  if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return c.text("Not found", 404);
   }
+  // The list's tagged Twitch user can edit its games, title and description; staff can edit everything.
+  const isTwitchOwner = !!list.twitch_user_id && list.twitch_user_id === userTwitchId;
+  const canEdit = isStaff || isTwitchOwner;
+  // Everyone who can edit views the list normally and opts in to edit mode with ?edit=1.
+  const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const items = await c.env.DB.prepare(
     `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, curated_list_items.position
      FROM curated_list_items
@@ -2234,7 +2241,8 @@ app.get("/lists/:slug", async (c) => {
 
   return c.html(await layout(`${list.title} – Daily Game List | Dailies (dles)`, user, `
     <main>
-      <h1>${escapeHtml(list.title)}</h1>
+      <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
+      ${list.twitch_login ? `<p><a class="btn" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer">Watch ${escapeHtml(list.twitch_login)} on Twitch</a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
       <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
@@ -2243,16 +2251,25 @@ app.get("/lists/:slug", async (c) => {
           <h2>Edit list</h2>
           <form id="list-edit-form" class="stack-form">
             <input type="text" name="title" value="${escapeHtml(list.title)}" required />
-            <input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />
+            ${isStaff ? `<input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />` : ""}
             <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
             <div class="actions">
               <button type="submit">Save details</button>
-              <button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>
-              <button type="button" id="list-delete-btn">Delete list</button>
+              ${isStaff ? `<button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>
+              <button type="button" id="list-delete-btn">Delete list</button>` : ""}
             </div>
           </form>
           <p id="list-edit-status" class="status" aria-live="polite"></p>
         </section>
+        ${isStaff ? `<section class="panel">
+          <h2>Twitch owner</h2>
+          <p>Tagging a Twitch user adds a verified checkmark and a channel link, and lets that user edit this list's games, title and description when logged in with Twitch.</p>
+          <form id="list-twitch-form" class="stack-form">
+            <input type="text" name="login" value="${escapeHtml(list.twitch_login || "")}" placeholder="Twitch username (blank to remove)" maxlength="25" pattern="[A-Za-z0-9_]{4,25}|" />
+            <button type="submit">Save Twitch owner</button>
+          </form>
+          <p id="list-twitch-status" class="status" aria-live="polite"></p>
+        </section>` : ""}
         <section class="panel">
           <h2>Add game</h2>
           <div class="game-search-wrap">
@@ -2312,16 +2329,34 @@ app.get("/lists/:slug", async (c) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               title: fd.get("title"),
-              slug: fd.get("slug"),
+              ...(fd.get("slug") ? { slug: fd.get("slug") } : {}),
               description: fd.get("description") || undefined
             })
           });
           if (res.ok) {
             setStatus("Saved.");
-            window.location.href = "/lists/" + encodeURIComponent(String(fd.get("slug"))) + "?edit=1";
+            window.location.href = "/lists/" + encodeURIComponent(String(fd.get("slug") || ${JSON.stringify(list.slug)})) + "?edit=1";
           } else {
             const body = await res.json().catch(() => ({}));
             setStatus(body.error || "Could not save.");
+          }
+        });
+
+        document.getElementById("list-twitch-form")?.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const login = String(new FormData(e.target).get("login") || "").trim();
+          const twitchStatus = document.getElementById("list-twitch-status");
+          if (twitchStatus) twitchStatus.textContent = "Saving...";
+          const res = await fetch("/api/lists/" + listId + "/twitch", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ login: login || null })
+          });
+          if (res.ok) {
+            window.location.reload();
+          } else {
+            const body = await res.json().catch(() => ({}));
+            if (twitchStatus) twitchStatus.textContent = body.error || "Could not save.";
           }
         });
 
@@ -4180,20 +4215,23 @@ app.get("/api/me/rotation", async (c) => {
 app.get("/api/lists", async (c) => {
   const user = c.get("user");
   const rows = await c.env.DB.prepare(
-    "SELECT id, slug, title, description, visibility, owner_user_id, updated_at FROM curated_lists ORDER BY updated_at DESC"
-  ).all<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; updated_at: string }>();
-  const visible = rows.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user));
+    "SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id, updated_at FROM curated_lists ORDER BY updated_at DESC"
+  ).all<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; updated_at: string }>();
+  const userTwitchId = await getUserTwitchId(c.env, user);
+  const visible = rows.results
+    .filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }))
+    .map(({ twitch_user_id: _twitchUserId, ...row }) => row);
   return c.json({ results: visible });
 });
 
 app.get("/api/lists/:slug", async (c) => {
   const user = c.get("user");
   const list = await c.env.DB.prepare(
-    "SELECT id, slug, title, description, visibility, owner_user_id FROM curated_lists WHERE slug = ?1"
+    "SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id FROM curated_lists WHERE slug = ?1"
   )
     .bind(c.req.param("slug"))
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string }>();
-  if (!list || !canViewList(list.visibility, list.owner_user_id, user)) {
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null }>();
+  if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId: await getUserTwitchId(c.env, user) })) {
     return c.json({ error: "Not found" }, 404);
   }
   const items = await c.env.DB.prepare(
@@ -4205,7 +4243,8 @@ app.get("/api/lists/:slug", async (c) => {
   )
     .bind(list.id)
     .all();
-  return c.json({ ...list, items: items.results });
+  const { twitch_user_id: _twitchUserId, ...publicList } = list;
+  return c.json({ ...publicList, items: items.results });
 });
 
 const createListSchema = z.object({
@@ -4259,7 +4298,8 @@ app.patch("/api/lists/:id/visibility", async (c) => {
 });
 
 app.patch("/api/lists/:id", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4267,12 +4307,15 @@ app.patch("/api/lists/:id", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
-  const listId = c.req.param("id");
+  const isStaff = auth.role === "editor" || auth.role === "admin";
   const existing = await c.env.DB.prepare("SELECT title, description, slug FROM curated_lists WHERE id = ?1")
     .bind(listId)
     .first<{ title: string; description: string | null; slug: string }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
+  }
+  if (!isStaff && parsed.data.slug !== undefined && parsed.data.slug !== existing.slug) {
+    return c.json({ error: "Forbidden" }, 403);
   }
   if (parsed.data.slug && parsed.data.slug !== existing.slug) {
     const slugExists = await c.env.DB.prepare("SELECT id FROM curated_lists WHERE slug = ?1 AND id != ?2")
@@ -4299,6 +4342,39 @@ app.patch("/api/lists/:id", async (c) => {
   return c.json({ ok: true });
 });
 
+app.patch("/api/lists/:id/twitch", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ login: z.string().regex(/^[A-Za-z0-9_]{4,25}$/).nullable() }).safeParse(await c.req.json());
+  if (!parsed.success) {
+    return c.json({ error: "Enter a valid Twitch username (4-25 letters, numbers or underscores)" }, 400);
+  }
+  const listId = c.req.param("id");
+  let twitch: { id: string; login: string } | null = null;
+  if (parsed.data.login) {
+    try {
+      twitch = await lookupTwitchUser(c.env, parsed.data.login);
+    } catch {
+      return c.json({ error: "Could not reach Twitch to verify that username. Try again shortly." }, 502);
+    }
+    if (!twitch) {
+      return c.json({ error: "No Twitch user with that username" }, 404);
+    }
+  }
+  const result = await c.env.DB.prepare(
+    "UPDATE curated_lists SET twitch_login = ?1, twitch_user_id = ?2, updated_by_user_id = ?3, updated_at = datetime('now') WHERE id = ?4"
+  )
+    .bind(twitch?.login ?? null, twitch?.id ?? null, auth.id, listId)
+    .run();
+  if (((result.meta as { changes?: number } | undefined)?.changes ?? 0) === 0) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  await writeAudit(c.env, auth.id, "list", listId, "set_twitch_owner", { twitchLogin: twitch?.login ?? null, twitchUserId: twitch?.id ?? null });
+  return c.json({ ok: true, twitchLogin: twitch?.login ?? null });
+});
+
 app.delete("/api/lists/:id", async (c) => {
   const auth = requireRole(c, ["editor", "admin"]);
   if (auth instanceof Response) {
@@ -4316,7 +4392,8 @@ const reorderListItemsSchema = z.object({
 });
 
 app.post("/api/lists/:id/items", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4324,7 +4401,12 @@ app.post("/api/lists/:id/items", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
-  const listId = c.req.param("id");
+  if (auth.role !== "editor" && auth.role !== "admin") {
+    const approved = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'").bind(parsed.data.gameId).first();
+    if (!approved) {
+      return c.json({ error: "Game not found" }, 404);
+    }
+  }
   const maxPos = await c.env.DB.prepare(
     "SELECT COALESCE(MAX(position), 0) as maxPos FROM curated_list_items WHERE curated_list_id = ?1"
   ).bind(listId).first<{ maxPos: number }>();
@@ -4340,7 +4422,7 @@ app.post("/api/lists/:id/items", async (c) => {
 });
 
 app.delete("/api/lists/:id/items/:gameId", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requireListEditor(c, c.req.param("id"));
   if (auth instanceof Response) {
     return auth;
   }
@@ -4352,7 +4434,8 @@ app.delete("/api/lists/:id/items/:gameId", async (c) => {
 });
 
 app.patch("/api/lists/:id/items/reorder", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4360,7 +4443,6 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
-  const listId = c.req.param("id");
 
   const clearPassStatements = parsed.data.items.map((item, index) =>
     c.env.DB.prepare("UPDATE curated_list_items SET position = ?1 WHERE curated_list_id = ?2 AND game_id = ?3").bind(
@@ -4901,14 +4983,121 @@ function uniqueSlug(title: string, id: string): string {
   return `${base}-${id.slice(0, 8)}`;
 }
 
-function canViewList(visibility: "public" | "private", ownerUserId: string, user: AppUser | null): boolean {
+function canViewList(
+  visibility: "public" | "private",
+  ownerUserId: string,
+  user: AppUser | null,
+  twitch?: { listTwitchUserId: string | null; userTwitchId: string | null }
+): boolean {
   if (visibility === "public") {
     return true;
   }
   if (!user) {
     return false;
   }
+  if (twitch?.listTwitchUserId && twitch.listTwitchUserId === twitch.userTwitchId) {
+    return true;
+  }
   return user.id === ownerUserId || user.role === "editor" || user.role === "admin";
+}
+
+/** The numeric Twitch user id linked to this account, or null (also null for logged-out users). */
+async function getUserTwitchId(env: Env, user: AppUser | null): Promise<string | null> {
+  if (!user) {
+    return null;
+  }
+  const row = await env.DB.prepare("SELECT provider_user_id FROM oauth_accounts WHERE user_id = ?1 AND provider = 'twitch'")
+    .bind(user.id)
+    .first<{ provider_user_id: string }>();
+  return row?.provider_user_id ?? null;
+}
+
+/**
+ * Staff can always edit a list. The Twitch user a list is tagged with (matched by stable Twitch id, not
+ * username) can edit its games, title and description unless staffOnly is set.
+ */
+async function requireListEditor(
+  c: Context<{ Bindings: Env; Variables: AppVariables }>,
+  listId: string,
+  opts: { staffOnly?: boolean } = {}
+): Promise<AppUser | Response> {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  if (auth.role === "editor" || auth.role === "admin") {
+    return auth;
+  }
+  if (!opts.staffOnly) {
+    const owns = await c.env.DB.prepare(
+      `SELECT 1 AS ok
+       FROM curated_lists
+       JOIN oauth_accounts ON oauth_accounts.provider = 'twitch' AND oauth_accounts.provider_user_id = curated_lists.twitch_user_id
+       WHERE curated_lists.id = ?1 AND oauth_accounts.user_id = ?2`
+    )
+      .bind(listId, auth.id)
+      .first();
+    if (owns) {
+      return auth;
+    }
+  }
+  return c.json({ error: "Forbidden" }, 403);
+}
+
+/** App access token for Twitch's Helix API (client credentials), cached in KV until shortly before expiry. */
+async function getTwitchAppToken(env: Env): Promise<string | null> {
+  if (!env.OAUTH_TWITCH_CLIENT_ID || !env.OAUTH_TWITCH_CLIENT_SECRET) {
+    return null;
+  }
+  const cached = await env.CACHE.get("twitch:app_token");
+  if (cached) {
+    return cached;
+  }
+  const res = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.OAUTH_TWITCH_CLIENT_ID,
+      client_secret: env.OAUTH_TWITCH_CLIENT_SECRET,
+      grant_type: "client_credentials"
+    })
+  });
+  if (!res.ok) {
+    console.error("Twitch app token request failed:", res.status, await res.text());
+    return null;
+  }
+  const json = (await res.json()) as { access_token?: string; expires_in?: number };
+  if (!json.access_token) {
+    return null;
+  }
+  await env.CACHE.put("twitch:app_token", json.access_token, { expirationTtl: Math.max(60, (json.expires_in ?? 3600) - 300) });
+  return json.access_token;
+}
+
+/** Resolves a Twitch username to its stable id and canonical login. null = no such user; throws if Twitch is unreachable. */
+async function lookupTwitchUser(env: Env, login: string): Promise<{ id: string; login: string } | null> {
+  const token = await getTwitchAppToken(env);
+  if (!token) {
+    throw new Error("twitch-unavailable");
+  }
+  const res = await fetch(`https://api.twitch.tv/helix/users?login=${encodeURIComponent(login)}`, {
+    headers: { Authorization: `Bearer ${token}`, "Client-Id": env.OAUTH_TWITCH_CLIENT_ID! }
+  });
+  if (res.status === 401) {
+    await env.CACHE.delete("twitch:app_token");
+  }
+  if (!res.ok) {
+    throw new Error("twitch-unavailable");
+  }
+  const user = ((await res.json()) as { data?: Array<{ id: string; login: string }> }).data?.[0];
+  return user ? { id: user.id, login: user.login } : null;
+}
+
+function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
+  if (!twitchLogin) {
+    return "";
+  }
+  return `<span class="verified-badge" title="Verified: curated by Twitch user ${escapeHtml(twitchLogin)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="11" fill="#1d9bf0"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
 }
 
 async function enforceRateLimit(
@@ -6067,6 +6256,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
       button.active { background: var(--accent); color: #121212; }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
+      .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
       .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
       .nsfw-badge { color:#ef4444; font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
       .moderation-badge {
