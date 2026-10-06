@@ -3476,6 +3476,7 @@ app.post("/api/games", async (c) => {
     )
       .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value)
       .run();
+    await writeAudit(c.env, user!.id, "game", id, "approve", { title: parsed.data.title, slug, via: "submission" });
   } else {
     await c.env.DB.prepare(
       `INSERT INTO games
