@@ -3806,7 +3806,7 @@ app.post("/api/games", async (c) => {
     })
   );
   if (bypassModeration) {
-    c.executionCtx.waitUntil(announceNewGames(c.env, [id]));
+    c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, [id]));
   }
   return c.json({ id, status: bypassModeration ? "approved" : "pending" }, 201);
 });
@@ -4031,7 +4031,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
-  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
+  c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, newlyApproved));
   return c.json({ ok: true, slug });
 });
 
@@ -4787,7 +4787,7 @@ app.post("/api/admin/games/bulk", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
-  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
+  c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, newlyApproved));
   return c.json({ ok: true, count: parsed.data.ids.length });
 });
 
@@ -4807,7 +4807,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
     .run();
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
-  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
+  c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, newlyApproved));
   return c.json({ ok: true });
 });
 
@@ -5100,7 +5100,11 @@ app.onError((error, c) => {
 
 export default {
   fetch: app.fetch,
-  scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+  scheduled: async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+    if (event.cron === ANNOUNCEMENT_CRON) {
+      ctx.waitUntil(flushAnnouncementQueue(env));
+      return;
+    }
     ctx.waitUntil(runLinkChecks(env));
     ctx.waitUntil(recalculateAllScores(env));
   }
@@ -5657,15 +5661,52 @@ async function logGameEvents(
   return newlyApproved;
 }
 
+// New-game announcements are batched: approvals queue the game, and this every-minute cron (wrangler.jsonc) posts the
+// queue as one message once no game has been queued for ANNOUNCEMENT_QUIET_MINUTES, or once the oldest has waited
+// ANNOUNCEMENT_MAX_WAIT_MINUTES, so a long run of approvals still goes out regularly.
+const ANNOUNCEMENT_CRON = "* * * * *";
+const ANNOUNCEMENT_QUIET_MINUTES = 3;
+const ANNOUNCEMENT_MAX_WAIT_MINUTES = 15;
+
+async function queueNewGameAnnouncements(env: Env, gameIds: string[]): Promise<void> {
+  // Without a webhook (staging, dev) nothing would ever send them, so don't let the queue grow.
+  if (!env.DISCORD_NEW_GAME_WEBHOOK_URL || !env.DISCORD_ROLE_DLE_ENJOYER || gameIds.length === 0) return;
+  const insert = env.DB.prepare("INSERT OR IGNORE INTO announcement_queue (game_id) VALUES (?1)");
+  await env.DB.batch([...new Set(gameIds)].map((id) => insert.bind(id)));
+}
+
+async function flushAnnouncementQueue(env: Env): Promise<void> {
+  const age = await env.DB.prepare(
+    `SELECT COUNT(*) AS n,
+            (julianday('now') - julianday(MAX(queued_at))) * 1440 AS newest_minutes,
+            (julianday('now') - julianday(MIN(queued_at))) * 1440 AS oldest_minutes
+     FROM announcement_queue`
+  ).first<{ n: number; newest_minutes: number | null; oldest_minutes: number | null }>();
+  if (!age || age.n === 0) return;
+  if ((age.newest_minutes ?? 0) < ANNOUNCEMENT_QUIET_MINUTES && (age.oldest_minutes ?? 0) < ANNOUNCEMENT_MAX_WAIT_MINUTES) return;
+  // announceNewGames reads at most 90 ids at a time (D1's bind limit); anything beyond goes out on the next run.
+  const queued = await env.DB.prepare("SELECT game_id FROM announcement_queue ORDER BY queued_at LIMIT 90").all<{ game_id: string }>();
+  const ids = queued.results.map((row) => row.game_id);
+  const sent = await announceNewGames(env, ids);
+  const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
+  if (sent) {
+    await env.DB.prepare(`DELETE FROM announcement_queue WHERE game_id IN (${placeholders})`).bind(...ids).run();
+  } else {
+    // Keep them for the next minute's retry, but give up on anything Discord has refused for an hour.
+    await env.DB.prepare("DELETE FROM announcement_queue WHERE queued_at < datetime('now', '-60 minutes')").run();
+  }
+}
+
 /**
- * Posts newly approved games to the Discord #dailies channel through its webhook, pinging @Dle Enjoyer. Best-effort:
- * never throws, and does nothing unless DISCORD_NEW_GAME_WEBHOOK_URL and DISCORD_ROLE_DLE_ENJOYER are set (only
- * production has the webhook). Several games approved together go out as one message, split at Discord's length limit.
+ * Posts games to the Discord #dailies channel through its webhook, pinging @Dle Enjoyer (called by
+ * flushAnnouncementQueue). Never throws; returns false when nothing was sent, so the caller can retry. Does nothing
+ * unless DISCORD_NEW_GAME_WEBHOOK_URL and DISCORD_ROLE_DLE_ENJOYER are set (only production has the webhook). All the
+ * games go in one message, split at Discord's length limit.
  */
-async function announceNewGames(env: Env, gameIds: string[]): Promise<void> {
+async function announceNewGames(env: Env, gameIds: string[]): Promise<boolean> {
   const webhookUrl = env.DISCORD_NEW_GAME_WEBHOOK_URL;
   const roleId = env.DISCORD_ROLE_DLE_ENJOYER;
-  if (!webhookUrl || !roleId || gameIds.length === 0) return;
+  if (!webhookUrl || !roleId || gameIds.length === 0) return true;
   try {
     // Read after the status update, so titles and slugs are final and only games still approved are announced.
     const ids = [...new Set(gameIds)].slice(0, 90);
@@ -5674,7 +5715,7 @@ async function announceNewGames(env: Env, gameIds: string[]): Promise<void> {
     )
       .bind(...ids)
       .all<{ title: string; slug: string; nsfw: number }>();
-    if (rows.results.length === 0) return;
+    if (rows.results.length === 0) return true;
     // Game titles are user-submitted: escape Discord markdown so they render literally.
     const name = (game: { title: string; nsfw: number }) =>
       `**${game.title.replace(/[\\*_~`|>]/g, "\\$&").replace(/\s+/g, " ").trim()}**${game.nsfw ? " (NSFW)" : ""}`;
@@ -5696,7 +5737,9 @@ async function announceNewGames(env: Env, gameIds: string[]): Promise<void> {
       }
       messages.push(current);
     }
+    let sentCount = 0;
     for (const content of messages) {
+      let ok = false;
       for (let attempt = 0; attempt < 2; attempt++) {
         const response = await fetch(webhookUrl, {
           method: "POST",
@@ -5710,14 +5753,20 @@ async function announceNewGames(env: Env, gameIds: string[]): Promise<void> {
           await new Promise((resolve) => setTimeout(resolve, Math.min(5, Math.max(0.5, retryAfter)) * 1000));
           continue;
         }
-        if (!response.ok) {
+        ok = response.ok;
+        if (!ok) {
           console.error(JSON.stringify({ message: "discord announcement failed", status: response.status }));
         }
         break;
       }
+      if (!ok) break;
+      sentCount++;
     }
+    // Nothing went out: worth retrying. Part of a multi-message batch went out: retrying would repeat it, so don't.
+    return sentCount > 0;
   } catch (error) {
     console.error(JSON.stringify({ message: "discord announcement failed", error: String(error) }));
+    return false;
   }
 }
 
