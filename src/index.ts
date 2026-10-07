@@ -251,9 +251,10 @@ app.get("/login", async (c) => {
 app.get("/", async (c) => {
   const user = c.get("user");
   const shouldPromptImport = c.req.query("importLocal") === "1";
-  const topGames = await listGames(c.env, { sort: "top", limit: 5 });
+  // 8 per list for the two-column desktop layout; narrower screens show the first 5 (see .home-columns CSS).
+  const topGames = await listGames(c.env, { sort: "top", limit: 8 });
   const topGameIds = topGames.map((game) => game.id);
-  const newGames = await listGames(c.env, { sort: "new", limit: 5 });
+  const newGames = await listGames(c.env, { sort: "new", limit: 8 });
   const newGameIds = newGames.map((game) => game.id);
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds])]);
 
@@ -283,14 +284,16 @@ app.get("/", async (c) => {
              </section>`
           : ""
       }
-      <section>
-        <h2>Popular Today</h2>
-        ${topGamesMarkup}
-      </section>
-      <section>
-        <h2>Newly Added</h2>
-        ${newGamesMarkup}
-      </section>
+      <div class="home-columns">
+        <section>
+          <h2>Popular Today</h2>
+          ${topGamesMarkup}
+        </section>
+        <section>
+          <h2>Newly Added</h2>
+          ${newGamesMarkup}
+        </section>
+      </div>
       <section>
         <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
         <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
@@ -6113,6 +6116,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         cursor: pointer;
       }
       /* Two equal-width buttons side by side, centred; stacked only on very narrow phones where they can't fit. */
+      /* Home: Popular Today and Newly Added side by side, one card per row, on wide screens; stacked (5 each) otherwise. */
+      .home-columns ul.games { grid-template-columns: 1fr; }
+      @media (min-width: 800px) {
+        .home-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; align-items: start; }
+      }
+      @media (max-width: 799px) {
+        .home-columns ul.games li:nth-child(n + 6) { display: none; }
+      }
       .actions.home-actions { display: grid; grid-template-columns: 1fr 1fr; max-width: 460px; margin-left: auto; margin-right: auto; }
       .home-actions .btn { min-width: 0; white-space: nowrap; }
       ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); }
