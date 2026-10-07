@@ -1090,7 +1090,7 @@ app.get("/rotation/:shareToken", async (c) => {
                 const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
                 return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
                 <div class="item-main">
-                  <a class="card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                  <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                   ${renderCategoryPills(categoriesByGameId.get(item.id))}
                   ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
@@ -1253,7 +1253,7 @@ app.get("/me/rotation", async (c) => {
 
             // Points at the details page until rotation-info supplies the game's own address.
             const link = document.createElement("a");
-            link.className = "card-link";
+            link.className = "game-title card-link";
             link.href = "/games/" + encodeURIComponent(item.slug);
             link.textContent = item.title;
             itemMain.appendChild(link);
@@ -1512,7 +1512,7 @@ app.get("/me/rotation", async (c) => {
               return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
-                <a class="card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                 ${renderCategoryPills(categoriesByGameId.get(item.id))}
                 ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
               </div>
@@ -2058,7 +2058,7 @@ app.get("/lists/:slug", async (c) => {
           return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" ${isAdminEditor ? "" : `class="card-link"`} style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
@@ -6050,6 +6050,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --header-bg: rgba(18, 18, 18, 0.85);
         --on-accent: #121212;
         --brand-blue: #00a4fc;
+        --title-ink: #f2f2f2;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -6065,6 +6066,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --header-bg: rgba(245, 245, 247, 0.85);
         --on-accent: #ffffff;
         --brand-blue: #0077c2;
+        --title-ink: #111114;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -6161,7 +6163,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .game-sub .category-pills { margin-top: 0; }
       .game-sub .tag { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
       .game-sub .meta { margin: 0; }
-      .game-title { font-weight: 700; color: var(--ink); text-decoration-color: var(--border); }
+      /* Game names, the same on every card and row. */
+      .game-title { font-size: 1.1rem; font-weight: 700; line-height: 1.3; color: var(--title-ink); text-decoration-color: var(--border); }
       .game-title:hover { text-decoration-color: currentColor; }
       /* The game name's link stretches over the whole card, so a tap anywhere opens the game; buttons and tags sit above it. */
       .card-click { position: relative; }
