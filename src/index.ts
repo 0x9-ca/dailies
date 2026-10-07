@@ -257,6 +257,7 @@ app.get("/", async (c) => {
   const newGames = await listGames(c.env, { sort: "new", limit: 8 });
   const newGameIds = newGames.map((game) => game.id);
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds])]);
+  const playableCount = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
@@ -267,6 +268,22 @@ app.get("/", async (c) => {
         // Returning visitors (anyone who has favorited or voted) don't need the introduction.
         if (window.dglGames.isReturningVisitor()) document.getElementById("home-intro").hidden = true;
       </script>`}
+      <p class="game-count"><strong data-count-up="${playableCount}">${playableCount.toLocaleString("en-US")}</strong> daily games to play</p>
+      <script>
+        // Count up to the total once on load (skipped for reduced motion); the server-rendered number is the fallback.
+        (() => {
+          const el = document.querySelector("[data-count-up]");
+          const target = Number(el?.getAttribute("data-count-up"));
+          if (!el || !target || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+          const start = performance.now();
+          const tick = (now) => {
+            const progress = Math.min(1, (now - start) / 900);
+            el.textContent = Math.round(target * (1 - Math.pow(1 - progress, 3))).toLocaleString("en-US");
+            if (progress < 1) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        })();
+      </script>
       <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -6369,6 +6386,23 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       @media (max-width: 400px) {
         .site-nav a[href="/submit"] { display: none; }
         .nav-menu-panel > a.menu-narrow-only { display: block; }
+      }
+      .game-count { text-align: center; color: var(--muted); font-size: 1.05rem; margin: 0.25rem 0 0.9rem; }
+      .game-count strong { color: var(--brand-blue); font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 0.2rem; }
+      /* Big screens: larger cards and text, with the buttons in a 2x2 grid (votes left, favorite top right, details bottom right). */
+      @media (min-width: 1200px) {
+        ul.games { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 1rem; }
+        ul.games.compact li { padding: 0.95rem 1.05rem; border-radius: 14px; }
+        ul.games.compact li.reset-bar { padding-bottom: calc(0.95rem + 6px); }
+        .game-row { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto 1fr; grid-template-areas: "name actions" "sub actions"; column-gap: 0.9rem; row-gap: 0.45rem; align-items: start; }
+        .game-top { display: contents; }
+        .game-name { grid-area: name; padding-top: 0; }
+        .game-sub { grid-area: sub; }
+        .game-row .compact-actions { grid-area: actions; display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; grid-auto-flow: column; gap: 0.35rem; }
+        .game-row .compact-actions > * { display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; height: 2.15rem; min-width: 3.4rem; font-size: 0.95rem; padding: 0 0.6rem; }
+        ul.games .game-title { font-size: 1.3rem; }
+        .game-sub .tag { font-size: 0.85rem; padding: 0.15rem 0.5rem; }
+        .game-row .meta { font-size: 0.9rem; }
       }
     </style>
   </head>
