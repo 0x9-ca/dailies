@@ -2153,10 +2153,12 @@ app.get("/lists/:slug", async (c) => {
     adminGames = games.results;
   }
 
+  const twitchLive = list.twitch_user_id ? await isTwitchUserLive(c.env, list.twitch_user_id) : false;
+
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
-      ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="Opens Twitch in a new tab">${TWITCH_ICON_SVG}Watch ${escapeHtml(list.twitch_login)} on Twitch<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
+      ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
       <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
@@ -5083,7 +5085,8 @@ async function getTwitchAppToken(env: Env): Promise<string | null> {
       client_id: env.OAUTH_TWITCH_CLIENT_ID,
       client_secret: env.OAUTH_TWITCH_CLIENT_SECRET,
       grant_type: "client_credentials"
-    })
+    }),
+    signal: AbortSignal.timeout(2500)
   });
   if (!res.ok) {
     console.error("Twitch app token request failed:", res.status, await res.text());
@@ -5095,6 +5098,39 @@ async function getTwitchAppToken(env: Env): Promise<string | null> {
   }
   await env.CACHE.put("twitch:app_token", json.access_token, { expirationTtl: Math.max(60, (json.expires_in ?? 3600) - 300) });
   return json.access_token;
+}
+
+/**
+ * Whether a Twitch user is streaming right now, for the LIVE tag on their list. Cached in KV for a minute per user
+ * so list views don't each call Twitch. Any failure (no credentials, timeout, Twitch error) counts as not live.
+ */
+async function isTwitchUserLive(env: Env, twitchUserId: string): Promise<boolean> {
+  const key = `twitch:live:${twitchUserId}`;
+  const cached = await env.CACHE.get(key);
+  if (cached !== null) {
+    return cached === "1";
+  }
+  try {
+    const token = await getTwitchAppToken(env);
+    if (!token) {
+      return false;
+    }
+    const res = await fetch(`https://api.twitch.tv/helix/streams?user_id=${encodeURIComponent(twitchUserId)}`, {
+      headers: { Authorization: `Bearer ${token}`, "Client-Id": env.OAUTH_TWITCH_CLIENT_ID! },
+      signal: AbortSignal.timeout(2500)
+    });
+    if (res.status === 401) {
+      await env.CACHE.delete("twitch:app_token");
+    }
+    if (!res.ok) {
+      return false;
+    }
+    const live = (((await res.json()) as { data?: unknown[] }).data?.length ?? 0) > 0;
+    await env.CACHE.put(key, live ? "1" : "0", { expirationTtl: 60 });
+    return live;
+  } catch {
+    return false;
+  }
 }
 
 /** Resolves a Twitch username to its stable id and canonical login. null = no such user; throws if Twitch is unreachable. */
@@ -6329,6 +6365,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .linked-account-status { color: #22c55e; font-weight: 700; }
       .link-account-form { margin: 0; }
       .external-arrow { font-size: 0.9em; opacity: 0.85; }
+      /* Twitch's own live red, white text. */
+      .btn-twitch { white-space: nowrap; max-width: 100%; }
+      .btn-twitch > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* Phones: the Twitch icon says where the button goes, so "on Twitch" is dropped to keep it on one line. */
+      @media (max-width: 480px) { .btn-twitch .wide-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
+      .live-badge { background: #eb0400; color: #fff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; padding: 0.15rem 0.4rem; border-radius: 4px; line-height: 1.2; }
       .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       @media (min-width: 800px) {
         .home-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; align-items: start; }
