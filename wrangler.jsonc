@@ -13,15 +13,15 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "daily-game-list",
-      "database_id": "9e1124fc-5f00-4c21-a100-b807d8d46925",
+      "database_name": "daily-game-list-staging",
+      "database_id": "460b7077-3ce6-4f2b-b54c-81cd9f07b1b3",
       "migrations_dir": "migrations"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "CACHE",
-      "id": "59fe208f58e2486884a6f2460f415b7a"
+      "id": "c7bc57c57a0c4279b672ba4622fafa9b"
     }
   ],
   "send_email": [{ "name": "EMAIL" }],
@@ -48,15 +48,15 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "daily-game-list",
-          "database_id": "9e1124fc-5f00-4c21-a100-b807d8d46925",
+          "database_name": "daily-game-list-staging",
+          "database_id": "460b7077-3ce6-4f2b-b54c-81cd9f07b1b3",
           "migrations_dir": "migrations"
         }
       ],
       "kv_namespaces": [
         {
           "binding": "CACHE",
-          "id": "59fe208f58e2486884a6f2460f415b7a"
+          "id": "c7bc57c57a0c4279b672ba4622fafa9b"
         }
       ],
       "send_email": [{ "name": "EMAIL" }],

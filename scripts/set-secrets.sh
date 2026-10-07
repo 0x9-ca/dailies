@@ -79,8 +79,12 @@ const discordRoleAdminProduction = fallback(envVar("DISCORD_ROLE_ADMIN_PRODUCTIO
 const discordRoleEditorProduction = fallback(envVar("DISCORD_ROLE_EDITOR_PRODUCTION"), discordRoleEditorStaging);
 
 const sessionCookieName = fallback(envVar("SESSION_COOKIE_NAME"), "dgl_session");
+// Production has its own D1/KV. Staging and the default (dev) config share a separate staging D1/KV, so nothing
+// outside the production env can ever touch production data.
 const d1DatabaseId = envVar("D1_DATABASE_ID");
 const kvNamespaceId = envVar("KV_NAMESPACE_ID");
+const d1DatabaseIdStaging = envVar("D1_DATABASE_ID_STAGING");
+const kvNamespaceIdStaging = envVar("KV_NAMESPACE_ID_STAGING");
 
 config.vars ||= {};
 config.vars.APP_URL = fallback(appUrlDev, config.vars.APP_URL || "http://192.168.17.2:8787");
@@ -109,24 +113,24 @@ config.env.production.vars.DISCORD_GUILD_ID = discordGuildIdProduction;
 config.env.production.vars.DISCORD_ROLE_ADMIN = discordRoleAdminProduction;
 config.env.production.vars.DISCORD_ROLE_EDITOR = discordRoleEditorProduction;
 
-const setBindingIds = (target) => {
+const setBindingIds = (target, d1Id, kvId) => {
   if (!target.d1_databases || target.d1_databases.length === 0) {
     return;
   }
   if (!target.kv_namespaces || target.kv_namespaces.length === 0) {
     return;
   }
-  if (d1DatabaseId) {
-    target.d1_databases[0].database_id = d1DatabaseId;
+  if (d1Id) {
+    target.d1_databases[0].database_id = d1Id;
   }
-  if (kvNamespaceId) {
-    target.kv_namespaces[0].id = kvNamespaceId;
+  if (kvId) {
+    target.kv_namespaces[0].id = kvId;
   }
 };
 
-setBindingIds(config);
-setBindingIds(config.env.staging);
-setBindingIds(config.env.production);
+setBindingIds(config, d1DatabaseIdStaging, kvNamespaceIdStaging);
+setBindingIds(config.env.staging, d1DatabaseIdStaging, kvNamespaceIdStaging);
+setBindingIds(config.env.production, d1DatabaseId, kvNamespaceId);
 
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 NODE
