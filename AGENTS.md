@@ -69,6 +69,7 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - Keep SQL parameterized with D1 prepared statements.
 - Handlers for edge-cached pages must not render per-visitor state for logged-out requests when `c.get("publicCache")` is true; use `getViewerGameState()` for votes/favorites, which already handles this.
 - Use `renderDetailsLink()` for links to game pages from cards (a real `<a>`, so crawlers can follow it) and `class="narrow"` on `<main>` for text/list pages.
+- Game cards and rows are tappable: the container has `card-click` and the game-name link `card-link`, whose overlay covers the card. Anything else clickable inside (buttons, `.btn-details`, `.category-pill`, `.drag`) must sit above it (see the `.card-click` CSS). Don't use it where rows are dragged by the whole row (list edit mode). The logged-out rotation gets game links from `GET /api/games/rotation-info`.
 - Embed server values in inline `<script>` blocks with `scriptJson(...)`, never raw `JSON.stringify(...)`; in client code, put user text in the DOM with `textContent`, not `innerHTML`.
 - Mock login (`/auth/mock-login/:role`) only works when `APP_ENV` is development and the request host matches `APP_URL`. Production has its own D1/KV; staging and the default (dev) config use a separate staging D1/KV. In `wrangler d1` commands use the `DB` binding with `--env`, never the database name (a name can resolve to production).
 - Update both server route behavior and inline client script behavior together.
