@@ -48,6 +48,9 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Deployed environments redirect plain HTTP to HTTPS (301, or 308 for non-GET) and every response carries HSTS (not in dev), `nosniff`, `Referrer-Policy` and `frame-ancestors 'none'`/`X-Frame-Options: DENY` (first middleware in `src/index.ts`).
 - Missing pages (unknown game, list, category slug, page number past the end, unmatched route) render `notFoundPage()`, an HTML 404 with `noindex`; unmatched `/api/*` routes return JSON 404.
 - SEO data per page: game pages carry `VideoGame` JSON-LD and an "About" facts section (category descriptions, rating, public lists featuring the game, listed-since date); category and list pages carry an `ItemList` (`gameItemListLd()`); every page carries `WebSite` and `Organization`. List meta descriptions fall back to `listMetaDescription()` when a list has no description.
+- Games have an optional editor-written `how_to_play` (plain text, max 2000 chars, blank line = new paragraph), edited in the game page's admin form and shown at the top of its "About" section.
+- Each game page's `og:image` is `/og/games/<slug>.png?v=<hash>`, drawn on demand by `src/lib/og.ts` (satori + resvg WASM via `@cf-wasm/og`, Manrope from `src/lib/og-fonts.ts`) and edge-cached for a day. `v` changes when the title, description, categories or paywall flag change. A render failure falls back to the site image.
+- `/llms.txt` is a generated Markdown overview (categories, public lists, top 30 games) for AI assistants.
 
 ## Scoring
 
