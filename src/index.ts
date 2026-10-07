@@ -63,7 +63,11 @@ app.use("*", async (c, next) => {
     return;
   }
 
-  const cacheKey = new Request(c.req.url);
+  // Keyed by deployed version too, so a deploy starts with an empty page cache (pages reloaded by
+  // APP_UPDATE_SCRIPT always get the new HTML, never a copy cached by the previous version).
+  const cacheUrl = new URL(c.req.url);
+  cacheUrl.searchParams.set("__v", appVersion(c.env));
+  const cacheKey = new Request(cacheUrl.toString());
   const cached = await caches.default.match(cacheKey);
   if (cached) {
     ensureCsrfCookie(c);
@@ -112,6 +116,9 @@ app.use("/api/*", async (c, next) => {
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+// The deployed version, polled by APP_UPDATE_SCRIPT so open pages reload after a deploy.
+app.get("/api/version", (c) => c.json({ version: appVersion(c.env) }, 200, { "Cache-Control": "no-store" }));
 
 // Development-only quick role login helper. Besides APP_ENV, the request must arrive on APP_URL's own host, so a
 // dev-config build that ends up deployed (e.g. reachable on workers.dev) can never hand out sessions.
@@ -6536,6 +6543,61 @@ const GAME_ACTIONS_SCRIPT = `
   })();
 `;
 
+// Reloads open pages after a deploy. Every page carries the version that rendered it (<meta name="app-version">);
+// this checks /api/version once a minute while the tab is visible, and when it becomes visible again. On a new
+// version it reloads, but never while someone is in a text field or has typed into a form (that would lose their
+// work): then it waits for them to leave the field, and if a form has unsaved input it only shows a notice.
+const APP_UPDATE_SCRIPT = `
+  (() => {
+    const current = document.querySelector('meta[name="app-version"]')?.getAttribute("content");
+    if (!current || current === "dev") return;
+    const RELOADED_KEY = "dgl_reloaded_for_version";
+    let newVersion = null;
+    let unsavedInput = false;
+    let noticeShown = false;
+    document.addEventListener("input", (event) => {
+      const field = event.target;
+      // Typing into a form counts as unsaved work, except the search box (its text survives in the URL).
+      if (field instanceof Element && field.closest("form") && !field.matches("input[type=search]")) unsavedInput = true;
+    }, true);
+    document.addEventListener("submit", () => { unsavedInput = false; }, true);
+    const editing = () => {
+      const active = document.activeElement;
+      return !!active && active.matches("input:not([type=button]):not([type=submit]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable]");
+    };
+    const reloadIfSafe = () => {
+      if (!newVersion) return;
+      try { if (window.sessionStorage.getItem(RELOADED_KEY) === newVersion) return; } catch {}
+      if (unsavedInput || document.querySelector("dialog[open]")) {
+        if (!noticeShown && window.appToast) {
+          noticeShown = true;
+          window.appToast("0x9 dles was just updated. Refresh the page when you're done to get the latest version.", "success", 10000);
+        }
+        return;
+      }
+      if (editing()) return;
+      try { window.sessionStorage.setItem(RELOADED_KEY, newVersion); } catch {}
+      window.location.reload();
+    };
+    const check = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        const response = await fetch("/api/version", { cache: "no-store" });
+        if (!response.ok) return;
+        const { version } = await response.json();
+        if (version && version !== current) newVersion = version;
+      } catch {
+        return;
+      }
+      reloadIfSafe();
+    };
+    window.setInterval(check, 60000);
+    document.addEventListener("visibilitychange", check);
+    // Someone who was typing when the update arrived gets the reload once they leave the field.
+    document.addEventListener("focusout", () => window.setTimeout(reloadIfSafe, 1500));
+  })();
+`;
+
 // Client helper: toggles a list between its manual order and "resetting soonest" order.
 const LIST_SORT_SCRIPT = `
   window.dglListSort = (() => {
@@ -6609,6 +6671,11 @@ function getResetMetaLabel(
     return `Reset ${time} (${resetBasis.toUpperCase()})`;
   }
   return `Reset ${time}`;
+}
+
+// Cloudflare's id for the running Worker version: changes with every deploy (and every secret or config change).
+function appVersion(env: Env): string {
+  return env.CF_VERSION_METADATA?.id || "dev";
 }
 
 function isDevEnv(env: Env): boolean {
@@ -6727,6 +6794,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#121212" />
     <meta name="apple-mobile-web-app-title" content="0x9 dles" />
+    <meta name="app-version" content="${escapeHtml(appVersion(env))}" />
     <meta property="og:site_name" content="0x9 dles" />
     <meta property="og:image" content="https://dailies.0x9.ca${escapeHtml(image.path)}" />
     <meta property="og:image:width" content="1200" />
@@ -7206,7 +7274,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <script>
       (() => {
         const stack = document.getElementById("toast-stack");
-        const showToast = (message, level = "success") => {
+        const showToast = (message, level = "success", durationMs = 2500) => {
           if (!stack || !message) return;
           const node = document.createElement("div");
           node.className = "toast " + level;
@@ -7214,7 +7282,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
           stack.appendChild(node);
           window.setTimeout(() => {
             node.remove();
-          }, 2500);
+          }, durationMs);
         };
 
         window.appToast = showToast;
@@ -7250,6 +7318,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       })();
     </script>
     <script>${RESET_LOCALIZE_SCRIPT}</script>
+    <script>${APP_UPDATE_SCRIPT}</script>
   </body>
 </html>`;
 }
