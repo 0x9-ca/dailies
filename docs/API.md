@@ -3,6 +3,7 @@
 ## Public
 
 - `GET /api/games?sort=top|new|trending|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
+- `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
 - `GET /api/categories`
 - `GET /api/lists`
 - `GET /api/lists/:slug`
