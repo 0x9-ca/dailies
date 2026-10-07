@@ -45,6 +45,8 @@
   "env": {
     "staging": {
       "name": "daily-game-list-staging",
+      "workers_dev": false,
+      "preview_urls": false,
       "d1_databases": [
         {
           "binding": "DB",
@@ -75,6 +77,8 @@
     },
     "production": {
       "name": "daily-game-list-production",
+      "workers_dev": false,
+      "preview_urls": false,
       "d1_databases": [
         {
           "binding": "DB",

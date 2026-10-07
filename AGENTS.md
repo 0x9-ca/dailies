@@ -42,6 +42,9 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Games can be marked as `paywall` by editors/admins; a green `$` badge renders after the title on all card views.
 - Server-time resets can carry a `reset_timezone` (IANA name; only kept when `reset_basis = server`, null means UTC). Reset sort converts via per-zone UTC offsets computed in the Worker.
 - Click tracking: `POST /api/games/:id/click` increments `click_count`; score computation factors in click count and list membership.
+- Logged-out views of `/`, `/games`, `/games/:slug`, `/lists`, `/lists/:slug` and `/mod-log` are cached at the edge for 60s (`PUBLIC_CACHE_PATHS`, `X-Page-Cache: HIT|MISS`). Requests with a session cookie or the `dgl_voted` cookie (set after a vote) bypass it. Not in development.
+- Cards show "N% liked" (upvote share) and a live reset countdown ("Resets in 3h 12m") instead of the internal score; the score is still used for sorting.
+- Non-production environments send `X-Robots-Tag: noindex` and a `Disallow: /` robots.txt; workers.dev and preview URLs are off for staging and production.
 
 ## Scoring
 
@@ -64,6 +67,8 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 ## Safe editing notes for agents
 
 - Keep SQL parameterized with D1 prepared statements.
+- Handlers for edge-cached pages must not render per-visitor state for logged-out requests when `c.get("publicCache")` is true; use `getViewerGameState()` for votes/favorites, which already handles this.
+- Use `renderDetailsLink()` for links to game pages from cards (a real `<a>`, so crawlers can follow it) and `class="narrow"` on `<main>` for text/list pages.
 - Embed server values in inline `<script>` blocks with `scriptJson(...)`, never raw `JSON.stringify(...)`; in client code, put user text in the DOM with `textContent`, not `innerHTML`.
 - Mock login (`/auth/mock-login/:role`) only works when `APP_ENV` is development and the request host matches `APP_URL`. Production has its own D1/KV; staging and the default (dev) config use a separate staging D1/KV. In `wrangler d1` commands use the `DB` binding with `--env`, never the database name (a name can resolve to production).
 - Update both server route behavior and inline client script behavior together.

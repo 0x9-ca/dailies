@@ -20,7 +20,8 @@ export interface Env {
 export type AppVariables = {
   user: AppUser | null;
   requestId: string;
-  csrfToken: string;
+  /** True when this is a logged-out page view that may be stored in the edge cache, so it must not show per-visitor state. */
+  publicCache: boolean;
 };
 
 export interface AppUser {
