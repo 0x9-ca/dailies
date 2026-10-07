@@ -5773,7 +5773,8 @@ const RESET_LOCALIZE_SCRIPT = `
     const hours = Math.floor(minutesLeft / 60);
     return {
       at: next.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-      in: (hours > 0 ? hours + "h " : "") + (minutesLeft % 60) + "m"
+      in: (hours > 0 ? hours + "h " : "") + (minutesLeft % 60) + "m",
+      minutesLeft
     };
   };
   window.dglLocalizeResets = (root) => {
@@ -5783,6 +5784,12 @@ const RESET_LOCALIZE_SCRIPT = `
       const long = el.getAttribute("data-reset-format") === "long";
       el.textContent = long ? "Resets daily at " + reset.at + " · next in " + reset.in : "Resets in " + reset.in;
       el.title = "Resets daily at " + reset.at + " (your time)";
+      // The card's bottom line shows the share of the day left before this game resets (12h left = half width).
+      const card = el.closest("li");
+      if (card) {
+        card.classList.add("reset-bar");
+        card.style.setProperty("--reset-left", String(Math.min(1, reset.minutesLeft / 1440)));
+      }
     });
   };
   window.dglLocalizeResets();
@@ -6053,6 +6060,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --on-accent: #121212;
         --brand-blue: #00a4fc;
         --title-ink: #f2f2f2;
+        --reset-bar: #7dd3fc;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -6069,6 +6077,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --on-accent: #ffffff;
         --brand-blue: #0077c2;
         --title-ink: #111114;
+        --reset-bar: #0ea5e9;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -6145,6 +6154,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* Two equal-width buttons side by side, centred; stacked only on very narrow phones where they can't fit. */
       /* Home: Popular Today and Newly Added side by side, one card per row, on wide screens; stacked (5 each) otherwise. */
       .home-columns ul.games { grid-template-columns: 1fr; }
+      /* Time left before today's game resets: a light blue line along the bottom of the card (see RESET_LOCALIZE_SCRIPT). */
+      li.reset-bar { position: relative; }
+      ul.games.compact li.reset-bar, .rotation-list li.reset-bar { padding-bottom: calc(0.65rem + 5px); }
+      li.reset-bar::after { content: ""; position: absolute; left: 10px; bottom: 4px; height: 3px; width: calc((100% - 20px) * var(--reset-left, 0)); border-radius: 2px; background: var(--reset-bar); opacity: 0.85; pointer-events: none; }
       .twitch-watch { text-align: center; }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
       .external-arrow { font-size: 0.9em; opacity: 0.85; }
