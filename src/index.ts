@@ -6023,6 +6023,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
         --header-bg: rgba(18, 18, 18, 0.85);
         --on-accent: #121212;
+        --brand-blue: #00a4fc;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -6037,6 +6038,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
         --header-bg: rgba(245, 245, 247, 0.85);
         --on-accent: #ffffff;
+        --brand-blue: #0077c2;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -6059,7 +6061,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         top: 0;
         z-index: 20;
       }
-      .brand { font-weight: 800; font-size: 1.15rem; color: var(--ink); text-decoration: none; white-space: nowrap; }
+      /* Mirrors the logo: "0x9" with the x in the logo's blue. */
+      .brand { font-weight: 800; font-size: 1.45rem; letter-spacing: 0.01em; color: var(--ink); text-decoration: none; white-space: nowrap; margin-right: 0.5rem; }
+      .brand-x { color: var(--brand-blue); }
       .site-nav { display: flex; align-items: center; gap: 1rem; min-width: 0; }
       .nav-extra { display: contents; }
       .site-nav a, .nav-menu-panel a { color: var(--ink); text-decoration: none; font-weight: 600; white-space: nowrap; }
@@ -6281,7 +6285,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .filters-body { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
       @media (max-width: 700px) {
         header.site-header { padding: 0.6rem 0.75rem; gap: 0.7rem; }
-        .brand { font-size: 1.05rem; }
+        .brand { font-size: 1.1rem; margin-right: 0; }
         .site-nav { gap: 0.7rem; }
         .site-nav a { font-size: 0.95rem; }
         .nav-extra, .account-desktop, .header-tools > .theme-toggle, .label-long { display: none; }
@@ -6309,7 +6313,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="/">0x9 dles</a>
+      <a class="brand" href="/">0<span class="brand-x">x</span>9 dles</a>
       <nav class="site-nav" aria-label="Main">
         <a href="/games">Games</a>
         <a href="/me/rotation"><span class="label-long">My </span>Rotation</a>
