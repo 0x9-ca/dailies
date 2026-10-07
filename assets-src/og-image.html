@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  Source for the social preview image (/og.png, 1200x630). Render it at exactly 1200x630 in a browser,
+  screenshot it, and embed the PNG as OG_IMAGE_PNG in src/lib/assets.ts (see CLAUDE.md, "Social image").
+  The cards mirror the site's own card styles, including category pill colours (categoryHue) and the reset line.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    font-family: "Manrope", sans-serif;
+    color: #f2f2f2;
+    background:
+      radial-gradient(900px 520px at 0% 0%, rgba(0, 164, 252, 0.20), transparent 60%),
+      radial-gradient(700px 500px at 100% 100%, rgba(125, 211, 252, 0.10), transparent 60%),
+      #0e1013;
+    position: relative;
+  }
+  /* faint grid */
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 40px 40px;
+    mask-image: linear-gradient(90deg, rgba(0,0,0,0.9), rgba(0,0,0,0.25));
+  }
+  .left { position: absolute; left: 80px; top: 0; bottom: 0; width: 560px; display: flex; flex-direction: column; justify-content: center; }
+  .logo { font-size: 116px; font-weight: 800; letter-spacing: -2px; line-height: 1; }
+  .logo .x { color: #00a4fc; }
+  .tagline { margin-top: 26px; font-size: 40px; font-weight: 700; line-height: 1.2; color: #f2f2f2; }
+  .sub { margin-top: 18px; font-size: 25px; font-weight: 500; color: #a8adb5; }
+  .url { position: absolute; left: 80px; bottom: 56px; font-size: 24px; font-weight: 700; color: #7dd3fc; letter-spacing: 0.3px; }
+
+  .cards { position: absolute; right: 70px; top: 102px; width: 450px; }
+  .card {
+    position: relative; width: 450px; padding: 18px 20px 24px; border-radius: 16px;
+    background: #1e1e1e; border: 1px solid #444; box-shadow: 0 22px 50px rgba(0,0,0,0.55);
+  }
+  .card + .card { margin-top: 22px; }
+  .card:nth-child(1) { transform: translateX(-26px) rotate(-2.5deg); }
+  .card:nth-child(2) { transform: translateX(10px); }
+  .card:nth-child(3) { transform: translateX(-12px) rotate(2deg); }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .name { font-size: 28px; font-weight: 800; color: #f2f2f2; }
+  .btns { display: flex; gap: 6px; }
+  .btn { padding: 5px 10px; border: 1px solid #444; border-radius: 8px; background: #1a1a1a; font-size: 18px; font-weight: 700; color: #e0e0e0; }
+  .sub2 { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 17px; color: #b0b0b0; }
+  .pill { padding: 3px 11px; border-radius: 999px; font-size: 16px; font-weight: 800; border: 1px solid; }
+  .bar { position: absolute; left: 14px; bottom: 7px; height: 4px; border-radius: 2px; background: #7dd3fc; opacity: 0.9; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="logo">0<span class="x">x</span>9 dles</div>
+    <div class="tagline">The best daily games,<br>all in one place.</div>
+    <div class="sub">Vote, favorite and build your daily rotation.</div>
+  </div>
+  <div class="url">dailies.0x9.ca</div>
+
+  <div class="cards" id="cards"></div>
+
+  <script>
+    // Same hash as the site's categoryHue(), so the pills match.
+    const hue = (slug) => { let h = 0; for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0; return h % 360; };
+    const cards = [
+      { name: "Pilldle", up: 7, cat: ["music", "Music"], meta: "100% liked · Resets in 9h 12m", left: 0.38 },
+      { name: "Slabdle", up: 3, cat: ["trivia", "Trivia"], meta: "100% liked · Resets in 15h 40m", left: 0.65 },
+      { name: "Tilt", up: 4, cat: ["logic-games", "Logic Games"], meta: "100% liked · Resets in 21h 5m", left: 0.88 }
+    ];
+    document.getElementById("cards").innerHTML = cards.map((c) => {
+      const h = hue(c.cat[0]);
+      return `<div class="card">
+        <div class="top"><div class="name">${c.name}</div>
+          <div class="btns"><span class="btn">▲ ${c.up}</span><span class="btn">▼ 0</span><span class="btn">☆</span><span class="btn">…</span></div></div>
+        <div class="sub2"><span class="pill" style="color:hsl(${h},65%,28%);background:hsl(${h},65%,90%);border-color:hsl(${h},55%,72%)">${c.cat[1]}</span>${c.meta}</div>
+        <div class="bar" style="width:${Math.round((450 - 30) * c.left)}px"></div>
+      </div>`;
+    }).join("");
+  </script>
+</body>
+</html>
