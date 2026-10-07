@@ -16,12 +16,54 @@ const app = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 // Session bootstrap for every request.
 app.use("*", sessionMiddleware);
 
-// Double-submit-cookie CSRF setup for browser API calls.
+// Only production should be indexed; staging and local dev ask crawlers to stay away.
 app.use("*", async (c, next) => {
-  let csrfToken = getCookie(c, "csrf_token");
-  if (!csrfToken) {
-    csrfToken = randomToken();
-    setCookie(c, "csrf_token", csrfToken, {
+  await next();
+  if (c.env.APP_ENV !== "production") {
+    c.header("X-Robots-Tag", "noindex, nofollow");
+  }
+});
+
+// Logged-out views of public pages are served from Cloudflare's edge cache for a minute, so they cost no D1 reads.
+// Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
+// shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
+const PUBLIC_CACHE_SECONDS = 60;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|mod-log)?$/;
+
+app.use("*", async (c, next) => {
+  const cacheable =
+    c.req.method === "GET" &&
+    !isDevEnv(c.env) &&
+    PUBLIC_CACHE_PATHS.test(c.req.path) &&
+    !getCookie(c, c.env.SESSION_COOKIE_NAME) &&
+    !getCookie(c, "dgl_voted");
+  c.set("publicCache", cacheable);
+  if (!cacheable) {
+    await next();
+    return;
+  }
+
+  const cacheKey = new Request(c.req.url);
+  const cached = await caches.default.match(cacheKey);
+  if (cached) {
+    ensureCsrfCookie(c);
+    return c.body(await cached.text(), 200, { "Content-Type": cached.headers.get("Content-Type") ?? "text/html; charset=UTF-8", "Cache-Control": "no-cache", "X-Page-Cache": "HIT" });
+  }
+
+  await next();
+  if (c.res.status === 200 && (c.res.headers.get("Content-Type") ?? "").startsWith("text/html")) {
+    const copy = new Response(c.res.clone().body, { headers: { "Content-Type": c.res.headers.get("Content-Type")!, "Cache-Control": `public, max-age=${PUBLIC_CACHE_SECONDS}` } });
+    c.executionCtx.waitUntil(caches.default.put(cacheKey, copy));
+  }
+  // Browsers must revalidate, or a visitor who just voted could be shown their own stale copy.
+  c.header("Cache-Control", "no-cache");
+  c.header("X-Page-Cache", "MISS");
+});
+
+// Double-submit-cookie CSRF token for browser API calls.
+function ensureCsrfCookie(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): void {
+  if (!getCookie(c, "csrf_token")) {
+    setCookie(c, "csrf_token", randomToken(), {
       path: "/",
       sameSite: "Lax",
       secure: wantsSecureCookies(c.env),
@@ -29,7 +71,10 @@ app.use("*", async (c, next) => {
       maxAge: 60 * 60 * 24 * 30
     });
   }
-  c.set("csrfToken", csrfToken);
+}
+
+app.use("*", async (c, next) => {
+  ensureCsrfCookie(c);
   await next();
 });
 
@@ -210,47 +255,17 @@ app.get("/", async (c) => {
   const topGameIds = topGames.map((game) => game.id);
   const newGames = await listGames(c.env, { sort: "new", limit: 5 });
   const newGameIds = newGames.map((game) => game.id);
-  const allGameIds = [...new Set([...topGameIds, ...newGameIds])];
-  const userVotes = new Map<string, -1 | 1>();
-  const userFavorites = new Set<string>();
-  if (allGameIds.length > 0) {
-    const placeholders = allGameIds.map((_id, index) => `?${index + 2}`).join(", ");
-    const voteRows = user
-      ? await c.env.DB.prepare(
-          `SELECT game_id, value
-           FROM votes
-           WHERE user_id = ?1 AND game_id IN (${placeholders})`
-        )
-          .bind(user.id, ...allGameIds)
-          .all<{ game_id: string; value: -1 | 1 }>()
-      : await c.env.DB.prepare(
-          `SELECT game_id, value
-           FROM anonymous_votes
-           WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
-        )
-          .bind(await getAnonymousVoteKey(c), ...allGameIds)
-          .all<{ game_id: string; value: -1 | 1 }>();
-    for (const row of voteRows.results) {
-      userVotes.set(row.game_id, row.value);
-    }
-    if (user) {
-      const favoriteRows = await c.env.DB.prepare(
-        `SELECT game_id
-         FROM favorites
-         WHERE user_id = ?1 AND game_id IN (${placeholders})`
-      )
-        .bind(user.id, ...allGameIds)
-        .all<{ game_id: string }>();
-      for (const row of favoriteRows.results) {
-        userFavorites.add(row.game_id);
-      }
-    }
-  }
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds])]);
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
   return c.html(await layout("Dailies (dles) – Find the Best Daily Games", user, `
     <main>
+      ${user ? "" : `<p class="intro" id="home-intro">Dailies collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
+      <script>
+        // Returning visitors (anyone who has favorited or voted) don't need the introduction.
+        if (window.dglGames.isReturningVisitor()) document.getElementById("home-intro").hidden = true;
+      </script>`}
       <div class="actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -322,7 +337,7 @@ app.get("/submit", async (c) => {
   }>();
 
   return c.html(await layout("Submit a Daily Game", user, `
-    <main>
+    <main class="narrow">
       <h1>Submit a Daily Game</h1>
       <section class="panel">
         <form id="submission-form" class="stack-form">
@@ -451,7 +466,7 @@ app.get("/mod-log", async (c) => {
        </div>`
     : "";
   return c.html(await layout("Mod Log | Dailies (dles)", user, `
-    <main>
+    <main class="narrow">
       <h1>Mod Log</h1>
       <p>A public record of games being approved, denied, hidden, restored, or deleted, and of NSFW and paywall label changes. Newest first.${showActor ? " <em>Editors and admins can also see who made each change.</em>" : ""}</p>
       ${entries.length === 0 ? "<p>Nothing has been logged yet.</p>" : `<ul class="games">
@@ -522,48 +537,16 @@ app.get("/games", async (c) => {
   const hasMore = gamesWithExtra.length > perPage;
   const games = gamesWithExtra.slice(0, perPage);
   
-  const categories = await c.env.DB.prepare("SELECT slug, name FROM categories WHERE is_active = 1 ORDER BY name ASC").all<{
+  const categories = await c.env.DB.prepare("SELECT slug, name, description FROM categories WHERE is_active = 1 ORDER BY name ASC").all<{
     slug: string;
     name: string;
+    description: string | null;
   }>();
 
-  const gameIds = games.map((game) => game.id);
-  const userVotes = new Map<string, -1 | 1>();
-  const userFavorites = new Set<string>();
-  if (gameIds.length > 0) {
-    const placeholders = gameIds.map((_id, index) => `?${index + 2}`).join(", ");
-    const voteRows = user
-      ? await c.env.DB.prepare(
-          `SELECT game_id, value
-           FROM votes
-           WHERE user_id = ?1 AND game_id IN (${placeholders})`
-        )
-          .bind(user.id, ...gameIds)
-          .all<{ game_id: string; value: -1 | 1 }>()
-      : await c.env.DB.prepare(
-          `SELECT game_id, value
-           FROM anonymous_votes
-           WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
-        )
-          .bind(await getAnonymousVoteKey(c), ...gameIds)
-          .all<{ game_id: string; value: -1 | 1 }>();
-    for (const row of voteRows.results) {
-      userVotes.set(row.game_id, row.value);
-    }
-
-    if (user) {
-      const favoriteRows = await c.env.DB.prepare(
-        `SELECT game_id
-         FROM favorites
-         WHERE user_id = ?1 AND game_id IN (${placeholders})`
-      )
-        .bind(user.id, ...gameIds)
-        .all<{ game_id: string }>();
-      for (const row of favoriteRows.results) {
-        userFavorites.add(row.game_id);
-      }
-    }
+  if (page > 1 && games.length === 0) {
+    return c.text("Not found", 404);
   }
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
 
   // Render games as flat list
   const gamesMarkup = games.length > 0 
@@ -597,30 +580,53 @@ app.get("/games", async (c) => {
 
   const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
   const pageTitle = activeCategory ? `Daily ${activeCategory.name} – Dailies (dles)` : "All Daily Games – Dailies (dles)";
-  const canonicalPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
+  const categoryPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
+  // Later pages list different games, so each is its own canonical page (the sort order is not).
+  const canonicalPath = page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
+  const categoryDescription = activeCategory?.description && !activeCategory.description.startsWith("Imported from") ? activeCategory.description : "";
+  const activeFilterCount = [sort !== "top", !!category, hidePaywall, hideNsfw].filter(Boolean).length;
+  const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", reset: "Resetting soonest" };
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
-  if (activeCategory) crumbs.push([activeCategory.name, canonicalPath]);
+  if (activeCategory) crumbs.push([activeCategory.name, categoryPath]);
   return c.html(await layout(pageTitle, user, `
     <main>
       <h1>${activeCategory ? `Daily ${escapeHtml(activeCategory.name)}` : "Browse Games"}</h1>
-      ${activeCategory ? `<p>${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
-      <form method="GET" action="/games">
-        <input type="text" name="q" placeholder="Search" value="${escapeHtml(q || "")}" />
-        <select name="sort">
-          ${["top", "new", "trending", "reset"]
-            .map((s) => `<option value="${s}" ${s === sort ? "selected" : ""}>${s}</option>`)
-            .join("")}
-        </select>
-        <select name="category">
-          <option value="">All categories</option>
-          ${categories.results
-            .map((cat) => `<option value="${cat.slug}" ${cat.slug === category ? "selected" : ""}>${escapeHtml(cat.name)}</option>`)
-            .join("")}
-        </select>
-        <label class="check"><input type="checkbox" name="hidePaywall" value="1" ${hidePaywall ? "checked" : ""} /> Hide paywalled</label>
-        <label class="check"><input type="checkbox" name="hideNsfw" value="1" ${hideNsfw ? "checked" : ""} /> Hide NSFW</label>
-        <button type="submit">Apply</button>
+      ${activeCategory ? `<p>${categoryDescription ? `${escapeHtml(categoryDescription)} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
+      <form method="GET" action="/games" class="game-filters" id="game-filters">
+        <div class="search-row">
+          <input type="search" name="q" placeholder="Search games" aria-label="Search games" value="${escapeHtml(q || "")}" />
+          <button type="submit">Search</button>
+        </div>
+        <details class="filters" id="filters-panel" ${activeFilterCount > 0 ? "open" : ""}>
+          <summary>Filters${activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</summary>
+          <div class="filters-body">
+            <select name="sort" aria-label="Sort">
+              ${["top", "new", "trending", "reset"]
+                .map((s) => `<option value="${s}" ${s === sort ? "selected" : ""}>${sortLabels[s]}</option>`)
+                .join("")}
+            </select>
+            <select name="category" aria-label="Category">
+              <option value="">All categories</option>
+              ${categories.results
+                .map((cat) => `<option value="${escapeHtml(cat.slug)}" ${cat.slug === category ? "selected" : ""}>${escapeHtml(cat.name)}</option>`)
+                .join("")}
+            </select>
+            <label class="check"><input type="checkbox" name="hidePaywall" value="1" ${hidePaywall ? "checked" : ""} /> Hide paywalled</label>
+            <label class="check"><input type="checkbox" name="hideNsfw" value="1" ${hideNsfw ? "checked" : ""} /> Hide NSFW</label>
+          </div>
+        </details>
       </form>
+      <script>
+        (() => {
+          const form = document.getElementById("game-filters");
+          const panel = document.getElementById("filters-panel");
+          // Filters are always shown on wider screens; on phones they fold away behind the "Filters" toggle.
+          if (panel && window.matchMedia("(min-width: 701px)").matches) panel.open = true;
+          form?.querySelectorAll("select, input[type=checkbox]").forEach((control) => {
+            control.addEventListener("change", () => form.requestSubmit());
+          });
+        })();
+      </script>
       ${gamesMarkup}
       ${paginationMarkup}
     </main>
@@ -679,23 +685,24 @@ app.get("/games/:slug", async (c) => {
     .bind(game.id)
     .all<{ slug: string; name: string }>();
 
-  let userVote: -1 | 0 | 1 = 0;
-  let userFavorite = false;
-  if (user) {
-    const vote = await c.env.DB.prepare("SELECT value FROM votes WHERE user_id = ?1 AND game_id = ?2")
-      .bind(user.id, game.id)
-      .first<{ value: -1 | 1 }>();
-    userVote = vote?.value || 0;
-    const favorite = await c.env.DB.prepare("SELECT 1 AS found FROM favorites WHERE user_id = ?1 AND game_id = ?2")
-      .bind(user.id, game.id)
-      .first<{ found: number }>();
-    userFavorite = !!favorite;
-  } else {
-    const vote = await c.env.DB.prepare("SELECT value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id = ?2")
-      .bind(await getAnonymousVoteKey(c), game.id)
-      .first<{ value: -1 | 1 }>();
-    userVote = vote?.value || 0;
-  }
+  const viewer = await getViewerGameState(c, [game.id]);
+  const userVote: -1 | 0 | 1 = viewer.votes.get(game.id) ?? 0;
+  const userFavorite = viewer.favorites.has(game.id);
+
+  // Other well-liked games sharing a category: useful next stops for visitors and internal links for crawlers.
+  const related = await c.env.DB.prepare(
+    `SELECT games.slug, games.title
+     FROM games
+     JOIN game_categories ON game_categories.game_id = games.id
+     WHERE game_categories.category_id IN (SELECT category_id FROM game_categories WHERE game_id = ?1)
+       AND games.id != ?1 AND games.status = 'approved' AND (games.nsfw = 0 OR ?2 = 1)
+     GROUP BY games.id
+     ORDER BY games.score DESC
+     LIMIT 6`
+  )
+    .bind(game.id, game.nsfw)
+    .all<{ slug: string; title: string }>();
+  const relatedHeading = categories.results.length === 1 ? `More in ${categories.results[0].name}` : "Similar daily games";
 
   const gameLd = {
     "@context": "https://schema.org",
@@ -710,16 +717,16 @@ app.get("/games/:slug", async (c) => {
     ...(categories.results.length > 0 ? { genre: categories.results.map((cat) => cat.name) } : {})
   };
   return c.html(await layout(`${game.title} – Daily Game | Dailies (dles)`, user, `
-    <main>
+    <main class="narrow">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       <p>${escapeHtml(game.description || "")}</p>
-      <p><a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Open game</a></p>
+      <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
       ${(() => {
-        const resetSpan = renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+        const resetSpan = renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long");
         return resetSpan ? `<p>${resetSpan}</p>` : "";
       })()}
-      <p>Votes: +<span id="vote-up-count">${game.vote_up_count}</span> / -<span id="vote-down-count">${game.vote_down_count}</span> | Reports: ${game.report_count}</p>
+      <p>Votes: +<span id="vote-up-count">${game.vote_up_count}</span> / -<span id="vote-down-count">${game.vote_down_count}</span>${isAdminOrEditor ? ` | Reports: ${game.report_count}` : ""}</p>
       ${
         user
           ? `<section class="panel">
@@ -745,8 +752,8 @@ app.get("/games/:slug", async (c) => {
                 <p id="game-action-status" class="status" aria-live="polite"></p>
               </section>`
       }
-      <section class="panel">
-        <h2>Report issue</h2>
+      <details class="panel report-panel">
+        <summary>Report a problem</summary>
         <form id="report-form" class="stack-form">
           <label>Reason
             <select name="reason">
@@ -760,7 +767,11 @@ app.get("/games/:slug", async (c) => {
           <button type="submit">Send report</button>
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
-      </section>
+      </details>
+      ${related.results.length > 0 ? `<section class="related-games">
+        <h2>${escapeHtml(relatedHeading)}</h2>
+        <ul>${related.results.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
+      </section>` : ""}
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -1064,7 +1075,7 @@ app.get("/rotation/:shareToken", async (c) => {
   const ownerName = owner.display_name || "Someone";
 
   return c.html(await layout(`${ownerName}'s Rotation`, user, `
-    <main>
+    <main class="narrow">
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
       ${favorites.results.length > 0 ? `
@@ -1081,7 +1092,7 @@ app.get("/rotation/:shareToken", async (c) => {
                   ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
                 <div class="card-actions">
-                  <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
+                  ${renderDetailsLink(item.slug, item.title)}
                 </div>
               </li>`;
               }
@@ -1094,14 +1105,14 @@ app.get("/rotation/:shareToken", async (c) => {
       ${LIST_SORT_SCRIPT}
       window.dglListSort.init(document.getElementById("shared-rotation-list"), document.getElementById("list-sort-select"));
     </script>
-  `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.` }));
+  `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.`, noindex: true }));
 });
 
 app.get("/me/rotation", async (c) => {
   const user = c.get("user");
   if (!user) {
     return c.html(await layout("My Rotation", null, `
-      <main>
+      <main class="narrow">
         <h1>My Daily Rotation</h1>
         <p>Your favorites are stored in this browser via local storage.</p>
         <p><a href="/login">Sign in</a> to sync favorites across devices.</p>
@@ -1213,8 +1224,12 @@ app.get("/me/rotation", async (c) => {
         const render = () => {
           if (!list) return;
           const favorites = readFavorites();
+          const exportButton = document.getElementById("export-btn");
+          const sortControl = document.getElementById("list-sort-select")?.closest(".list-sort");
+          if (exportButton) exportButton.hidden = favorites.length === 0;
+          if (sortControl) sortControl.hidden = favorites.length === 0;
           if (favorites.length === 0) {
-            list.innerHTML = "<li>No local favorites yet. Open any game and add it.</li>";
+            list.innerHTML = '<li class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></li>';
             return;
           }
           list.innerHTML = "";
@@ -1284,8 +1299,13 @@ app.get("/me/rotation", async (c) => {
             if (itemMain && !itemMain.querySelector(".meta")) {
               const meta = document.createElement("div");
               meta.className = "meta";
-              meta.textContent = window.dglResetText(info.kind, info.min) || info.label;
+              const label = document.createElement("span");
+              label.setAttribute("data-reset-at-kind", info.kind);
+              label.setAttribute("data-reset-at", String(info.min));
+              label.textContent = info.label;
+              meta.appendChild(label);
               itemMain.appendChild(meta);
+              window.dglLocalizeResets(meta);
             }
           });
           listSorter.apply();
@@ -1425,7 +1445,7 @@ app.get("/me/rotation", async (c) => {
   const shareUrl = shareToken ? `${c.env.APP_URL}/rotation/${shareToken}` : null;
 
   return c.html(await layout("My Rotation", user, `
-    <main>
+    <main class="narrow">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
         <h1 style="margin: 0;">My Daily Rotation</h1>
         <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -1449,12 +1469,12 @@ app.get("/me/rotation", async (c) => {
         <p id="rotation-local-import-status" class="status" aria-live="polite"></p>
       </section>
       <div class="actions">
-        <button type="button" id="export-btn">Export JSON</button>
+        ${favorites.results.length > 0 ? `<button type="button" id="export-btn">Export JSON</button>` : ""}
         <button type="button" id="import-btn">Import JSON</button>
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
       <p id="import-status" class="status" aria-live="polite"></p>
-      ${renderListSortControl()}
+      ${favorites.results.length > 0 ? renderListSortControl() : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
@@ -1472,7 +1492,7 @@ app.get("/me/rotation", async (c) => {
                   <button type="button" data-move="up" aria-label="Move up">↑</button>
                   <button type="button" data-move="down" aria-label="Move down">↓</button>
                 </div>
-                <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
+                ${renderDetailsLink(item.slug, item.title)}
                 <button type="button" data-unfavorite="${item.id}">X</button>
               </div>
             </li>`;
@@ -1760,7 +1780,7 @@ app.get("/me/settings", async (c) => {
     .all<{ id: string; created_at: string; expires_at: string }>();
 
   return c.html(await layout("Account Settings", auth, `
-    <main>
+    <main class="narrow">
       <h1>Account Settings</h1>
       <section class="panel">
         <h2>Profile</h2>
@@ -1853,7 +1873,7 @@ app.get("/lists", async (c) => {
   const userTwitchId = await getUserTwitchId(c.env, user);
   const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }));
   return c.html(await layout("Curated Lists of Daily Games – Dailies (dles)", user, `
-    <main>
+    <main class="narrow">
       <h1>Curated Lists</h1>
       ${isAdminEditor ? `
         <section class="panel">
@@ -1933,42 +1953,21 @@ app.get("/lists/:slug", async (c) => {
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const items = await c.env.DB.prepare(
     `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone,
-            games.score, games.vote_up_count, games.vote_down_count, curated_list_items.position
+            games.vote_up_count, games.vote_down_count, curated_list_items.position
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; score: number; vote_up_count: number; vote_down_count: number; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
 
   // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
-  const userVotes = new Map<string, -1 | 1>();
-  const userFavorites = new Set<string>();
-  const itemIds = items.results.map((item) => item.id).slice(0, 90);
-  if (!isAdminEditor && itemIds.length > 0) {
-    const placeholders = itemIds.map((_id, index) => `?${index + 2}`).join(", ");
-    const voteRows = user
-      ? await c.env.DB.prepare(`SELECT game_id, value FROM votes WHERE user_id = ?1 AND game_id IN (${placeholders})`)
-          .bind(user.id, ...itemIds)
-          .all<{ game_id: string; value: -1 | 1 }>()
-      : await c.env.DB.prepare(`SELECT game_id, value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`)
-          .bind(await getAnonymousVoteKey(c), ...itemIds)
-          .all<{ game_id: string; value: -1 | 1 }>();
-    for (const row of voteRows.results) {
-      userVotes.set(row.game_id, row.value);
-    }
-    if (user) {
-      const favoriteRows = await c.env.DB.prepare(`SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (${placeholders})`)
-        .bind(user.id, ...itemIds)
-        .all<{ game_id: string }>();
-      for (const row of favoriteRows.results) {
-        userFavorites.add(row.game_id);
-      }
-    }
-  }
+  const { votes: userVotes, favorites: userFavorites } = isAdminEditor
+    ? { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() }
+    : await getViewerGameState(c, items.results.map((item) => item.id));
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -1979,7 +1978,7 @@ app.get("/lists/:slug", async (c) => {
   }
 
   return c.html(await layout(`${list.title} – Daily Game List | Dailies (dles)`, user, `
-    <main>
+    <main class="narrow">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p><a class="btn" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer">Watch ${escapeHtml(list.twitch_login)} on Twitch</a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
@@ -2032,11 +2031,9 @@ app.get("/lists/:slug", async (c) => {
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
-            ${(() => {
-              const resetSpan = renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              const meta = `${isAdminEditor ? "" : escapeHtml(`Score ${item.score.toFixed(2)}`)}${resetSpan ? `${isAdminEditor ? "" : " | "}${resetSpan}` : ""}`;
-              return meta ? `<div class="meta">${meta}</div>` : "";
-            })()}
+            ${isAdminEditor
+              ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
+              : renderGameMeta(item.vote_up_count, item.vote_down_count, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))}
           </div>
           <div class="card-actions">
             ${isAdminEditor ? "" : `
@@ -2052,7 +2049,7 @@ app.get("/lists/:slug", async (c) => {
                 <button type="button" data-move="down">↓</button>
               </div>
             ` : ""}
-            <button type="button" class="btn-details" onclick="window.location='/games/${item.slug}'">…</button>
+            ${renderDetailsLink(item.slug, item.title)}
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
         </li>`;
@@ -2386,7 +2383,8 @@ app.get("/manifest.webmanifest", (c) =>
 );
 
 app.get("/robots.txt", (c) => {
-  const body = `User-agent: *
+  // Staging and dev must stay out of search results entirely.
+  const body = c.env.APP_ENV !== "production" ? "User-agent: *\nDisallow: /\n" : `User-agent: *
 Disallow: /api/
 Disallow: /admin
 Disallow: /me
@@ -5295,12 +5293,73 @@ async function writeAudit(
     .run();
 }
 
-function gameAriaLabel(game: { title: string; description: string | null; score: number; voteUpCount: number }): string {
+/**
+ * The viewer's votes and (when signed in) account favorites among gameIds. Logged-out views headed for the edge
+ * cache get neither, since the page will be shown to other visitors too.
+ */
+async function getViewerGameState(
+  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
+  gameIds: string[]
+): Promise<{ votes: Map<string, -1 | 1>; favorites: Set<string> }> {
+  const votes = new Map<string, -1 | 1>();
+  const favorites = new Set<string>();
+  const user = c.get("user");
+  if (gameIds.length === 0 || (!user && c.get("publicCache"))) {
+    return { votes, favorites };
+  }
+  const viewerKey = user ? user.id : await getAnonymousVoteKey(c);
+  // D1 allows 100 bound parameters per query: 1 for the viewer plus up to 98 game ids.
+  for (let i = 0; i < gameIds.length; i += 98) {
+    const ids = gameIds.slice(i, i + 98);
+    const placeholders = ids.map((_id, index) => `?${index + 2}`).join(", ");
+    const voteRows = await c.env.DB.prepare(
+      user
+        ? `SELECT game_id, value FROM votes WHERE user_id = ?1 AND game_id IN (${placeholders})`
+        : `SELECT game_id, value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
+    )
+      .bind(viewerKey, ...ids)
+      .all<{ game_id: string; value: -1 | 1 }>();
+    for (const row of voteRows.results) {
+      votes.set(row.game_id, row.value);
+    }
+    if (user) {
+      const favoriteRows = await c.env.DB.prepare(`SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (${placeholders})`)
+        .bind(user.id, ...ids)
+        .all<{ game_id: string }>();
+      for (const row of favoriteRows.results) {
+        favorites.add(row.game_id);
+      }
+    }
+  }
+  return { votes, favorites };
+}
+
+// A real link (not a scripted button) so crawlers can follow it to the game's page.
+function renderDetailsLink(slug: string, title: string): string {
+  return `<a class="btn-details" href="/games/${encodeURIComponent(slug)}" aria-label="${escapeHtml(`${title} details`)}" title="Details">…</a>`;
+}
+
+// Share of votes that are upvotes, e.g. "88% liked". Empty when nobody has voted yet.
+function renderLikedLabel(upVotes: number, downVotes: number): string {
+  const total = upVotes + downVotes;
+  if (total === 0) {
+    return "";
+  }
+  return `<span title="${upVotes} up, ${downVotes} down">${Math.round((upVotes / total) * 100)}% liked</span>`;
+}
+
+// "Score and reset" line under a game card's title.
+function renderGameMeta(upVotes: number, downVotes: number, resetSpan: string): string {
+  const parts = [renderLikedLabel(upVotes, downVotes), resetSpan].filter(Boolean);
+  return parts.length > 0 ? `<div class="meta">${parts.join(" · ")}</div>` : "";
+}
+
+function gameAriaLabel(game: { title: string; description: string | null; voteUpCount: number; voteDownCount: number }): string {
   const description = (game.description || "").trim();
-  const votes = `${game.voteUpCount} upvote${game.voteUpCount === 1 ? "" : "s"}`;
   const intro = description ? `${game.title}: ${description}` : game.title;
   const sentence = /[.!?]$/.test(intro) ? intro : `${intro}.`;
-  return `${sentence} Community score ${game.score.toFixed(2)} based on ${votes}.`;
+  const total = game.voteUpCount + game.voteDownCount;
+  return total === 0 ? `${sentence} No votes yet.` : `${sentence} ${Math.round((game.voteUpCount / total) * 100)}% of ${total} vote${total === 1 ? "" : "s"} are upvotes.`;
 }
 
 function renderCompactGameList(
@@ -5333,26 +5392,25 @@ function renderCompactGameList(
       .map((game) => {
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
-        const resetSpan = renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone);
-        const meta = `${escapeHtml(`Score ${game.score.toFixed(2)}`)}${resetSpan ? ` | ${resetSpan}` : ""}`;
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
-            <div>
-              <a href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}" style="font-weight: bold; font-size: inherit; line-height: inherit;">${escapeHtml(game.title)}</a>
+            <div class="game-main">
+              <a class="game-title" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
               ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
               ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               ${renderCategoryPills(game.categories)}
-              ${meta ? `<div class="meta">${meta}</div>` : ""}
+              ${renderGameMeta(game.voteUpCount, game.voteDownCount, renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone))}
             </div>
             <div class="compact-actions">
               <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}">+ <span data-up-count>${game.voteUpCount}</span></button>
               <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}">- <span data-down-count>${game.voteDownCount}</span></button>
+              <span class="actions-spacer"></span>
               ${
                 user
-                  ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}">${currentFavorite ? "★" : "☆"}</button>`
-                  : `<button type="button" data-local-favorite="no">☆</button>`
+                  ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}" aria-label="Favorite">${currentFavorite ? "★" : "☆"}</button>`
+                  : `<button type="button" data-local-favorite="no" aria-label="Favorite">☆</button>`
               }
-              <button type="button" class="btn-details" onclick="window.location='/games/${game.slug}'">…</button>
+              ${renderDetailsLink(game.slug, game.title)}
             </div>
           </div>
         </li>`;
@@ -5649,45 +5707,50 @@ function renderResetItemData(
 function renderResetSpan(
   basis: "local" | "server" | null | undefined,
   minutes: number | null | undefined,
-  timeZone?: string | null
+  timeZone?: string | null,
+  format: "short" | "long" = "short"
 ): string {
   const data = getResetSortData(basis, minutes, timeZone);
   const label = getResetMetaLabel(basis, minutes, timeZone);
   if (!data || !label) {
     return "";
   }
-  return `<span data-reset-at-kind="${data.kind}" data-reset-at="${data.min}">${escapeHtml(label)}</span>`;
+  const text = format === "long" ? label.replace(/^Reset /, "Resets daily at ") : label;
+  return `<span data-reset-at-kind="${data.kind}" data-reset-at="${data.min}" data-reset-format="${format}">${escapeHtml(text)}</span>`;
 }
 
-// Converts reset times to the viewer's local clock. "utc" minutes are shifted to local; "local" ones are already local.
+// Rewrites reset labels for the viewer as a countdown ("Resets in 3h 12m"; data-reset-format="long" gives
+// "Resets daily at 4:00 AM · next in 3h 12m"), refreshed every minute. "utc" minutes are a UTC time of day,
+// "local" ones are already in the viewer's own clock. The server-rendered text is the no-JS fallback.
 const RESET_LOCALIZE_SCRIPT = `
-  window.dglResetText = (kind, min) => {
+  window.dglResetCountdown = (kind, min) => {
     const m = Number(min);
-    if (!Number.isFinite(m)) return "";
-    let h = Math.floor(m / 60);
-    let mm = m % 60;
-    if (kind === "utc") {
-      const d = new Date();
-      d.setUTCHours(h, mm, 0, 0);
-      h = d.getHours();
-      mm = d.getMinutes();
-    }
-    const d2 = new Date();
-    d2.setHours(h, mm, 0, 0);
-    return "Reset " + d2.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    if (!Number.isFinite(m)) return null;
+    const now = new Date();
+    const next = new Date(now);
+    if (kind === "utc") next.setUTCHours(Math.floor(m / 60), m % 60, 0, 0);
+    else next.setHours(Math.floor(m / 60), m % 60, 0, 0);
+    if (next <= now) next.setTime(next.getTime() + 24 * 60 * 60 * 1000);
+    const minutesLeft = Math.ceil((next.getTime() - now.getTime()) / 60000);
+    const hours = Math.floor(minutesLeft / 60);
+    return {
+      at: next.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      in: (hours > 0 ? hours + "h " : "") + (minutesLeft % 60) + "m"
+    };
   };
   window.dglLocalizeResets = (root) => {
     (root || document).querySelectorAll("[data-reset-at]").forEach((el) => {
-      const text = window.dglResetText(el.getAttribute("data-reset-at-kind"), el.getAttribute("data-reset-at"));
-      if (!text) return;
-      if (!el.title) el.title = el.textContent;
-      el.textContent = text;
+      const reset = window.dglResetCountdown(el.getAttribute("data-reset-at-kind"), el.getAttribute("data-reset-at"));
+      if (!reset) return;
+      const long = el.getAttribute("data-reset-format") === "long";
+      el.textContent = long ? "Resets daily at " + reset.at + " · next in " + reset.in : "Resets in " + reset.in;
+      el.title = "Resets daily at " + reset.at + " (your time)";
     });
   };
   window.dglLocalizeResets();
+  window.setInterval(() => window.dglLocalizeResets(), 60 * 1000);
 `;
 
-// Client helper: toggles a list between its manual order and "resetting soonest" order.
 // Shared client-side vote/favorite actions, loaded on every page by layout(). Logged-out favorites live in
 // localStorage (key dgl_local_favorites_v1) and are mirrored to /favorite-anon so they count toward scoring.
 const GAME_ACTIONS_SCRIPT = `
@@ -5733,12 +5796,18 @@ const GAME_ACTIONS_SCRIPT = `
     const succeeded = (request) => request.then((response) => response.ok, () => false);
     const setAccountFavorite = (gameId, favorite) =>
       succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/favorite", { method: favorite ? "POST" : "DELETE" }));
-    const saveVote = (gameId, value) =>
-      succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/vote", {
+    // dgl_voted makes the server render pages fresh (skipping the logged-out edge cache) so this visitor sees their votes.
+    const hasVoted = () => document.cookie.split(";").some((part) => part.trim().startsWith("dgl_voted="));
+    const saveVote = async (gameId, value) => {
+      const ok = await succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value })
       }));
+      if (ok && !hasVoted()) document.cookie = "dgl_voted=1; path=/; max-age=31536000; samesite=lax";
+      return ok;
+    };
+    const isReturningVisitor = () => hasVoted() || readLocalFavorites().length > 0;
     // Moves one vote from fromValue to toValue (1, -1 or 0) in the displayed up/down counts.
     const shiftVoteCounts = (upNode, downNode, fromValue, toValue) => {
       if (!(upNode instanceof HTMLElement) || !(downNode instanceof HTMLElement)) return;
@@ -5760,10 +5829,11 @@ const GAME_ACTIONS_SCRIPT = `
       window.localStorage.removeItem(FAVORITES_KEY);
       return "imported";
     };
-    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, importLocalFavorites };
+    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, importLocalFavorites, isReturningVisitor };
   })();
 `;
 
+// Client helper: toggles a list between its manual order and "resetting soonest" order.
 const LIST_SORT_SCRIPT = `
   window.dglListSort = (() => {
     const KEY = "dgl_list_sort_v1";
@@ -5781,7 +5851,7 @@ const LIST_SORT_SCRIPT = `
       return (((min - current) % 1440) + 1440) % 1440;
     };
     const init = (list, select) => {
-      if (!list || !select) return { refresh() {} };
+      if (!list || !select) return { refresh() {}, apply() {} };
       const items = () => Array.from(list.children).filter((el) => el.tagName === "LI" && el.hasAttribute("data-game-id"));
       const apply = () => {
         const mode = select.value === "reset" ? "reset" : "default";
@@ -5870,6 +5940,22 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   }
   const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
+  const fullTitle = title.includes("Dailies") ? title : `${title} | Dailies (dles)`;
+  // Links that fit in the header on desktop but move into the ☰ menu on phones.
+  const secondaryLinks = [
+    hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : "",
+    user ? `<a href="/me/settings">Settings</a>` : "",
+    isAdminEditor
+      ? `<a href="/admin">Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>`
+      : "",
+    user ? "" : `<a href="/login">Login</a>`
+  ].join("");
+  const accountMarkup = user
+    ? `Signed in as ${escapeHtml(user.displayName || "your account")} (${user.role}) <form method="post" action="/auth/logout" class="logout-form"><button type="submit">Logout</button></form>`
+    : isDevEnv(env)
+      ? `Dev: <a href="/auth/mock-login/user">User</a> <a href="/auth/mock-login/editor">Editor</a> <a href="/auth/mock-login/admin">Admin</a>`
+      : "";
+  const themeToggle = `<button type="button" class="theme-toggle" data-theme-toggle aria-label="Toggle light/dark mode" title="Toggle light/dark mode"></button>`;
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -5877,10 +5963,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     <script>${GAME_ACTIONS_SCRIPT}</script>
-    <title>${escapeHtml(title)}</title>
+    <title>${escapeHtml(fullTitle)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
-    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:title" content="${escapeHtml(fullTitle)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     ${opts?.noindex ? `<meta name="robots" content="noindex,follow" />` : ""}
     <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
@@ -5898,13 +5984,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:image" content="https://dailies.0x9.ca/og.png" />
-    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:title" content="${escapeHtml(fullTitle)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <script type="application/ld+json">${scriptJson({
       "@context": "https://schema.org",
       "@type": "WebSite",
       "name": "Dailies (dles)",
-      "url": "https://0x9.ca",
+      "url": "https://dailies.0x9.ca/",
       "description": "A comprehensive directory and hub for discovering, voting on, and tracking daily web games.",
       "potentialAction": {
         "@type": "SearchAction",
@@ -5943,17 +6029,19 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --on-accent: #ffffff;
       }
       * { box-sizing: border-box; }
+      /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
+      [hidden] { display: none !important; }
       body {
         margin: 0;
         color: var(--ink);
         font-family: "Manrope", "IBM Plex Sans", "Segoe UI", "Helvetica Neue", sans-serif;
         background: var(--bg);
       }
-      header {
+      header.site-header {
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        padding: 1rem 1.5rem;
+        gap: 1.25rem;
+        padding: 0.8rem 1.5rem;
         border-bottom: 1px solid var(--border);
         background: var(--header-bg);
         backdrop-filter: blur(10px);
@@ -5961,9 +6049,26 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         top: 0;
         z-index: 20;
       }
-      nav a { margin-right: 0.75rem; color: var(--ink); text-decoration: none; font-weight: 600; }
-      nav a:hover { color: var(--accent); }
-      main { max-width: 960px; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .brand { font-weight: 800; font-size: 1.15rem; color: var(--ink); text-decoration: none; white-space: nowrap; }
+      .site-nav { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+      .nav-extra { display: contents; }
+      .site-nav a, .nav-menu-panel a { color: var(--ink); text-decoration: none; font-weight: 600; white-space: nowrap; }
+      .site-nav a:hover, .nav-menu-panel a:hover { color: var(--accent); }
+      .header-tools { display: flex; align-items: center; gap: 0.6rem; margin-left: auto; white-space: nowrap; color: var(--muted); font-size: 0.9rem; }
+      .theme-toggle { padding: 0.25rem 0.5rem; cursor: pointer; }
+      .logout-form { display: inline; margin: 0; }
+      .logout-form button { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
+      .nav-menu { display: none; position: relative; }
+      .nav-menu > summary { list-style: none; cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; font-size: 1.15rem; color: var(--ink); }
+      .nav-menu > summary::-webkit-details-marker { display: none; }
+      .menu-dot { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: #dc2626; }
+      .nav-menu-panel { position: absolute; right: 0; top: calc(100% + 0.5rem); min-width: 230px; display: flex; flex-direction: column; padding: 0.4rem; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); z-index: 30; white-space: normal; }
+      .nav-menu-panel > a { padding: 0.75rem; border-radius: 8px; }
+      .nav-menu-panel > a.menu-narrow-only { display: none; }
+      .nav-menu-theme { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem; color: var(--ink); font-weight: 600; }
+      .nav-menu-account { border-top: 1px solid var(--border); margin-top: 0.3rem; padding: 0.75rem 0.75rem 0.35rem; color: var(--muted); }
+      main { max-width: 1200px; margin: 1rem auto; padding: 0 1rem 2rem; }
+      main.narrow { max-width: 820px; }
       h1, h2 { letter-spacing: 0.01em; }
       .hero {
         background: var(--card);
@@ -5987,16 +6092,23 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         text-decoration: none;
       }
       ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
-      ul.games li { background: var(--card); border:1px solid var(--border); border-radius:12px; padding:0.8rem; box-shadow: var(--shadow); }
-      ul.games.compact { gap: 0.45rem; }
-      ul.games.compact li { padding: 0.5rem 0.6rem; border-radius: 10px; }
-      .game-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; align-items: center; }
+      ul.games li { display:flex; background: var(--card); border:1px solid var(--border); border-radius:12px; padding:0.8rem; box-shadow: var(--shadow); }
+      ul.games.compact { gap: 0.6rem; }
+      ul.games.compact li { padding: 0.65rem 0.75rem; border-radius: 10px; }
+      /* Card: title, tags and meta on top; a fixed row of actions along the bottom so every card lines up. */
+      .game-row { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+      .game-main { min-width: 0; }
+      .game-title { font-weight: 700; color: var(--ink); text-decoration-color: var(--border); }
+      .game-title:hover { text-decoration-color: currentColor; }
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
-      .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; flex-wrap: nowrap; }
-      .game-row .compact-actions button { padding: 0.3rem 0.45rem; font-size: 0.78rem; }
-      .game-row .compact-actions .btn-details {
+      .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; margin-top: auto; }
+      .actions-spacer { flex: 1; }
+      .btn-details {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         padding: 0.3rem 0.55rem;
         font-size: 0.85rem;
         text-decoration: none;
@@ -6006,9 +6118,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         color: var(--ink);
         font-weight: bold;
       }
-      .game-row .compact-actions .btn-details:hover {
-        background: var(--border);
-      }
+      .btn-details:hover { background: var(--border); }
       .card-actions { display:flex; gap:0.35rem; align-items:center; flex-wrap:nowrap; margin-left:auto; }
       .game-row .compact-actions button, .rotation-list .compact-actions button, .card-actions button {
         padding: 0.3rem 0.55rem;
@@ -6018,6 +6128,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         background: var(--bg-soft);
         color: var(--ink);
         font-weight: bold;
+        white-space: nowrap;
         cursor: pointer;
       }
       .game-row .compact-actions button:hover, .rotation-list .compact-actions button:hover, .card-actions button:hover {
@@ -6129,33 +6240,65 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       }
       a { color: var(--accent); }
       p { color: var(--muted); }
+      .intro { color: var(--ink); font-size: 1.05rem; line-height: 1.5; margin: 0.25rem 0 1rem; }
+      .btn-play { font-size: 1.1rem; padding: 0.8rem 1.4rem; }
+      .report-panel > summary { cursor: pointer; font-weight: 700; }
+      .report-panel[open] > summary { margin-bottom: 0.75rem; }
+      .related-games ul { columns: 2; padding-left: 1.2rem; }
+      .related-games li { margin-bottom: 0.4rem; }
+      .empty-state { text-align: center; padding: 1.5rem 1rem; border: 1px dashed var(--border); border-radius: 12px; }
+      .rotation-list li.empty-state { display: block; }
+      .empty-state p { margin-top: 0; }
+      form.game-filters { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+      .search-row { display: flex; gap: 0.5rem; }
+      .search-row input { flex: 1; min-width: 0; max-width: 420px; }
+      .filters > summary { display: none; }
+      .filters-body { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
       @media (max-width: 700px) {
-        header { flex-direction: column; align-items:flex-start; gap:0.5rem; }
+        header.site-header { padding: 0.6rem 0.75rem; gap: 0.7rem; }
+        .brand { font-size: 1.05rem; }
+        .site-nav { gap: 0.7rem; }
+        .site-nav a { font-size: 0.95rem; }
+        .nav-extra, .account-desktop, .header-tools > .theme-toggle, .label-long { display: none; }
+        .nav-menu { display: block; }
+        /* Comfortable touch targets. */
+        .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details, .reorder-controls button, .actions button, .actions .btn { min-height: 44px; min-width: 44px; }
+        .compact-actions { gap: 0.5rem; }
+        .rotation-list li { flex-wrap: wrap; }
+        .rotation-list li > .card-actions { width: 100%; justify-content: flex-end; gap: 0.5rem; }
+        .btn-play { display: block; text-align: center; }
+        .related-games ul { columns: 1; }
+        .filters > summary { display: list-item; cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
+        .filters-body select { flex: 1 1 45%; }
+      }
+      /* Narrow phones: Submit moves from the header row into the menu so the row never overlaps. */
+      @media (max-width: 400px) {
+        .site-nav a[href="/submit"] { display: none; }
+        .nav-menu-panel > a.menu-narrow-only { display: block; }
       }
     </style>
   </head>
   <body>
-    <header>
-      <nav>
-        <a href="/">Home</a>
+    <header class="site-header">
+      <a class="brand" href="/">0x9 dles</a>
+      <nav class="site-nav" aria-label="Main">
         <a href="/games">Games</a>
+        <a href="/me/rotation"><span class="label-long">My </span>Rotation</a>
         <a href="/submit">Submit</a>
-        <a href="/me/rotation">My Rotation</a>
-        ${hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : ""}
-        <a href="/mod-log">Mod Log</a>
-        ${user ? `<a href="/me/settings">Settings</a>` : ""}
-        ${isAdminEditor ? `<a href="/admin">Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>` : ""}
-        ${!user ? `<a href="/login">Login</a>` : ""}
+        <span class="nav-extra">${secondaryLinks}</span>
       </nav>
-      <div>
-        <button type="button" id="theme-toggle" aria-label="Toggle light/dark mode" title="Toggle light/dark mode" style="margin-right:0.5rem;padding:0.25rem 0.5rem;cursor:pointer;"></button>
-        ${
-          user
-            ? `Signed in as ${escapeHtml(user.displayName || "your account")} (${user.role}) - <form method="post" action="/auth/logout" style="display:inline;margin:0"><button type="submit" style="background:none;border:none;padding:0;color:var(--accent);text-decoration:underline;font:inherit;cursor:pointer">Logout</button></form>`
-            : isDevEnv(env)
-                ? `Dev: <a href="/auth/mock-login/user">User</a> <a href="/auth/mock-login/editor">Editor</a> <a href="/auth/mock-login/admin">Admin</a>`
-                : ""
-        }
+      <div class="header-tools">
+        ${accountMarkup ? `<span class="account-desktop">${accountMarkup}</span>` : ""}
+        ${themeToggle}
+        <details class="nav-menu" id="nav-menu">
+          <summary aria-label="Menu">☰${openReportCount + pendingSubmissionCount > 0 ? `<span class="menu-dot"></span>` : ""}</summary>
+          <div class="nav-menu-panel">
+            <a href="/submit" class="menu-narrow-only">Submit</a>
+            ${secondaryLinks}
+            <div class="nav-menu-theme">Theme ${themeToggle}</div>
+            ${accountMarkup ? `<div class="nav-menu-account">${accountMarkup}</div>` : ""}
+          </div>
+        </details>
       </div>
     </header>
     ${body}
@@ -6164,22 +6307,32 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="https://github.com/0x9-ca/dailies" target="_blank" rel="noopener noreferrer">github</a>
         |
         <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">discord</a>
+        |
+        <a href="/mod-log">mod log</a>
       </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
     <script>
       (() => {
-        const btn = document.getElementById("theme-toggle");
-        if (!btn) return;
+        const buttons = document.querySelectorAll("[data-theme-toggle]");
         const root = document.documentElement;
-        const render = () => { btn.textContent = root.dataset.theme === "light" ? "\u{1F319}" : "\u2600\uFE0F"; };
-        btn.addEventListener("click", () => {
+        const render = () => buttons.forEach((btn) => { btn.textContent = root.dataset.theme === "light" ? "\u{1F319}" : "\u2600\uFE0F"; });
+        buttons.forEach((btn) => btn.addEventListener("click", () => {
           const next = root.dataset.theme === "light" ? "dark" : "light";
           if (next === "light") root.dataset.theme = "light"; else delete root.dataset.theme;
           try { localStorage.setItem("dgl_theme", next); } catch (e) {}
           render();
-        });
+        }));
         render();
+
+        // Close the phone menu when tapping elsewhere or pressing Escape.
+        const menu = document.getElementById("nav-menu");
+        document.addEventListener("click", (event) => {
+          if (menu && menu.open && !menu.contains(event.target)) menu.open = false;
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && menu) menu.open = false;
+        });
       })();
     </script>
     <script>
