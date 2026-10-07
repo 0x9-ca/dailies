@@ -57,7 +57,7 @@ npx wrangler d1 migrations apply DB --local --persist-to $P
 npx wrangler dev --ip 127.0.0.1 --port 8799 --persist-to $P --var APP_URL:http://127.0.0.1:8799
 ```
 
-- Log in instantly with `/auth/mock-login/user|editor|admin` (development only). Seed games as admin through `POST /api/games` (send the `x-csrf-token` header equal to the `csrf_token` cookie); admin submissions are auto-approved.
+- Log in instantly with `/auth/mock-login/user|editor|admin` (development only). To exercise the real sign-in, link and merge code without Discord/Twitch, use `/auth/mock-oauth/<discord|twitch>/<made-up id>` (add `?link=1` to link to the signed-in user, `&role=editor|admin` for Discord). Seed games as admin through `POST /api/games` (send the `x-csrf-token` header equal to the `csrf_token` cookie); admin submissions are auto-approved.
 - The edge cache is off in development. To exercise it, add `--var APP_ENV:staging` (mock login is then disabled) and watch the `X-Page-Cache: HIT|MISS` header.
 - Check UI changes in a real browser at phone (≈375–390px) and desktop widths: no horizontal overflow, no page errors, and both themes (`localStorage.dgl_theme = "light"`). Real Discord/Twitch login can only be tested on staging or production.
 

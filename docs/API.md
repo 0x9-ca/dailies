@@ -19,6 +19,7 @@
 - `GET /login`
 - `GET /auth/discord`, `GET /auth/discord/callback`
 - `GET /auth/twitch`, `GET /auth/twitch/callback`
+- `POST /auth/discord/link`, `POST /auth/twitch/link` (signed in: link that provider to the current account; an existing separate account for it is merged in)
 - `POST /auth/logout`
 
 ## Authenticated user
@@ -35,6 +36,7 @@
 - `GET /api/me/rotation?weekday=1..7`
 - `PATCH /api/me/profile`
 - `DELETE /api/me/sessions/:id`
+- `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
 
 ## Editor/Admin
 

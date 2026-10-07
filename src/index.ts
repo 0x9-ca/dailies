@@ -95,8 +95,12 @@ app.get("/health", (c) => c.json({ ok: true }));
 
 // Development-only quick role login helper. Besides APP_ENV, the request must arrive on APP_URL's own host, so a
 // dev-config build that ends up deployed (e.g. reachable on workers.dev) can never hand out sessions.
+function mockAuthAllowed(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): boolean {
+  return isDevEnv(c.env) && new URL(c.req.url).hostname === new URL(c.env.APP_URL).hostname;
+}
+
 app.get("/auth/mock-login/:role", async (c) => {
-  if (!isDevEnv(c.env) || new URL(c.req.url).hostname !== new URL(c.env.APP_URL).hostname) {
+  if (!mockAuthAllowed(c)) {
     return c.text("Not found", 404);
   }
   const role = c.req.param("role") as AppUser["role"];
@@ -114,19 +118,40 @@ app.get("/auth/mock-login/:role", async (c) => {
   return c.redirect("/");
 });
 
+// Development-only stand-in for a Discord/Twitch sign-in: runs the same completeOAuth() as the real callbacks with a
+// made-up provider account id, to test login, linking (?link=1) and merging locally. Same gate as mock login.
+app.get("/auth/mock-oauth/:provider/:providerUserId", async (c) => {
+  const provider = c.req.param("provider");
+  if (!mockAuthAllowed(c) || (provider !== "discord" && provider !== "twitch")) {
+    return c.text("Not found", 404);
+  }
+  const role = c.req.query("role");
+  return completeOAuth(
+    c,
+    {
+      provider,
+      providerUserId: c.req.param("providerUserId"),
+      displayName: `${provider} ${c.req.param("providerUserId")}`,
+      role: provider === "discord" ? (role === "admin" || role === "editor" ? role : "user") : undefined
+    },
+    c.req.query("link") === "1"
+  );
+});
+
 // Discord OAuth. Scopes: identify (user id + name) and guilds.members.read (roles in our guild, for editor/admin).
 app.get("/auth/discord", (c) => {
   if (!c.env.OAUTH_DISCORD_CLIENT_ID) {
     return c.text("Discord OAuth not configured", 501);
   }
-  return beginOAuth(c, "discord", "https://discord.com/api/oauth2/authorize", c.env.OAUTH_DISCORD_CLIENT_ID, "identify guilds.members.read");
+  return beginOAuth(c, "discord", "login");
 });
 
 app.get("/auth/discord/callback", async (c) => {
-  const code = readOAuthCallback(c, "discord");
-  if (code instanceof Response) {
-    return code;
+  const callback = readOAuthCallback(c, "discord");
+  if (callback instanceof Response) {
+    return callback;
   }
+  const { code, link } = callback;
   if (!c.env.OAUTH_DISCORD_CLIENT_ID || !c.env.OAUTH_DISCORD_CLIENT_SECRET) {
     return c.text("Discord OAuth not configured", 501);
   }
@@ -157,14 +182,11 @@ app.get("/auth/discord/callback", async (c) => {
           ? "editor"
           : "user";
 
-    const userId = await upsertOAuthUser(c.env, {
-      provider: "discord",
-      providerUserId: discordUser.id,
-      displayName: discordUser.username || discordUser.global_name || null,
-      role
-    });
-    await createSession(c, userId);
-    return c.redirect("/?importLocal=1");
+    return await completeOAuth(
+      c,
+      { provider: "discord", providerUserId: discordUser.id, displayName: discordUser.username || discordUser.global_name || null, role },
+      link
+    );
   } finally {
     revokeOAuthToken(c, "discord", accessToken);
   }
@@ -175,14 +197,31 @@ app.get("/auth/twitch", (c) => {
   if (!c.env.OAUTH_TWITCH_CLIENT_ID) {
     return c.text("Twitch OAuth not configured", 501);
   }
-  return beginOAuth(c, "twitch", "https://id.twitch.tv/oauth2/authorize", c.env.OAUTH_TWITCH_CLIENT_ID, "");
+  return beginOAuth(c, "twitch", "login");
+});
+
+// Link another sign-in provider to the signed-in account (Settings). POST, so other sites can't start it: the
+// SameSite=Lax session cookie isn't sent on cross-site POSTs, which lands them on the login page instead.
+app.post("/auth/:provider/link", (c) => {
+  const provider = c.req.param("provider");
+  if (provider !== "discord" && provider !== "twitch") {
+    return c.text("Not found", 404);
+  }
+  if (!c.get("user")) {
+    return c.redirect("/login");
+  }
+  if (!oauthClientId(c.env, provider)) {
+    return c.text("OAuth not configured", 501);
+  }
+  return beginOAuth(c, provider, "link");
 });
 
 app.get("/auth/twitch/callback", async (c) => {
-  const code = readOAuthCallback(c, "twitch");
-  if (code instanceof Response) {
-    return code;
+  const callback = readOAuthCallback(c, "twitch");
+  if (callback instanceof Response) {
+    return callback;
   }
+  const { code, link } = callback;
   if (!c.env.OAUTH_TWITCH_CLIENT_ID || !c.env.OAUTH_TWITCH_CLIENT_SECRET) {
     return c.text("Twitch OAuth not configured", 501);
   }
@@ -202,13 +241,11 @@ app.get("/auth/twitch/callback", async (c) => {
       return c.text("OAuth profile fetch failed", 400);
     }
 
-    const userId = await upsertOAuthUser(c.env, {
-      provider: "twitch",
-      providerUserId: twitchUser.id,
-      displayName: twitchUser.display_name || twitchUser.login || null
-    });
-    await createSession(c, userId);
-    return c.redirect("/?importLocal=1");
+    return await completeOAuth(
+      c,
+      { provider: "twitch", providerUserId: twitchUser.id, displayName: twitchUser.display_name || twitchUser.login || null },
+      link
+    );
   } finally {
     revokeOAuthToken(c, "twitch", accessToken);
   }
@@ -236,7 +273,7 @@ app.get("/login", async (c) => {
     <main>
       <div style="display:flex;flex-direction:column;gap:0.75rem;align-items:stretch;">
           <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
-            <svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true" focusable="false"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
+            ${DISCORD_ICON_SVG}
             Login using Discord
           </a>
           ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
@@ -1825,6 +1862,34 @@ app.get("/me/settings", async (c) => {
     .bind(auth.id)
     .all<{ id: string; created_at: string; expires_at: string }>();
 
+  const linkedProviders = new Set(
+    (await c.env.DB.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string }>()).results.map((r) => r.provider)
+  );
+  const providerNames: Record<OAuthProvider, string> = { discord: "Discord", twitch: "Twitch" };
+  const linkResult = c.req.query("link");
+  const linkProvider = c.req.query("provider") === "twitch" ? "Twitch" : "Discord";
+  const linkMessages: Record<string, string> = {
+    linked: `${linkProvider} account linked. You can now sign in with either.`,
+    merged: `${linkProvider} account linked. Its favorites, votes and submissions were merged into this account.`,
+    already: `That ${linkProvider} account was already linked to this account.`,
+    conflict: `Couldn't link that ${linkProvider} account: it would give this account two sign-ins from the same service. Unlink the existing one first, then try again.`
+  };
+  const accountRows = (["discord", "twitch"] as const)
+    .filter((provider) => oauthClientId(c.env, provider))
+    .map((provider) => {
+      const name = providerNames[provider];
+      const icon = provider === "discord" ? DISCORD_ICON_SVG : TWITCH_ICON_SVG;
+      return `<li>
+        <span class="linked-account-name">${icon} ${name}</span>
+        ${
+          linkedProviders.has(provider)
+            ? `<span class="linked-account-status">✓ Linked</span>${linkedProviders.size > 1 ? `<button type="button" data-unlink="${provider}">Unlink</button>` : ""}`
+            : `<form method="post" action="/auth/${provider}/link" class="link-account-form"><button type="submit" class="btn btn-${provider}">Link ${name}</button></form>`
+        }
+      </li>`;
+    })
+    .join("");
+
   return c.html(await layout("Account Settings", auth, `
     <main class="narrow">
       <h1>Account Settings</h1>
@@ -1835,6 +1900,12 @@ app.get("/me/settings", async (c) => {
           <input id="display-name" name="displayName" maxlength="80" placeholder="Your name" value="${escapeHtml(auth.displayName || "")}" />
           <button type="submit">Save profile</button>
         </form>
+      </section>
+      <section class="panel">
+        <h2>Sign-in accounts</h2>
+        <p>Link Discord and Twitch to sign in with either one. If the account you link already has its own 0x9 dles profile, it's merged into this one: favorites, votes and submissions move over.</p>
+        ${linkResult && linkMessages[linkResult] ? `<p class="status${linkResult === "conflict" ? " error" : ""}" role="status">${escapeHtml(linkMessages[linkResult])}</p>` : ""}
+        <ul class="linked-accounts">${accountRows}</ul>
       </section>
       <section class="panel">
         <h2>Sessions</h2>
@@ -1878,6 +1949,22 @@ app.get("/me/settings", async (c) => {
         }
         setStatus("Profile updated.");
         if (window.appToast) window.appToast("Profile updated.", "success");
+      });
+
+      document.querySelectorAll("button[data-unlink]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const provider = button.getAttribute("data-unlink");
+          const name = provider === "twitch" ? "Twitch" : "Discord";
+          if (!provider || !window.confirm("Unlink " + name + "? You won't be able to sign in with it until you link it again.")) return;
+          setStatus("Unlinking " + name + "...");
+          const response = await fetch("/api/me/accounts/" + encodeURIComponent(provider), { method: "DELETE" });
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            setStatus(body.error || "Could not unlink " + name + ".");
+            return;
+          }
+          window.location.href = "/me/settings";
+        });
       });
 
       document.querySelectorAll("button[data-session-revoke]").forEach((button) => {
@@ -3533,20 +3620,7 @@ app.post("/api/games/:id/vote", async (c) => {
          ON CONFLICT(anon_ip_hash, game_id) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
       ).bind(anonymousVoteKey, gameId, parsed.data.value);
 
-  await c.env.DB.batch([
-    voteUpsert,
-    c.env.DB.prepare(
-      `UPDATE games
-       SET vote_up_count =
-             (SELECT COUNT(*) FROM votes WHERE game_id = ?1 AND value = 1) +
-             (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = ?1 AND value = 1),
-           vote_down_count =
-             (SELECT COUNT(*) FROM votes WHERE game_id = ?1 AND value = -1) +
-             (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = ?1 AND value = -1),
-           updated_at = datetime('now')
-       WHERE id = ?1`
-    ).bind(gameId)
-  ]);
+  await c.env.DB.batch([voteUpsert, recountVotesStatement(c.env, gameId)]);
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
@@ -3981,6 +4055,29 @@ app.patch("/api/me/profile", async (c) => {
     .run();
   await writeAudit(c.env, auth.id, "user", auth.id, "update_profile", { displayName });
   return c.json({ ok: true, displayName });
+});
+
+// Unlink a sign-in provider. The last one can't be removed (the account would be impossible to sign in to).
+app.delete("/api/me/accounts/:provider", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const provider = c.req.param("provider");
+  const accounts = await c.env.DB.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string }>();
+  if (!accounts.results.some((row) => row.provider === provider)) {
+    return c.json({ error: "Not linked" }, 404);
+  }
+  if (accounts.results.length <= 1) {
+    return c.json({ error: "This is your only way to sign in, so it can't be unlinked." }, 400);
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM oauth_accounts WHERE user_id = ?1 AND provider = ?2").bind(auth.id, provider),
+    // Editor/admin roles come from Discord, so they go with it.
+    ...(provider === "discord" ? [c.env.DB.prepare("UPDATE users SET role = 'user', updated_at = datetime('now') WHERE id = ?1").bind(auth.id)] : [])
+  ]);
+  await writeAudit(c.env, auth.id, "user", auth.id, "unlink_account", { provider });
+  return c.json({ ok: true });
 });
 
 app.delete("/api/me/sessions/:id", async (c) => {
@@ -4976,6 +5073,7 @@ async function lookupTwitchUser(env: Env, login: string): Promise<{ id: string; 
   return user ? { id: user.id, login: user.login } : null;
 }
 
+const DISCORD_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true" focusable="false"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>`;
 const TWITCH_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>`;
 
 function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
@@ -6177,6 +6275,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       li.reset-bar::after { content: ""; position: absolute; left: 10px; bottom: 4px; height: 3px; width: calc((100% - 20px) * var(--reset-left, 0)); border-radius: 2px; background: var(--reset-bar); opacity: 0.85; pointer-events: none; }
       .twitch-watch { text-align: center; }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
+      .btn-discord { gap: 0.5rem; background: #5865F2; border-color: #5865F2; color: #fff; }
+      .linked-accounts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.6rem; }
+      .linked-accounts li { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: 10px; }
+      .linked-account-name { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--ink); flex: 1; }
+      .linked-account-status { color: #22c55e; font-weight: 700; }
+      .link-account-form { margin: 0; }
       .external-arrow { font-size: 0.9em; opacity: 0.85; }
       .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       @media (min-width: 800px) {
@@ -6537,45 +6641,182 @@ function oauthRedirectUri(env: Env, provider: OAuthProvider): string {
   return `${env.APP_URL}/auth/${provider}/callback`;
 }
 
-function beginOAuth(
-  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
-  provider: OAuthProvider,
-  authorizeUrl: string,
-  clientId: string,
-  scope: string
-): Response {
+const OAUTH_AUTHORIZE: Record<OAuthProvider, { url: string; scope: string }> = {
+  // identify: user id + name; guilds.members.read: roles in our guild (editor/admin). Twitch: no scopes, so no email.
+  discord: { url: "https://discord.com/api/oauth2/authorize", scope: "identify guilds.members.read" },
+  twitch: { url: "https://id.twitch.tv/oauth2/authorize", scope: "" }
+};
+
+function oauthClientId(env: Env, provider: OAuthProvider): string | undefined {
+  return provider === "discord" ? env.OAUTH_DISCORD_CLIENT_ID : env.OAUTH_TWITCH_CLIENT_ID;
+}
+
+function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider, intent: "login" | "link"): Response {
   // The state cookie ties the callback to this browser, so nobody can log someone else into an attacker's account.
+  // It also carries the intent (login, or link to the signed-in account), which the callback trusts only via this cookie.
   const state = randomToken();
-  setCookie(c, `oauth_state_${provider}`, state, {
+  setCookie(c, `oauth_state_${provider}`, `${state}.${intent}`, {
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
     secure: wantsSecureCookies(c.env),
     maxAge: 600
   });
-  const url = new URL(authorizeUrl);
-  url.searchParams.set("client_id", clientId);
+  const url = new URL(OAUTH_AUTHORIZE[provider].url);
+  url.searchParams.set("client_id", oauthClientId(c.env, provider) ?? "");
   url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, provider));
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", scope);
+  url.searchParams.set("scope", OAUTH_AUTHORIZE[provider].scope);
   url.searchParams.set("state", state);
   return c.redirect(url.toString());
 }
 
-/** The authorization code from a provider callback, or the Response to send instead. */
-function readOAuthCallback(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider): string | Response {
+/** The authorization code and intent from a provider callback, or the Response to send instead. */
+function readOAuthCallback(
+  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
+  provider: OAuthProvider
+): { code: string; link: boolean } | Response {
   const state = c.req.query("state");
   const code = c.req.query("code");
-  const stored = getCookie(c, `oauth_state_${provider}`);
+  const [storedState, intent] = (getCookie(c, `oauth_state_${provider}`) ?? "").split(".");
   deleteCookie(c, `oauth_state_${provider}`, { path: "/" });
   if (c.req.query("error")) {
     // The user pressed cancel on the provider's consent screen.
-    return c.redirect("/login");
+    return c.redirect(intent === "link" ? "/me/settings" : "/login");
   }
-  if (!state || !code || !stored || state !== stored) {
+  if (!state || !code || !storedState || state !== storedState) {
     return c.text("Invalid OAuth state", 400);
   }
-  return code;
+  return { code, link: intent === "link" };
+}
+
+type OAuthProfile = { provider: OAuthProvider; providerUserId: string; displayName: string | null; role?: AppUser["role"] };
+
+/**
+ * Finishes a provider sign-in. A login signs in to (or creates) the account for that provider account. A link
+ * (started from Settings) attaches it to the signed-in user instead, merging its existing account if it has one.
+ */
+async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, profile: OAuthProfile, link: boolean): Promise<Response> {
+  if (!link) {
+    const userId = await upsertOAuthUser(c.env, profile);
+    await createSession(c, userId);
+    return c.redirect("/?importLocal=1");
+  }
+  const user = c.get("user");
+  if (!user) {
+    return c.redirect("/login");
+  }
+  const result = await linkOAuthAccount(c.env, user.id, profile);
+  return c.redirect(`/me/settings?link=${result}&provider=${profile.provider}`);
+}
+
+/**
+ * Attaches a provider account to userId. If that provider account already belongs to another user, that user is
+ * merged into userId (the person has just proven they control both). Refused when it would leave the account with
+ * two accounts from the same provider.
+ */
+async function linkOAuthAccount(env: Env, userId: string, profile: OAuthProfile): Promise<"linked" | "merged" | "already" | "conflict"> {
+  const owner = await env.DB.prepare("SELECT user_id FROM oauth_accounts WHERE provider = ?1 AND provider_user_id = ?2")
+    .bind(profile.provider, profile.providerUserId)
+    .first<{ user_id: string }>();
+  let result: "linked" | "merged" | "already";
+  if (owner?.user_id === userId) {
+    result = "already";
+  } else {
+    const providersOf = async (id: string) =>
+      new Set(
+        (await env.DB.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1").bind(id).all<{ provider: string }>()).results.map((r) => r.provider)
+      );
+    const mine = await providersOf(userId);
+    const incoming = owner ? await providersOf(owner.user_id) : new Set([profile.provider]);
+    if ([...incoming].some((provider) => mine.has(provider))) {
+      return "conflict";
+    }
+    if (owner) {
+      await mergeUsers(env, owner.user_id, userId);
+      result = "merged";
+    } else {
+      await env.DB.prepare("INSERT INTO oauth_accounts (id, user_id, provider, provider_user_id) VALUES (?1, ?2, ?3, ?4)")
+        .bind(crypto.randomUUID(), userId, profile.provider, profile.providerUserId)
+        .run();
+      result = "linked";
+    }
+  }
+  if (profile.role) {
+    // Discord: the account's role follows its guild roles, as on a Discord login.
+    await env.DB.prepare("UPDATE users SET role = ?1, updated_at = datetime('now') WHERE id = ?2").bind(profile.role, userId).run();
+  }
+  if (result !== "already") {
+    await writeAudit(env, userId, "user", userId, "link_account", { provider: profile.provider, merged: result === "merged" });
+  }
+  return result;
+}
+
+/**
+ * Moves everything owned by fromId onto intoId and deletes fromId, in one D1 batch (a transaction). Duplicate
+ * favorites and votes keep intoId's copy; fromId's rotation is appended after intoId's.
+ */
+async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<void> {
+  const affected = await env.DB.prepare("SELECT game_id FROM votes WHERE user_id = ?1 UNION SELECT game_id FROM favorites WHERE user_id = ?1")
+    .bind(fromId)
+    .all<{ game_id: string }>();
+  const fromShareToken = (await env.DB.prepare("SELECT rotation_share_token FROM users WHERE id = ?1").bind(fromId).first<{ rotation_share_token: string | null }>())
+    ?.rotation_share_token ?? null;
+  const reassign = (table: string, column: string) =>
+    env.DB.prepare(`UPDATE ${table} SET ${column} = ?2 WHERE ${column} = ?1`).bind(fromId, intoId);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO favorites (user_id, game_id, position, weekday_mask, created_at, updated_at)
+       SELECT ?2, game_id, position + (SELECT COALESCE(MAX(position), 0) FROM favorites WHERE user_id = ?2), weekday_mask, created_at, updated_at
+       FROM favorites WHERE user_id = ?1`
+    ).bind(fromId, intoId),
+    env.DB.prepare("DELETE FROM favorites WHERE user_id = ?1").bind(fromId),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO votes (user_id, game_id, value, created_at, updated_at)
+       SELECT ?2, game_id, value, created_at, updated_at FROM votes WHERE user_id = ?1`
+    ).bind(fromId, intoId),
+    env.DB.prepare("DELETE FROM votes WHERE user_id = ?1").bind(fromId),
+    reassign("oauth_accounts", "user_id"),
+    reassign("reports", "reported_by_user_id"),
+    reassign("reports", "resolved_by_user_id"),
+    reassign("audit_log", "actor_user_id"),
+    reassign("games", "submitted_by_user_id"),
+    reassign("games", "approved_by_user_id"),
+    reassign("categories", "created_by_user_id"),
+    reassign("game_categories", "assigned_by_user_id"),
+    reassign("curated_lists", "owner_user_id"),
+    reassign("curated_lists", "created_by_user_id"),
+    reassign("curated_lists", "updated_by_user_id"),
+    reassign("curated_list_items", "added_by_user_id"),
+    // Keep a shared-rotation link if only the merged-away account had one (cleared first: the token is unique).
+    env.DB.prepare("UPDATE users SET rotation_share_token = NULL WHERE id = ?1").bind(fromId),
+    env.DB.prepare("UPDATE users SET rotation_share_token = ?2 WHERE id = ?1 AND rotation_share_token IS NULL").bind(intoId, fromShareToken),
+    env.DB.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(fromId),
+    env.DB.prepare("DELETE FROM users WHERE id = ?1").bind(fromId)
+  ]);
+  // Dropped duplicate votes change the totals; favorites feed the score.
+  for (const { game_id: gameId } of affected.results) {
+    await env.DB.batch([recountVotesStatement(env, gameId)]);
+    await updateGameScore(env, gameId);
+  }
+  if (affected.results.length > 0) {
+    await invalidateGameCaches(env);
+  }
+}
+
+/** Recomputes a game's up/down vote totals from the account and anonymous vote tables. */
+function recountVotesStatement(env: Env, gameId: string): D1PreparedStatement {
+  return env.DB.prepare(
+    `UPDATE games
+     SET vote_up_count =
+           (SELECT COUNT(*) FROM votes WHERE game_id = ?1 AND value = 1) +
+           (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = ?1 AND value = 1),
+         vote_down_count =
+           (SELECT COUNT(*) FROM votes WHERE game_id = ?1 AND value = -1) +
+           (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = ?1 AND value = -1),
+         updated_at = datetime('now')
+     WHERE id = ?1`
+  ).bind(gameId);
 }
 
 /** Exchanges an authorization code for an access token, or returns the error Response to send. */
