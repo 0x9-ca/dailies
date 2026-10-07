@@ -1259,25 +1259,32 @@ app.get("/me/rotation", async (c) => {
 
             li.appendChild(itemMain);
 
+            // Same compact controls as the signed-in rotation.
+            const actions = document.createElement("div");
+            actions.className = "card-actions";
             const reorder = document.createElement("div");
             reorder.className = "reorder-controls";
             const up = document.createElement("button");
             up.type = "button";
             up.setAttribute("data-local-move", "up");
-            up.textContent = "Up";
+            up.setAttribute("aria-label", "Move up");
+            up.textContent = "↑";
             const down = document.createElement("button");
             down.type = "button";
             down.setAttribute("data-local-move", "down");
-            down.textContent = "Down";
+            down.setAttribute("aria-label", "Move down");
+            down.textContent = "↓";
             reorder.appendChild(up);
             reorder.appendChild(down);
-            li.appendChild(reorder);
+            actions.appendChild(reorder);
 
             const remove = document.createElement("button");
             remove.type = "button";
             remove.setAttribute("data-local-remove", "1");
-            remove.textContent = "Remove";
-            li.appendChild(remove);
+            remove.setAttribute("aria-label", "Remove from rotation");
+            remove.textContent = "X";
+            actions.appendChild(remove);
+            li.appendChild(actions);
 
             list.appendChild(li);
           });
@@ -2037,8 +2044,8 @@ app.get("/lists/:slug", async (c) => {
           </div>
           <div class="card-actions">
             ${isAdminEditor ? "" : `
-              <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}">+ <span data-up-count>${item.vote_up_count}</span></button>
-              <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}">- <span data-down-count>${item.vote_down_count}</span></button>
+              <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${item.vote_up_count}</span></button>
+              <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}" title="Vote down">▼ <span data-down-count>${item.vote_down_count}</span></button>
               ${user
                 ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}">${currentFavorite ? "★" : "☆"}</button>`
                 : `<button type="button" data-local-favorite="no">☆</button>`}
@@ -5394,23 +5401,26 @@ function renderCompactGameList(
         const currentFavorite = userFavorites.has(game.id);
         return `<li>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
-            <div class="game-main">
-              <a class="game-title" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
-              ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
-              ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
+            <div class="game-top">
+              <div class="game-name">
+                <a class="game-title" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
+                ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
+                ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
+              </div>
+              <div class="compact-actions">
+                <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${game.voteUpCount}</span></button>
+                <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}" title="Vote down">▼ <span data-down-count>${game.voteDownCount}</span></button>
+                ${
+                  user
+                    ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}" aria-label="Favorite">${currentFavorite ? "★" : "☆"}</button>`
+                    : `<button type="button" data-local-favorite="no" aria-label="Favorite">☆</button>`
+                }
+                ${renderDetailsLink(game.slug, game.title)}
+              </div>
+            </div>
+            <div class="game-sub">
               ${renderCategoryPills(game.categories)}
               ${renderGameMeta(game.voteUpCount, game.voteDownCount, renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone))}
-            </div>
-            <div class="compact-actions">
-              <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}">+ <span data-up-count>${game.voteUpCount}</span></button>
-              <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}">- <span data-down-count>${game.voteDownCount}</span></button>
-              <span class="actions-spacer"></span>
-              ${
-                user
-                  ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}" aria-label="Favorite">${currentFavorite ? "★" : "☆"}</button>`
-                  : `<button type="button" data-local-favorite="no" aria-label="Favorite">☆</button>`
-              }
-              ${renderDetailsLink(game.slug, game.title)}
             </div>
           </div>
         </li>`;
@@ -6091,20 +6101,24 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         font-weight: 700;
         text-decoration: none;
       }
-      ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+      ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
       ul.games li { display:flex; background: var(--card); border:1px solid var(--border); border-radius:12px; padding:0.8rem; box-shadow: var(--shadow); }
       ul.games.compact { gap: 0.6rem; }
       ul.games.compact li { padding: 0.65rem 0.75rem; border-radius: 10px; }
-      /* Card: title, tags and meta on top; a fixed row of actions along the bottom so every card lines up. */
-      .game-row { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
-      .game-main { min-width: 0; }
+      /* Card: name and buttons on the first line, tags and stats on the second. */
+      .game-row { display: flex; flex-direction: column; gap: 0.3rem; width: 100%; }
+      .game-top { display: flex; align-items: flex-start; gap: 0.5rem; }
+      .game-name { flex: 1; min-width: 0; padding-top: 0.2rem; overflow-wrap: break-word; }
+      .game-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.5rem; }
+      .game-sub .category-pills { margin-top: 0; }
+      .game-sub .tag { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
+      .game-sub .meta { margin: 0; }
       .game-title { font-weight: 700; color: var(--ink); text-decoration-color: var(--border); }
       .game-title:hover { text-decoration-color: currentColor; }
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
-      .game-row .compact-actions { display: flex; gap: 0.35rem; align-items: center; margin-top: auto; }
-      .actions-spacer { flex: 1; }
+      .game-row .compact-actions { display: flex; gap: 0.3rem; align-items: center; flex-shrink: 0; }
       .btn-details {
         display: inline-flex;
         align-items: center;
@@ -6183,6 +6197,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
       .rotation-list li > .item-main { flex: 1; min-width: 0; }
       .rotation-list li > .item-main > a { display:block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .rotation-list .item-main .tag { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
       .category-pills { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
       .category-pills:empty { display:none; margin-top:0; }
       .category-pills .tag { margin:0; }
@@ -6261,11 +6276,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .site-nav a { font-size: 0.95rem; }
         .nav-extra, .account-desktop, .header-tools > .theme-toggle, .label-long { display: none; }
         .nav-menu { display: block; }
-        /* Comfortable touch targets. */
-        .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details, .reorder-controls button, .actions button, .actions .btn { min-height: 44px; min-width: 44px; }
-        .compact-actions { gap: 0.5rem; }
-        .rotation-list li { flex-wrap: wrap; }
-        .rotation-list li > .card-actions { width: 100%; justify-content: flex-end; gap: 0.5rem; }
+        /* Small buttons in cards and rows get an invisible margin that makes the tap target about 46px tall. */
+        .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details { position: relative; min-height: 30px; }
+        .compact-actions button::after, .compact-actions .btn-details::after, .card-actions button::after, .card-actions .btn-details::after { content: ""; position: absolute; inset: -9px -2px; }
+        .compact-actions, .card-actions { gap: 0.3rem; }
+        .actions button, .actions .btn { min-height: 44px; }
         .btn-play { display: block; text-align: center; }
         .related-games ul { columns: 1; }
         .filters > summary { display: list-item; cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
