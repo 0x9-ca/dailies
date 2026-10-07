@@ -9,7 +9,8 @@
     "deploy:production": "wrangler deploy --env production",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck",
-    "validate:config": "node scripts/validate-config.mjs"
+    "validate:config": "node scripts/validate-config.mjs",
+    "schema:dump": "bash scripts/dump-schema.sh"
   },
   "dependencies": {
     "hono": "^4.6.5",
