@@ -2036,10 +2036,10 @@ app.get("/lists/:slug", async (c) => {
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
           const currentFavorite = userFavorites.has(item.id);
-          return `<li draggable="${isAdminEditor}" data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
+          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" ${isAdminEditor ? "" : `class="card-link"`} style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
@@ -5402,11 +5402,11 @@ function renderCompactGameList(
       .map((game) => {
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
-        return `<li>
+        return `<li class="card-click">
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div class="game-top">
               <div class="game-name">
-                <a class="game-title" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
+                <a class="game-title card-link" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
                 ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
                 ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               </div>
@@ -6140,6 +6140,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .game-sub .meta { margin: 0; }
       .game-title { font-weight: 700; color: var(--ink); text-decoration-color: var(--border); }
       .game-title:hover { text-decoration-color: currentColor; }
+      /* The game name's link stretches over the whole card, so a tap anywhere opens the game; buttons and tags sit above it. */
+      .card-click { position: relative; }
+      .card-click .card-link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
+      .card-click button, .card-click .btn-details, .card-click .category-pill { position: relative; z-index: 1; }
+      .card-click:hover { border-color: var(--accent); }
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
@@ -6369,11 +6374,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         }));
         render();
 
-        // Close the phone menu when tapping elsewhere or pressing Escape.
+        // A tap outside the open phone menu only closes it (cards are links, so it would otherwise open a game).
         const menu = document.getElementById("nav-menu");
         document.addEventListener("click", (event) => {
-          if (menu && menu.open && !menu.contains(event.target)) menu.open = false;
-        });
+          if (!menu || !menu.open || menu.contains(event.target)) return;
+          event.preventDefault();
+          event.stopPropagation();
+          menu.open = false;
+        }, true);
         document.addEventListener("keydown", (event) => {
           if (event.key === "Escape" && menu) menu.open = false;
         });
