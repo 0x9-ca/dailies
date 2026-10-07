@@ -41,18 +41,20 @@ Daily game directory and aggregator built on Cloudflare Workers + D1 + KV.
 npm install
 ```
 
-2. Create a D1 database + KV namespace and update `wrangler.jsonc` IDs.
+2. Create D1 databases + KV namespaces and update `wrangler.jsonc` IDs. Production has its own pair; staging
+   and the default (dev) config share a separate staging pair, so nothing but `--env production` touches production data.
 
    This repo already has:
 
-   - D1 ID: `9e1124fc-5f00-4c21-a100-b807d8d46925`
-   - KV ID: `59fe208f58e2486884a6f2460f415b7a`
+   - Production: D1 `daily-game-list` (`9e1124fc-5f00-4c21-a100-b807d8d46925`), KV `59fe208f58e2486884a6f2460f415b7a`
+   - Staging/dev: D1 `daily-game-list-staging` (`460b7077-3ce6-4f2b-b54c-81cd9f07b1b3`), KV `c7bc57c57a0c4279b672ba4622fafa9b`
 
 3. Set secrets:
 
 ```bash
-wrangler secret put SESSION_SECRET
-wrangler secret put OAUTH_DISCORD_CLIENT_SECRET
+wrangler secret put SESSION_SECRET --env <staging|production>
+wrangler secret put OAUTH_DISCORD_CLIENT_SECRET --env <staging|production>
+wrangler secret put OAUTH_TWITCH_CLIENT_SECRET --env <staging|production>
 ```
 
 4. Set Discord configuration in `wrangler.jsonc` (`vars`).
@@ -92,7 +94,7 @@ wrangler secret put OAUTH_DISCORD_CLIENT_SECRET
 6. Apply migrations locally:
 
 ```bash
-wrangler d1 migrations apply daily-game-list --local
+wrangler d1 migrations apply DB --local
 ```
 
 7. Run dev server:
@@ -113,12 +115,13 @@ Use mock login during local development:
 - `/auth/mock-login/editor`
 - `/auth/mock-login/admin`
 
-After adding migrations, apply them locally and remotely:
+After adding migrations, apply them locally and remotely, then regenerate `docs/schema.sql` with `npm run schema:dump`.
+Use the `DB` binding name (not the database name) so `--env` always picks that environment's database:
 
 ```bash
-npx wrangler d1 migrations apply daily-game-list --local
-npx wrangler d1 migrations apply daily-game-list --remote --env staging
-npx wrangler d1 migrations apply daily-game-list --remote --env production
+npx wrangler d1 migrations apply DB --local
+npx wrangler d1 migrations apply DB --remote --env staging
+npx wrangler d1 migrations apply DB --remote --env production
 ```
 
 ## Important files

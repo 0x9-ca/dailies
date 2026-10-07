@@ -7,7 +7,7 @@ Thanks for contributing to Daily Game List.
 1. Install dependencies: `npm install`
 2. Ensure `.secrets.env` is filled for your environment.
 3. Sync Wrangler config, generate `.dev.vars`, and upload secrets: `./scripts/set-secrets.sh`
-4. Apply local migrations: `npx wrangler d1 migrations apply daily-game-list --local`
+4. Apply local migrations: `npx wrangler d1 migrations apply DB --local`
 5. Run dev server: `npm run dev`
 
 ## Required checks

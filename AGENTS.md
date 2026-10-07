@@ -65,7 +65,7 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 
 - Keep SQL parameterized with D1 prepared statements.
 - Embed server values in inline `<script>` blocks with `scriptJson(...)`, never raw `JSON.stringify(...)`; in client code, put user text in the DOM with `textContent`, not `innerHTML`.
-- Mock login (`/auth/mock-login/:role`) only works when `APP_ENV` is development and the request host matches `APP_URL`. Never deploy the default (dev) wrangler env: all envs share one D1 database.
+- Mock login (`/auth/mock-login/:role`) only works when `APP_ENV` is development and the request host matches `APP_URL`. Production has its own D1/KV; staging and the default (dev) config use a separate staging D1/KV. In `wrangler d1` commands use the `DB` binding with `--env`, never the database name (a name can resolve to production).
 - Update both server route behavior and inline client script behavior together.
 - If adding mutating APIs, ensure CSRF and auth/role checks are included.
 - If adding public list queries, consider cache invalidation with `invalidateGameCaches`.

@@ -9,8 +9,8 @@ STATE_DIR="$(mktemp -d)"
 trap 'rm -rf "$STATE_DIR"' EXIT
 
 cd "$ROOT_DIR"
-npx wrangler d1 migrations apply daily-game-list --local --persist-to "$STATE_DIR" > /dev/null
-npx wrangler d1 execute daily-game-list --local --persist-to "$STATE_DIR" --json --command \
+npx wrangler d1 migrations apply DB --local --persist-to "$STATE_DIR" > /dev/null
+npx wrangler d1 execute DB --local --persist-to "$STATE_DIR" --json --command \
   "SELECT sql FROM sqlite_master
    WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'd1_migrations'
    ORDER BY tbl_name, type != 'table', name" \
