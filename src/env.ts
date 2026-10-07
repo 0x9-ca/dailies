@@ -23,6 +23,8 @@ export interface Env {
   /** Durable Object that times batched new-game announcements (see AnnouncementScheduler). */
   ANNOUNCER: DurableObjectNamespace<AnnouncementScheduler>;
   SESSION_SECRET: string;
+  /** Cloudflare's metadata for the running Worker version (version_metadata binding); id changes on every deploy. */
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
 
 export type AppVariables = {
