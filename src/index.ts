@@ -13,6 +13,24 @@ type Bindings = Env;
 
 const app = new Hono<{ Bindings: Bindings; Variables: AppVariables }>();
 
+// Deployed sites are HTTPS only: plain-HTTP requests are redirected (308 keeps the method for non-GETs), and every
+// response carries the standard hardening headers. Local dev runs on plain HTTP, so it's left alone.
+app.use("*", async (c, next) => {
+  if (!isDevEnv(c.env)) {
+    const url = new URL(c.req.url);
+    if (url.protocol === "http:") {
+      // Built by hand: assigning url.protocol is a no-op in the Workers runtime's legacy URL implementation.
+      return c.redirect(`https://${url.host}${url.pathname}${url.search}`, c.req.method === "GET" || c.req.method === "HEAD" ? 301 : 308);
+    }
+  }
+  await next();
+  if (!isDevEnv(c.env)) c.header("Strict-Transport-Security", "max-age=31536000");
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Content-Security-Policy", "frame-ancestors 'none'");
+});
+
 // Session bootstrap for every request.
 app.use("*", sessionMiddleware);
 
@@ -305,7 +323,7 @@ app.get("/", async (c) => {
         // Returning visitors (anyone who has favorited or voted) don't need the introduction.
         if (window.dglGames.isReturningVisitor()) document.getElementById("home-intro").hidden = true;
       </script>`}
-      <p class="game-count"><strong data-count-up="${playableCount}">${playableCount.toLocaleString("en-US")}</strong> daily games to play</p>
+      <h1 class="game-count"><strong data-count-up="${playableCount}">${playableCount.toLocaleString("en-US")}</strong> daily games to play</h1>
       <script>
         // Count up to the total once on load (skipped for reduced motion); the server-rendered number is the fallback.
         (() => {
@@ -348,17 +366,13 @@ app.get("/", async (c) => {
           ${newGamesMarkup}
         </section>
       </div>
-      <section>
-        <h1>0x9 dles &mdash; Daily Games Hub</h1>
-        <p>0x9 dles is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
-      </section>
       <section class="about">
         <h2>About 0x9 dles</h2>
         <p>A daily game (or "dle") is a short puzzle that resets once a day, usually with the same challenge for every player. Wordle started the trend, and now there are hundreds of them covering words, geography, movies, music, logic, math and more. 0x9 dles is a community-run directory that keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
         <h3>How games are ranked</h3>
         <p>Every game has a community score based on up and down votes, so a game with a few votes can't outrank one that many people like. Newer games get a small freshness boost, and games that are frequently reported or whose links stop working are ranked lower. Anyone can vote, with or without an account.</p>
         <h3>Build your daily rotation</h3>
-        <p>Favorite the games you play and arrange them into a personal rotation, in your own order and even by weekday. Without an account, your favorites are stored in your browser. Sign in with Discord to keep them across devices, and export or import your rotation as a file whenever you like.</p>
+        <p>Favorite the games you play and arrange them into a personal rotation, in your own order and even by weekday. Without an account, your favorites are stored in your browser. Sign in with Discord or Twitch to keep them across devices, and export or import your rotation as a file whenever you like.</p>
         <h3>Find something new</h3>
         <p>Browse the <a href="/games">full game list</a>, filter by category, or explore <a href="/lists">curated lists</a> put together by our editors. Some games are marked <span class="paywall-badge" title="This game requires payment to play">$</span> if they require payment, and NSFW games are labelled. Know a daily we're missing? <a href="/submit">Submit it</a> and, once reviewed, it will show up in the directory.</p>
       </section>
@@ -601,7 +615,7 @@ app.get("/games", async (c) => {
   }>();
 
   if (page > 1 && games.length === 0) {
-    return c.text("Not found", 404);
+    return notFoundPage(c);
   }
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
 
@@ -636,7 +650,12 @@ app.get("/games", async (c) => {
   }
 
   const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
-  const pageTitle = activeCategory ? `Daily ${activeCategory.name} – 0x9 dles` : "All Daily Games – 0x9 dles";
+  if (category && !activeCategory) {
+    return notFoundPage(c);
+  }
+  const heading = activeCategory ? `Daily ${categoryGamesLabel(activeCategory.name)}` : "Browse Games";
+  const pageSuffix = page > 1 ? ` – Page ${page}` : "";
+  const pageTitle = (activeCategory ? `${heading} (${totalGames})` : "All Daily Games") + pageSuffix;
   const categoryPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
   // Later pages list different games, so each is its own canonical page (the sort order is not).
   const canonicalPath = page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
@@ -647,7 +666,7 @@ app.get("/games", async (c) => {
   if (activeCategory) crumbs.push([activeCategory.name, categoryPath]);
   return c.html(await layout(pageTitle, user, `
     <main>
-      <h1>${activeCategory ? `Daily ${escapeHtml(activeCategory.name)}` : "Browse Games"}</h1>
+      <h1>${escapeHtml(heading)}</h1>
       ${activeCategory ? `<p>${categoryDescription ? `${escapeHtml(categoryDescription)} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
       <form method="GET" action="/games" class="game-filters" id="game-filters">
         <div class="search-row">
@@ -733,10 +752,10 @@ app.get("/games", async (c) => {
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
   `, c.env, {
     path: canonicalPath,
-    description: activeCategory
-      ? `Browse ${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes. Find your next daily puzzle on 0x9 dles.`
-      : "Browse all daily games. Filter by category, sort by score, trending, or newest.",
-    jsonLd: [breadcrumbLd(crumbs)],
+    description: (activeCategory
+      ? `${categoryDescription ? `${categoryDescription} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes.`
+      : `Browse all ${totalGames} daily games: Wordle-style puzzles for words, geography, music, movies and more. Filter by category, sort by rating, trending or newest.`) + pageSuffix,
+    jsonLd: [breadcrumbLd(crumbs), gameItemListLd(games, offset)],
     noindex: !!q || hidePaywall || hideNsfw
   }));
 });
@@ -746,7 +765,8 @@ app.get("/games/:slug", async (c) => {
   const user = c.get("user");
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
-    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
+    `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw,
+            COALESCE(approved_at, created_at) AS listed_at
      FROM games
      WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
   )
@@ -766,9 +786,10 @@ app.get("/games/:slug", async (c) => {
       reset_timezone: string | null;
       paywall: number;
       nsfw: number;
+      listed_at: string;
     }>();
   if (!game) {
-    return c.text("Not found", 404);
+    return notFoundPage(c);
   }
 
   const allCategories = await c.env.DB.prepare(
@@ -776,14 +797,23 @@ app.get("/games/:slug", async (c) => {
   ).all<{ id: string; slug: string; name: string }>();
 
   const categories = await c.env.DB.prepare(
-    `SELECT categories.slug, categories.name
+    `SELECT categories.slug, categories.name, categories.description
      FROM game_categories
      JOIN categories ON categories.id = game_categories.category_id
      WHERE game_categories.game_id = ?1
      ORDER BY categories.name ASC`
   )
     .bind(game.id)
-    .all<{ slug: string; name: string }>();
+    .all<{ slug: string; name: string; description: string | null }>();
+  const publicLists = await c.env.DB.prepare(
+    `SELECT curated_lists.slug, curated_lists.title
+     FROM curated_list_items
+     JOIN curated_lists ON curated_lists.id = curated_list_items.curated_list_id
+     WHERE curated_list_items.game_id = ?1 AND curated_lists.visibility = 'public'
+     ORDER BY curated_lists.title ASC`
+  )
+    .bind(game.id)
+    .all<{ slug: string; title: string }>();
 
   const viewer = await getViewerGameState(c, [game.id]);
   const userVote: -1 | 0 | 1 = viewer.votes.get(game.id) ?? 0;
@@ -810,13 +840,44 @@ app.get("/games/:slug", async (c) => {
     name: game.title,
     ...(game.description ? { description: game.description } : {}),
     url: game.url,
-    applicationCategory: "Game",
+    applicationCategory: "GameApplication",
     gamePlatform: "Web browser",
     operatingSystem: "Any",
     isAccessibleForFree: !game.paywall,
     ...(categories.results.length > 0 ? { genre: categories.results.map((cat) => cat.name) } : {})
   };
-  return c.html(await layout(`${game.title} – Daily Game | 0x9 dles`, user, `
+  // Facts the site already knows about the game, so its page says more than the one-line description.
+  const mainCategory = categories.results.find((cat) => cat.slug !== "miscellaneous" && cat.slug !== "novelty") ?? categories.results[0];
+  const gameKind = mainCategory ? `daily ${categoryGameLabel(mainCategory.name).replace(/Game$/, "game")}` : "daily game";
+  const totalVotes = game.vote_up_count + game.vote_down_count;
+  const ratingText = totalVotes > 0
+    ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% of ${totalVotes} community vote${totalVotes === 1 ? "" : "s"} are upvotes`
+    : "No votes yet. Played it? Vote above.";
+  // Rows from SQLite's datetime() are "YYYY-MM-DD HH:MM:SS" (UTC); rows written by the API are ISO strings.
+  const listedDate = new Date(game.listed_at.includes("T") ? game.listed_at : game.listed_at.replace(" ", "T") + "Z");
+  const listedText = Number.isNaN(listedDate.getTime()) ? "" : listedDate.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+  const describedCategories = categories.results.filter((cat) => cat.description && !cat.description.startsWith("Imported from"));
+  const gameFacts = `
+      <section class="game-facts">
+        <h2>About ${escapeHtml(game.title)}</h2>
+        <p>${escapeHtml(game.title)} is a ${escapeHtml(gameKind)} that you play in your web browser, with a new puzzle every day.${game.paywall ? " It requires payment to play." : " It's free to play, with no download needed."}${game.nsfw ? " It contains NSFW content." : ""}</p>
+        <dl>
+          ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
+          <dt>Community rating</dt><dd>${escapeHtml(ratingText)}</dd>
+          ${publicLists.results.length > 0 ? `<dt>Featured in</dt><dd>${publicLists.results.map((list) => `<a href="/lists/${encodeURIComponent(list.slug)}">${escapeHtml(list.title)}</a>`).join(", ")}</dd>` : ""}
+          ${listedText ? `<dt>Listed on 0x9 dles since</dt><dd>${escapeHtml(listedText)}</dd>` : ""}
+        </dl>
+      </section>`;
+  const trimmedDescription = game.description?.trim() ?? "";
+  const baseDescription = trimmedDescription
+    ? /[.!?]$/.test(trimmedDescription) ? trimmedDescription : `${trimmedDescription}.`
+    : `${game.title} is a ${gameKind}.`;
+  const extraDescription = [
+    `A ${game.paywall ? "" : "free "}${gameKind} you play in your browser.`,
+    totalVotes > 0 ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% liked on 0x9 dles.` : ""
+  ].filter((part) => part && baseDescription.length + part.length + 1 <= 160);
+  const metaDescription = [baseDescription, ...extraDescription].join(" ");
+  return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
@@ -868,6 +929,7 @@ app.get("/games/:slug", async (c) => {
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
       </details>
+      ${gameFacts}
       ${related.results.length > 0 ? `<section class="related-games">
         <h2>${escapeHtml(relatedHeading)}</h2>
         <ul>${related.results.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
@@ -1142,7 +1204,7 @@ app.get("/games/:slug", async (c) => {
               });
             }
     </script>
-  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on 0x9 dles. Vote, favorite, and add to your rotation.`,
+  `, c.env, { path: `/games/${game.slug}`, description: metaDescription,
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
 
@@ -2032,10 +2094,12 @@ app.get("/lists", async (c) => {
   const user = c.get("user");
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   const lists = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id
+    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id,
+            (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
      FROM curated_lists
      ORDER BY updated_at DESC`
   ).all<{
+    game_count: number;
     id: string;
     slug: string;
     title: string;
@@ -2048,7 +2112,7 @@ app.get("/lists", async (c) => {
 
   const userTwitchId = await getUserTwitchId(c.env, user);
   const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }));
-  return c.html(await layout("Curated Lists of Daily Games – 0x9 dles", user, `
+  return c.html(await layout("Curated Lists of Daily Games", user, `
     <main class="narrow">
       <h1>Curated Lists</h1>
       ${isAdminEditor ? `
@@ -2067,9 +2131,10 @@ app.get("/lists", async (c) => {
         </section>
       ` : ""}
       ${visible.length > 0 ? `
-        <ul>
+        <ul class="list-index">
           ${visible
-            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${renderVerifiedBadge(row.twitch_login)} (${row.visibility})</li>`)
+            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${renderVerifiedBadge(row.twitch_login)}${row.visibility === "private" ? " <small>(private)</small>" : ""}
+              <br /><small class="muted">${row.game_count} game${row.game_count === 1 ? "" : "s"}${row.twitch_login ? ` · picked by ${escapeHtml(row.twitch_login)} on Twitch` : ""}${row.description ? ` · ${escapeHtml(row.description)}` : ""}</small></li>`)
             .join("")}
         </ul>
       ` : `<p>No curated lists yet.</p>`}
@@ -2104,7 +2169,7 @@ app.get("/lists", async (c) => {
         });
       })();
     </script>
-  `, c.env, { path: "/lists", description: "Browse curated lists of daily games.", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"]])] }));
+  `, c.env, { path: "/lists", description: "Curated lists of daily games picked by editors and Twitch streamers. See which dailies they play, then add them to your own rotation.", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"]])] }));
 });
 
 app.get("/lists/:slug", async (c) => {
@@ -2120,7 +2185,7 @@ app.get("/lists/:slug", async (c) => {
     .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null }>();
   const userTwitchId = await getUserTwitchId(c.env, user);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
-    return c.text("Not found", 404);
+    return notFoundPage(c);
   }
   // The list's tagged Twitch user can edit its games, title and description; staff can edit everything.
   const isTwitchOwner = !!list.twitch_user_id && list.twitch_user_id === userTwitchId;
@@ -2160,7 +2225,7 @@ app.get("/lists/:slug", async (c) => {
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
-      <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
+      ${canEdit ? `<p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>` : ""}
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
       ${isAdminEditor ? `
         <section class="panel">
@@ -2470,7 +2535,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env, { path: `/lists/${list.slug}`, description: list.description || `Curated list: ${list.title}`, noindex: isAdminEditor, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]])] }));
+  `, c.env, { path: `/lists/${list.slug}`, description: listMetaDescription(list, items.results), noindex: isAdminEditor || list.visibility !== "public", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]]), gameItemListLd(items.results)] }));
 });
 
 // Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
@@ -4906,7 +4971,7 @@ app.delete("/api/admin/categories/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-app.notFound((c) => c.text("Not found", 404));
+app.notFound((c) => (c.req.path.startsWith("/api/") ? c.json({ error: "Not found" }, 404) : notFoundPage(c)));
 
 app.onError((error, c) => {
   console.error(JSON.stringify({ message: error.message, stack: error.stack, requestId: c.get("requestId") }));
@@ -5154,6 +5219,14 @@ async function lookupTwitchUser(env: Env, login: string): Promise<{ id: string; 
 
 const DISCORD_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true" focusable="false"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>`;
 const TWITCH_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>`;
+
+// The list's own description when it has one; otherwise who picked it, how many games, and the first few by name.
+function listMetaDescription(list: { title: string; description: string | null; twitch_login: string | null }, items: Array<{ title: string }>): string {
+  if (list.description) return list.description;
+  const names = items.slice(0, 3).map((item) => item.title);
+  const sample = names.length > 0 ? `, including ${names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0]}` : "";
+  return `${list.title}: ${items.length} daily game${items.length === 1 ? "" : "s"}${list.twitch_login ? ` picked by ${list.twitch_login} on Twitch` : ""}${sample}.`;
+}
 
 function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
   if (!twitchLogin) {
@@ -6156,6 +6229,44 @@ function isDevEnv(env: Env): boolean {
   return appEnv === "dev" || appEnv === "development";
 }
 
+// A real page for missing games, lists, categories and URLs, so visitors (and crawlers) get somewhere to go next.
+async function notFoundPage(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): Promise<Response> {
+  return c.html(await layout("Page not found", c.get("user"), `
+    <main class="narrow">
+      <h1>Page not found</h1>
+      <p>We couldn't find that page. The game or list may have been removed, or the link may be mistyped.</p>
+      <div class="actions">
+        <a class="btn" href="/games">Browse games</a>
+        <a class="btn" href="/">Go to the home page</a>
+      </div>
+    </main>
+  `, c.env, { path: c.req.path, noindex: true }), 404);
+}
+
+// "Music" -> "Music Games", but "Logic Games" stays as is (category names are editor-chosen).
+function categoryGamesLabel(name: string): string {
+  return /\bgames$/i.test(name) ? name : `${name} Games`;
+}
+
+// "Music" -> "Music Game", "Logic Games" -> "Logic Game".
+function categoryGameLabel(name: string): string {
+  return /\bgames$/i.test(name) ? name.replace(/s$/i, "") : `${name} Game`;
+}
+
+// The games on a listing page, in order, linking to their pages on this site.
+function gameItemListLd(games: Array<{ slug: string; title: string }>, offset = 0) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: games.map((game, index) => ({
+      "@type": "ListItem",
+      position: offset + index + 1,
+      name: game.title,
+      url: `https://dailies.0x9.ca/games/${game.slug}`
+    }))
+  };
+}
+
 function breadcrumbLd(items: Array<[string, string]>) {
   return {
     "@context": "https://schema.org",
@@ -6240,6 +6351,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         "target": "https://dailies.0x9.ca/games?q={search_term_string}",
         "query-input": "required name=search_term_string"
       }
+    })}</script>
+    <script type="application/ld+json">${scriptJson({
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "0x9 dles",
+      "url": "https://dailies.0x9.ca/",
+      "logo": "https://dailies.0x9.ca/icon.png",
+      "sameAs": ["https://github.com/0x9-ca/dailies", "https://discord.gg/uRApjQJ4vh"]
     })}</script>
     ${(opts?.jsonLd ?? []).map((block) => `<script type="application/ld+json">${scriptJson(block)}</script>`).join("\n    ")}
     <style>
@@ -6544,6 +6663,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .btn-play { font-size: 1.1rem; padding: 0.8rem 1.4rem; }
       .report-panel > summary { cursor: pointer; font-weight: 700; }
       .report-panel[open] > summary { margin-bottom: 0.75rem; }
+      .game-facts { margin-top: 1.5rem; }
+      .game-facts dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.45rem 1rem; margin: 0.75rem 0 0; }
+      .game-facts dt { color: var(--muted); }
+      .game-facts dd { margin: 0; }
+      @media (max-width: 480px) { .game-facts dl { grid-template-columns: 1fr; gap: 0.15rem; } .game-facts dd { margin-bottom: 0.5rem; } }
       .related-games ul { columns: 2; padding-left: 1.2rem; }
       .related-games li { margin-bottom: 0.4rem; }
       .empty-state { text-align: center; padding: 1.5rem 1rem; border: 1px dashed var(--border); border-radius: 12px; }
@@ -6581,7 +6705,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .nav-menu-panel > a.menu-narrow-only { display: block; }
       }
       #game-results[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s; }
-      .game-count { text-align: center; color: var(--muted); font-size: 1.05rem; margin: 0.25rem 0 0.9rem; }
+      .game-count { text-align: center; color: var(--muted); font-size: 1.05rem; font-weight: 400; letter-spacing: normal; line-height: 1.5; margin: 0.25rem 0 0.9rem; }
+      .list-index li { margin-bottom: 0.7rem; }
+      .list-index .muted { color: var(--muted); }
       .game-count strong { color: var(--brand-blue); font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 0.2rem; }
       /* Big screens: larger cards and text, with the buttons in a 2x2 grid (votes left, favorite top right, details bottom right). */
       @media (min-width: 1200px) {

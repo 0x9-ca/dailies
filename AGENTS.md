@@ -45,6 +45,9 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Logged-out views of `/`, `/games`, `/games/:slug`, `/lists`, `/lists/:slug` and `/mod-log` are cached at the edge for 60s (`PUBLIC_CACHE_PATHS`, `X-Page-Cache: HIT|MISS`). Requests with a session cookie or the `dgl_voted` cookie (set after a vote) bypass it. Not in development.
 - Cards show "N% liked" (upvote share) and a live reset countdown ("Resets in 3h 12m") instead of the internal score; the score is still used for sorting.
 - Non-production environments send `X-Robots-Tag: noindex` and a `Disallow: /` robots.txt; workers.dev and preview URLs are off for staging and production.
+- Deployed environments redirect plain HTTP to HTTPS (301, or 308 for non-GET) and every response carries HSTS (not in dev), `nosniff`, `Referrer-Policy` and `frame-ancestors 'none'`/`X-Frame-Options: DENY` (first middleware in `src/index.ts`).
+- Missing pages (unknown game, list, category slug, page number past the end, unmatched route) render `notFoundPage()`, an HTML 404 with `noindex`; unmatched `/api/*` routes return JSON 404.
+- SEO data per page: game pages carry `VideoGame` JSON-LD and an "About" facts section (category descriptions, rating, public lists featuring the game, listed-since date); category and list pages carry an `ItemList` (`gameItemListLd()`); every page carries `WebSite` and `Organization`. List meta descriptions fall back to `listMetaDescription()` when a list has no description.
 
 ## Scoring
 
