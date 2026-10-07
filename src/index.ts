@@ -3683,12 +3683,15 @@ app.get("/api/games/random", async (c) => {
 
 app.post("/api/games", async (c) => {
   const user = c.get("user");
-  const submitRateKey = user
-    ? `submit:${user.id}`
-    : `submit:anon:${await getAnonymousVoteKey(c)}`;
-  const submitRate = await enforceRateLimit(c.env, submitRateKey, 10, 60 * 60);
-  if (!submitRate.ok) {
-    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: submitRate.retryAfterSeconds }, 429);
+  // Admins are trusted to add games in bulk, so only everyone else is limited (10 an hour).
+  if (user?.role !== "admin") {
+    const submitRateKey = user
+      ? `submit:${user.id}`
+      : `submit:anon:${await getAnonymousVoteKey(c)}`;
+    const submitRate = await enforceRateLimit(c.env, submitRateKey, 10, 60 * 60);
+    if (!submitRate.ok) {
+      return c.json({ error: "Rate limit exceeded", retryAfterSeconds: submitRate.retryAfterSeconds }, 429);
+    }
   }
   let body: unknown;
   try {
