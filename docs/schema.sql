@@ -124,7 +124,7 @@ CREATE TABLE games (
   reset_basis TEXT CHECK (reset_basis IN ('local', 'server')),
   reset_time_minutes INTEGER CHECK (reset_time_minutes >= 0 AND reset_time_minutes <= 1439),
   click_count INTEGER NOT NULL DEFAULT 0,
-  paywall INTEGER NOT NULL DEFAULT 0, nsfw INTEGER NOT NULL DEFAULT 0, reset_timezone TEXT,
+  paywall INTEGER NOT NULL DEFAULT 0, nsfw INTEGER NOT NULL DEFAULT 0, reset_timezone TEXT, how_to_play TEXT,
   FOREIGN KEY (submitted_by_user_id) REFERENCES users(id),
   FOREIGN KEY (approved_by_user_id) REFERENCES users(id)
 );

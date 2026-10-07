@@ -8,6 +8,7 @@ import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from 
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
+import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
 
@@ -766,7 +767,7 @@ app.get("/games/:slug", async (c) => {
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
     `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw,
-            COALESCE(approved_at, created_at) AS listed_at
+            COALESCE(approved_at, created_at) AS listed_at, how_to_play
      FROM games
      WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
   )
@@ -787,6 +788,7 @@ app.get("/games/:slug", async (c) => {
       paywall: number;
       nsfw: number;
       listed_at: string;
+      how_to_play: string | null;
     }>();
   if (!game) {
     return notFoundPage(c);
@@ -860,6 +862,7 @@ app.get("/games/:slug", async (c) => {
   const gameFacts = `
       <section class="game-facts">
         <h2>About ${escapeHtml(game.title)}</h2>
+        ${game.how_to_play ? `<h3>How to play</h3>${game.how_to_play.split(/\n\s*\n/).map((para) => `<p>${escapeHtml(para.trim()).replace(/\n/g, "<br />")}</p>`).join("")}<h3>Details</h3>` : ""}
         <p>${escapeHtml(game.title)} is a ${escapeHtml(gameKind)} that you play in your web browser, with a new puzzle every day.${game.paywall ? " It requires payment to play." : " It's free to play, with no download needed."}${game.nsfw ? " It contains NSFW content." : ""}</p>
         <dl>
           ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
@@ -877,6 +880,8 @@ app.get("/games/:slug", async (c) => {
     totalVotes > 0 ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% liked on 0x9 dles.` : ""
   ].filter((part) => part && baseDescription.length + part.length + 1 <= 160);
   const metaDescription = [baseDescription, ...extraDescription].join(" ");
+  // Changes whenever something drawn on the social image changes, so shares pick up edits.
+  const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
@@ -947,6 +952,9 @@ app.get("/games/:slug", async (c) => {
                  </label>
                  <label>Description
                    <textarea name="description" rows="3">${escapeHtml(game.description || "")}</textarea>
+                 </label>
+                 <label>How to play <small>(optional, shown on this page; blank line between paragraphs)</small>
+                   <textarea name="how_to_play" rows="5" maxlength="2000" placeholder="e.g. You get six guesses. After each one, tiles show which letters are in the answer.">${escapeHtml(game.how_to_play || "")}</textarea>
                  </label>
                  <label>Status
                    <select name="status" required>
@@ -1140,6 +1148,7 @@ app.get("/games/:slug", async (c) => {
                   reset_timezone: resetBasis === "server" && resetTimezone ? resetTimezone : null,
                   paywall: formData.has("paywall"),
                   nsfw: formData.has("nsfw"),
+                  how_to_play: String(formData.get("how_to_play") || ""),
                   category_ids: categories.map(c => String(c))
                 };
                 setAdminStatus("Saving changes...");
@@ -1205,6 +1214,7 @@ app.get("/games/:slug", async (c) => {
             }
     </script>
   `, c.env, { path: `/games/${game.slug}`, description: metaDescription,
+    image: { path: `/og/games/${encodeURIComponent(game.slug)}.png?v=${ogVersion}`, alt: `${game.title}: ${gameKind} on 0x9 dles` },
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
 
@@ -2599,6 +2609,38 @@ ${urls
 
 const IMMUTABLE_ASSET_CACHE = "public, max-age=86400";
 app.get("/og.png", (c) => c.body(OG_IMAGE_PNG, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
+
+// Per-game social image, drawn on first request and then served from the edge cache for a day. Game pages link it
+// with ?v=<hash of what's drawn> so platforms refetch after an edit; any other query string is ignored.
+app.get("/og/games/:file", async (c) => {
+  const slug = c.req.param("file").replace(/\.png$/, "");
+  const cacheKey = new Request(new URL(`/og/games/${encodeURIComponent(slug)}.png?v=${encodeURIComponent(c.req.query("v") ?? "")}`, c.req.url).toString());
+  const cached = await caches.default.match(cacheKey);
+  if (cached) return cached;
+  const game = await c.env.DB.prepare(
+    "SELECT id, title, description, paywall FROM games WHERE slug = ?1 AND status = 'approved'"
+  )
+    .bind(slug)
+    .first<{ id: string; title: string; description: string | null; paywall: number }>();
+  if (!game) return c.body(null, 404);
+  const categories = (await getCategoriesForGames(c.env, [game.id])).get(game.id) ?? [];
+  let png: Uint8Array;
+  try {
+    png = await renderGameOgPng({
+      title: game.title,
+      description: game.description,
+      categories,
+      paywall: !!game.paywall
+    });
+  } catch (error) {
+    // Never leave a share without a picture: fall back to the site-wide image (not cached, so it's retried).
+    console.error(JSON.stringify({ message: "og render failed", slug, error: String(error) }));
+    return c.body(OG_IMAGE_PNG, 200, { "Content-Type": "image/png", "Cache-Control": "public, max-age=300" });
+  }
+  const response = new Response(png, { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } });
+  c.executionCtx.waitUntil(caches.default.put(cacheKey, response.clone()));
+  return response;
+});
 app.get("/icon.png", (c) => c.body(ICON_512, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
 app.get("/icon-192.png", (c) => c.body(ICON_192, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
 app.get("/apple-touch-icon.png", (c) => c.body(ICON_180, 200, { "Content-Type": "image/png", "Cache-Control": IMMUTABLE_ASSET_CACHE }));
@@ -2639,6 +2681,69 @@ Sitemap: ${c.env.APP_URL}/sitemap.xml
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "public, max-age=3600"
   });
+});
+
+// A Markdown overview for AI assistants and answer engines (llmstxt.org): what the site is, its categories and lists,
+// and the most popular games, all linking to their pages here.
+app.get("/llms.txt", async (c) => {
+  const base = c.env.APP_URL;
+  const categories = await c.env.DB.prepare(
+    `SELECT categories.slug, categories.name, categories.description, COUNT(games.id) AS game_count
+     FROM categories
+     LEFT JOIN game_categories ON game_categories.category_id = categories.id
+     LEFT JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
+     WHERE categories.is_active = 1
+     GROUP BY categories.id
+     ORDER BY categories.name ASC`
+  ).all<{ slug: string; name: string; description: string | null; game_count: number }>();
+  const lists = await c.env.DB.prepare(
+    `SELECT slug, title, description, twitch_login, (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
+     FROM curated_lists WHERE visibility = 'public' ORDER BY title ASC`
+  ).all<{ slug: string; title: string; description: string | null; twitch_login: string | null; game_count: number }>();
+  const topGames = await listGames(c.env, { sort: "top", hideNsfw: true, limit: 30 });
+  const total = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
+  const oneLine = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+  const body = [
+    "# 0x9 dles",
+    "",
+    `> A community-run directory of ${total} daily web games ("dles"): short puzzles like Wordle that reset once a day. Visitors browse by category, vote, favorite games and build a personal daily rotation. Games are ranked by community votes.`,
+    "",
+    "Each game has its own page with a description, category, community rating, reset time when known, and a link to play it on its own site. Games marked as requiring payment or containing NSFW content are labelled.",
+    "",
+    "## Browse",
+    "",
+    `- [All daily games](${base}/games): every game, sortable by rating, newest, trending or resetting soonest`,
+    `- [Curated lists](${base}/lists): lists of games picked by editors and Twitch streamers`,
+    `- [Submit a game](${base}/submit): suggest a daily game that's missing`,
+    "",
+    "## Categories",
+    "",
+    ...categories.results
+      .filter((cat) => cat.game_count > 0)
+      .map((cat) => {
+        const description = cat.description && !cat.description.startsWith("Imported from") ? `: ${oneLine(cat.description)}` : "";
+        return `- [${cat.name}](${base}/games?category=${encodeURIComponent(cat.slug)}) (${cat.game_count} game${cat.game_count === 1 ? "" : "s"})${description}`;
+      }),
+    "",
+    ...(lists.results.length > 0
+      ? [
+          "## Curated lists",
+          "",
+          ...lists.results.map((list) => `- [${list.title}](${base}/lists/${encodeURIComponent(list.slug)}) (${list.game_count} game${list.game_count === 1 ? "" : "s"}${list.twitch_login ? `, picked by ${list.twitch_login} on Twitch` : ""})${list.description ? `: ${oneLine(list.description)}` : ""}`),
+          ""
+        ]
+      : []),
+    "## Most popular games",
+    "",
+    ...topGames.map((game) => `- [${game.title}](${base}/games/${encodeURIComponent(game.slug)})${game.description ? `: ${oneLine(game.description)}` : ""}`),
+    "",
+    "## Optional",
+    "",
+    `- [Sitemap](${base}/sitemap.xml): every game, category and list page`,
+    `- [Moderation log](${base}/mod-log): public record of games added, removed and changed`,
+    ""
+  ].join("\n");
+  return c.body(body, 200, { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "public, max-age=3600" });
 });
 
 // Admin SSR pages.
@@ -3816,6 +3921,8 @@ const adminGameUpdateSchema = z.object({
   reset_timezone: z.string().max(64).nullable().optional(),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false),
+  // Omitted keeps the stored text; null or blank clears it.
+  how_to_play: z.preprocess((value) => (typeof value === "string" ? value.trim() || null : value), z.string().max(2000).nullable().optional()),
   category_ids: z.array(z.string().uuid()).max(20)
 });
 
@@ -3869,7 +3976,8 @@ app.put("/api/games/:id/admin-update", async (c) => {
   await c.env.DB.prepare(
     `UPDATE games
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, status = ?5,
-         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, reset_timezone = ?11, updated_at = datetime('now')
+         reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, reset_timezone = ?11,
+         how_to_play = CASE WHEN ?12 = 1 THEN ?13 ELSE how_to_play END, updated_at = datetime('now')
      WHERE id = ?8`
   )
     .bind(
@@ -3883,7 +3991,9 @@ app.put("/api/games/:id/admin-update", async (c) => {
       gameId,
       parsed.data.paywall ? 1 : 0,
       parsed.data.nsfw ? 1 : 0,
-      resetTimezone.value
+      resetTimezone.value,
+      parsed.data.how_to_play === undefined ? 0 : 1,
+      parsed.data.how_to_play ?? null
     )
     .run();
 
@@ -5304,13 +5414,6 @@ async function getCategoriesForGames(
   return map;
 }
 
-function categoryHue(slug: string): number {
-  let hash = 0;
-  for (let i = 0; i < slug.length; i++) {
-    hash = (hash * 31 + slug.charCodeAt(i)) >>> 0;
-  }
-  return hash % 360;
-}
 
 function renderCategoryPills(categories: Array<{ slug: string; name: string }> | undefined): string {
   if (!categories || categories.length === 0) {
@@ -6267,6 +6370,16 @@ function gameItemListLd(games: Array<{ slug: string; title: string }>, offset = 
   };
 }
 
+// Short, stable, non-cryptographic hash (FNV-1a) for cache-busting query strings.
+function shortHash(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
+}
+
 function breadcrumbLd(items: Array<[string, string]>) {
   return {
     "@context": "https://schema.org",
@@ -6280,7 +6393,7 @@ function breadcrumbLd(items: Array<[string, string]>) {
   };
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean }): Promise<string> {
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string } }): Promise<string> {
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
@@ -6295,6 +6408,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
   const fullTitle = title.includes("0x9 dles") ? title : `${title} | 0x9 dles`;
+  const image = opts?.image ?? { path: "/og.png?v=2", alt: "0x9 dles: the best daily games, all in one place" };
   // Links that fit in the header on desktop but move into the ☰ menu on phones.
   const secondaryLinks = [
     hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : "",
@@ -6330,14 +6444,15 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="theme-color" content="#121212" />
     <meta name="apple-mobile-web-app-title" content="0x9 dles" />
     <meta property="og:site_name" content="0x9 dles" />
-    <meta property="og:image" content="https://dailies.0x9.ca/og.png?v=2" />
+    <meta property="og:image" content="https://dailies.0x9.ca${escapeHtml(image.path)}" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="0x9 dles: the best daily games, all in one place" />
+    <meta property="og:image:alt" content="${escapeHtml(image.alt)}" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://dailies.0x9.ca/og.png?v=2" />
+    <meta name="twitter:image" content="https://dailies.0x9.ca${escapeHtml(image.path)}" />
+    <meta name="twitter:image:alt" content="${escapeHtml(image.alt)}" />
     <meta name="twitter:title" content="${escapeHtml(fullTitle)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <script type="application/ld+json">${scriptJson({

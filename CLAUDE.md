@@ -69,7 +69,7 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scr
 - Page routes, then `/api/*` routes, then the `scheduled` handler (link checks, score recalculation, expired-session cleanup).
 - Rendering helpers: `layout()`, `renderCompactGameList()` (game cards), `renderDetailsLink()`, `renderGameMeta()`, `renderResetSpan()`, `getViewerGameState()`.
 - Shared client scripts (template strings injected by `layout()`): `GAME_ACTIONS_SCRIPT` (`window.dglGames`: votes, favorites, local favorites, import), `RESET_LOCALIZE_SCRIPT` (countdowns and the card reset line, refreshed every minute), `LIST_SORT_SCRIPT`.
-- `src/lib/`: `auth.ts` (sessions, role guards), `cache.ts` (KV JSON cache), `ranking.ts` (score), `url.ts` (URL canonicalisation), `assets.ts` (base64 PNGs, generated).
+- `src/lib/`: `auth.ts` (sessions, role guards), `cache.ts` (KV JSON cache), `ranking.ts` (score), `url.ts` (URL canonicalisation), `assets.ts` (base64 PNGs, generated), `og.ts` (per-game social images), `og-fonts.ts` (base64 fonts, generated).
 - `migrations/` (append-only), `docs/schema.sql` (generated), `docs/API.md`, `assets-src/` (image sources).
 
 ## Rules that matter
@@ -104,3 +104,5 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scr
 1. Edit the HTML. Render it in a headless browser at exactly 1200×630 (wait for `document.fonts.ready`; it loads Manrope from Google Fonts) and save `assets-src/og-image.png`.
 2. Replace the base64 in `OG_IMAGE_PNG`.
 3. Bump the `?v=` on the `og:image`/`twitter:image` URLs in `layout()` so social platforms refetch it.
+
+Game pages have their own image, drawn on request by `src/lib/og.ts` (no build step). Its layout uses satori's CSS subset: every element is a flex container, and there's no grid or `position: sticky`. Check a change by fetching `/og/games/<slug>.png` from `wrangler dev`. The fonts are Manrope 500/800 WOFF (satori can't read WOFF2) from `assets-src/fonts/`, base64-encoded into `src/lib/og-fonts.ts`.

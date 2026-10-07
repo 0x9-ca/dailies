@@ -13,6 +13,7 @@
     "schema:dump": "bash scripts/dump-schema.sh"
   },
   "dependencies": {
+    "@cf-wasm/og": "^0.5.0",
     "hono": "^4.6.5",
     "zod": "^3.23.8"
   },
