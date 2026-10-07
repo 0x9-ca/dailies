@@ -854,7 +854,7 @@ app.get("/games/:slug", async (c) => {
   const gameKind = mainCategory ? `daily ${categoryGameLabel(mainCategory.name).replace(/Game$/, "game")}` : "daily game";
   const totalVotes = game.vote_up_count + game.vote_down_count;
   const ratingText = totalVotes > 0
-    ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% of ${totalVotes} community vote${totalVotes === 1 ? "" : "s"} are upvotes`
+    ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% upvoted, from ${totalVotes} community vote${totalVotes === 1 ? "" : "s"}`
     : "No votes yet. Played it? Vote above.";
   // Rows from SQLite's datetime() are "YYYY-MM-DD HH:MM:SS" (UTC); rows written by the API are ISO strings.
   const listedDate = new Date(game.listed_at.includes("T") ? game.listed_at : game.listed_at.replace(" ", "T") + "Z");
@@ -867,7 +867,7 @@ app.get("/games/:slug", async (c) => {
         <p>${escapeHtml(game.title)} is a ${escapeHtml(gameKind)} that you play in your web browser, with a new puzzle every day.${game.paywall ? " It requires payment to play." : " It's free to play, with no download needed."}${game.nsfw ? " It contains NSFW content." : ""}</p>
         <dl>
           ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
-          <dt>Community rating</dt><dd>${escapeHtml(ratingText)}</dd>
+          <dt>Community rating</dt><dd data-rating>${escapeHtml(ratingText)}</dd>
           ${publicLists.results.length > 0 ? `<dt>Featured in</dt><dd>${publicLists.results.map((list) => `<a href="/lists/${encodeURIComponent(list.slug)}">${escapeHtml(list.title)}</a>`).join(", ")}</dd>` : ""}
           ${listedText ? `<dt>Listed on 0x9 dles since</dt><dd>${escapeHtml(listedText)}</dd>` : ""}
         </dl>
@@ -884,7 +884,7 @@ app.get("/games/:slug", async (c) => {
   // Changes whenever something drawn on the social image changes, so shares pick up edits.
   const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
-    <main class="narrow">
+    <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       <p>${escapeHtml(game.description || "")}</p>
@@ -893,7 +893,7 @@ app.get("/games/:slug", async (c) => {
         const resetSpan = renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long");
         return resetSpan ? `<p>${resetSpan}</p>` : "";
       })()}
-      <p>Votes: +<span id="vote-up-count">${game.vote_up_count}</span> / -<span id="vote-down-count">${game.vote_down_count}</span>${isAdminOrEditor ? ` | Reports: ${game.report_count}` : ""}</p>
+      <p>Votes: +<span id="vote-up-count" data-up-count>${game.vote_up_count}</span> / -<span id="vote-down-count" data-down-count>${game.vote_down_count}</span>${isAdminOrEditor ? ` | Reports: ${game.report_count}` : ""}</p>
       ${
         user
           ? `<section class="panel">
@@ -3654,6 +3654,33 @@ app.get("/api/games/categories", async (c) => {
 
 // Link and reset timing for a set of games, for the logged-out rotation page (its local favorites only store
 // id, slug and title): the link lets a tap on a row open the game, the reset time sorts and labels it.
+// Current up/down counts for the games on a page, polled by LIVE_VOTES in GAME_ACTIONS_SCRIPT so counts update
+// without a reload. Visitors on the same page ask for the same ids, so answers are shared via the edge cache for a
+// few seconds (one D1 read per page per colo, however many tabs are open).
+const VOTE_COUNTS_CACHE_SECONDS = 10;
+app.get("/api/games/vote-counts", async (c) => {
+  const ids = [...new Set((c.req.query("ids") || "").split(",").map((id) => id.trim()).filter((id) => /^[0-9a-f-]{36}$/.test(id)))].sort().slice(0, 98);
+  if (ids.length === 0) return c.json({ counts: {} });
+  const cacheKey = new Request(new URL(`/api/games/vote-counts?ids=${ids.join(",")}`, c.req.url).toString());
+  const useCache = !isDevEnv(c.env);
+  if (useCache) {
+    const cached = await caches.default.match(cacheKey);
+    if (cached) return new Response(cached.body, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT id, vote_up_count, vote_down_count FROM games WHERE status = 'approved' AND id IN (${ids.map((_, i) => `?${i + 1}`).join(",")})`
+  )
+    .bind(...ids)
+    .all<{ id: string; vote_up_count: number; vote_down_count: number }>();
+  const counts: Record<string, [number, number]> = {};
+  for (const row of rows.results) counts[row.id] = [row.vote_up_count, row.vote_down_count];
+  const body = JSON.stringify({ counts });
+  if (useCache) {
+    c.executionCtx.waitUntil(caches.default.put(cacheKey, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${VOTE_COUNTS_CACHE_SECONDS}` } })));
+  }
+  return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+});
+
 app.get("/api/games/rotation-info", async (c) => {
   const ids = (c.req.query("ids") || "")
     .split(",")
@@ -5919,19 +5946,20 @@ function renderDetailsLink(slug: string, title: string): string {
   return `<a class="btn-details" href="/games/${encodeURIComponent(slug)}" aria-label="${escapeHtml(`${title} details`)}" title="Details">…</a>`;
 }
 
-// Share of votes that are upvotes, e.g. "88% liked". Empty when nobody has voted yet.
+// Share of votes that are upvotes, e.g. "88% liked". Hidden (but present, so live vote updates can fill it in)
+// when nobody has voted yet. Keep in step with likedText in GAME_ACTIONS_SCRIPT.
 function renderLikedLabel(upVotes: number, downVotes: number): string {
   const total = upVotes + downVotes;
   if (total === 0) {
-    return "";
+    return `<span data-liked hidden></span>`;
   }
-  return `<span title="${upVotes} up, ${downVotes} down">${Math.round((upVotes / total) * 100)}% liked</span>`;
+  return `<span data-liked title="${upVotes} up, ${downVotes} down">${Math.round((upVotes / total) * 100)}% liked</span>`;
 }
 
-// "Score and reset" line under a game card's title.
+// "Score and reset" line under a game card's title. The " · " between visible parts comes from CSS (.meta), so a
+// part can appear or disappear without leaving a stray separator.
 function renderGameMeta(upVotes: number, downVotes: number, resetSpan: string): string {
-  const parts = [renderLikedLabel(upVotes, downVotes), resetSpan].filter(Boolean);
-  return parts.length > 0 ? `<div class="meta">${parts.join(" · ")}</div>` : "";
+  return `<div class="meta">${renderLikedLabel(upVotes, downVotes)}${resetSpan}</div>`;
 }
 
 function gameAriaLabel(game: { title: string; description: string | null; voteUpCount: number; voteDownCount: number }): string {
@@ -6392,7 +6420,12 @@ const GAME_ACTIONS_SCRIPT = `
       succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/favorite", { method: favorite ? "POST" : "DELETE" }));
     // dgl_voted makes the server render pages fresh (skipping the logged-out edge cache) so this visitor sees their votes.
     const hasVoted = () => document.cookie.split(";").some((part) => part.trim().startsWith("dgl_voted="));
+    // When this visitor last voted on each game. Live updates leave those games alone for a while, so a poll answered
+    // from before the vote (the counts endpoint is edge-cached for 10s) can't undo what they just did.
+    const recentVotes = new Map();
+    const OWN_VOTE_GRACE_MS = 30000;
     const saveVote = async (gameId, value) => {
+      recentVotes.set(gameId, Date.now());
       const ok = await succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -6402,14 +6435,90 @@ const GAME_ACTIONS_SCRIPT = `
       return ok;
     };
     const isReturningVisitor = () => hasVoted() || readLocalFavorites().length > 0;
+    // Same wording as renderLikedLabel and the game page's "Community rating" on the server.
+    const likedText = (up, down) => (up + down > 0 ? Math.round((up / (up + down)) * 100) + "% liked" : "");
+    const ratingText = (up, down) => {
+      const total = up + down;
+      return total > 0
+        ? Math.round((up / total) * 100) + "% upvoted, from " + total + " community vote" + (total === 1 ? "" : "s")
+        : "No votes yet. Played it? Vote above.";
+    };
+    // One subtle pulse on an element whose value just changed (see .count-bump in layout()).
+    const bump = (el, tone) => {
+      el.classList.remove("count-bump", "count-up", "count-down");
+      void el.offsetWidth;
+      el.classList.add("count-bump");
+      if (tone) el.classList.add(tone);
+      el.addEventListener("animationend", () => el.classList.remove("count-bump", "count-up", "count-down"), { once: true });
+    };
+    // A game's card or row ([data-game-row]) or the game page ([data-vote-counts]).
+    const voteContainer = (node) => (node instanceof Element ? node.closest("[data-game-row], [data-vote-counts]") : null);
+    // Shows up/down counts in one container (the counts, "% liked" and rating text), pulsing whatever changed.
+    const showCounts = (container, up, down) => {
+      const upNode = container.querySelector("[data-up-count]");
+      const downNode = container.querySelector("[data-down-count]");
+      if (upNode && upNode.textContent !== String(up)) { upNode.textContent = String(up); bump(upNode, "count-up"); }
+      if (downNode && downNode.textContent !== String(down)) { downNode.textContent = String(down); bump(downNode, "count-down"); }
+      const liked = container.querySelector("[data-liked]");
+      if (liked instanceof HTMLElement && liked.textContent !== likedText(up, down)) {
+        liked.textContent = likedText(up, down);
+        liked.hidden = !liked.textContent;
+        liked.title = up + " up, " + down + " down";
+        if (liked.textContent) bump(liked);
+      }
+      const rating = container.querySelector("[data-rating]");
+      if (rating instanceof HTMLElement && rating.textContent !== ratingText(up, down)) {
+        rating.textContent = ratingText(up, down);
+        bump(rating);
+      }
+    };
     // Moves one vote from fromValue to toValue (1, -1 or 0) in the displayed up/down counts.
     const shiftVoteCounts = (upNode, downNode, fromValue, toValue) => {
       if (!(upNode instanceof HTMLElement) || !(downNode instanceof HTMLElement)) return;
-      const up = Number(upNode.textContent || "0") - (fromValue === 1 ? 1 : 0) + (toValue === 1 ? 1 : 0);
-      const down = Number(downNode.textContent || "0") - (fromValue === -1 ? 1 : 0) + (toValue === -1 ? 1 : 0);
-      upNode.textContent = String(Math.max(0, up));
-      downNode.textContent = String(Math.max(0, down));
+      const up = Math.max(0, Number(upNode.textContent || "0") - (fromValue === 1 ? 1 : 0) + (toValue === 1 ? 1 : 0));
+      const down = Math.max(0, Number(downNode.textContent || "0") - (fromValue === -1 ? 1 : 0) + (toValue === -1 ? 1 : 0));
+      const container = voteContainer(upNode);
+      if (container) {
+        showCounts(container, up, down);
+      } else {
+        upNode.textContent = String(up);
+        downNode.textContent = String(down);
+      }
     };
+    // Live vote counts: every 20s while the tab is visible (and straight away when it becomes visible again), fetch
+    // the current counts for every game shown and update them in place.
+    const LIVE_VOTES_POLL_MS = 20000;
+    let livePolling = false;
+    const refreshVoteCounts = async () => {
+      if (document.visibilityState !== "visible" || livePolling) return;
+      const byId = new Map();
+      document.querySelectorAll("[data-game-row], [data-vote-counts]").forEach((container) => {
+        const id = container.getAttribute("data-game-row") || container.getAttribute("data-vote-counts");
+        if (!id || !container.querySelector("[data-up-count], [data-liked], [data-rating]")) return;
+        if (!byId.has(id)) byId.set(id, []);
+        byId.get(id).push(container);
+      });
+      if (byId.size === 0) return;
+      livePolling = true;
+      try {
+        const ids = [...byId.keys()].sort();
+        for (let i = 0; i < ids.length; i += 98) {
+          const response = await fetch("/api/games/vote-counts?ids=" + ids.slice(i, i + 98).join(","));
+          if (!response.ok) return;
+          const counts = (await response.json()).counts || {};
+          for (const [id, pair] of Object.entries(counts)) {
+            if (Date.now() - (recentVotes.get(id) || 0) < OWN_VOTE_GRACE_MS) continue;
+            for (const container of byId.get(id) || []) showCounts(container, Number(pair[0]), Number(pair[1]));
+          }
+        }
+      } catch {
+        // Offline or the request failed: try again next time.
+      } finally {
+        livePolling = false;
+      }
+    };
+    document.addEventListener("DOMContentLoaded", () => window.setInterval(refreshVoteCounts, LIVE_VOTES_POLL_MS));
+    document.addEventListener("visibilitychange", refreshVoteCounts);
     // Copies local favorites into the signed-in account and clears them locally. Returns "empty", "failed" or "imported".
     const importLocalFavorites = async () => {
       const ids = [...new Set(readLocalFavorites().map((row) => row.id))];
@@ -6423,7 +6532,7 @@ const GAME_ACTIONS_SCRIPT = `
       window.localStorage.removeItem(FAVORITES_KEY);
       return "imported";
     };
-    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, importLocalFavorites, isReturningVisitor };
+    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, refreshVoteCounts, importLocalFavorites, isReturningVisitor };
   })();
 `;
 
@@ -6666,6 +6775,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --header-bg: rgba(18, 18, 18, 0.85);
         --on-accent: #121212;
         --brand-blue: #00a4fc;
+        --vote-up-flash: #4ade80;
+        --vote-down-flash: #f87171;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
       }
@@ -6683,6 +6794,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --header-bg: rgba(245, 245, 247, 0.85);
         --on-accent: #ffffff;
         --brand-blue: #0077c2;
+        --vote-up-flash: #15803d;
+        --vote-down-flash: #b91c1c;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
       }
@@ -6812,6 +6925,20 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
+      .meta > :not([hidden]) ~ :not([hidden])::before { content: "·"; margin: 0 0.4em; }
+      .meta:not(:has(> :not([hidden]))) { display: none; }
+      /* A vote count or rating that just changed (live update or the viewer's own vote) pulses once. */
+      .count-bump { display: inline-block; animation: count-bump 0.7s ease-out; }
+      .count-bump.count-up { --bump-color: var(--vote-up-flash); }
+      .count-bump.count-down { --bump-color: var(--vote-down-flash); }
+      @keyframes count-bump {
+        0% { transform: scale(1); color: inherit; }
+        25% { transform: scale(1.3); color: var(--bump-color, var(--brand-blue)); }
+        100% { transform: scale(1); color: inherit; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        @keyframes count-bump { 0%, 100% { color: inherit; } 25% { color: var(--bump-color, var(--brand-blue)); } }
+      }
       .game-row .compact-actions { display: flex; gap: 0.3rem; align-items: center; flex-shrink: 0; }
       .btn-details {
         display: inline-flex;
