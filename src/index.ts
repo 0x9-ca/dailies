@@ -246,7 +246,7 @@ app.get("/login", async (c) => {
           <p style="max-width:22rem;margin:0.5rem 0 0;font-size:0.85rem;text-align:center;">We only receive your account ID and username (and, for Discord, your roles in our server). We never see your password or email, and we don't keep access to your account after you sign in.</p>
       </div>
     </main>
-  `, c.env, { path: "/login", description: "Sign in to Dailies to save your rotation and manage curated lists." }));
+  `, c.env, { path: "/login", description: "Sign in to 0x9 dles to save your rotation and manage curated lists." }));
 });
 app.get("/", async (c) => {
   const user = c.get("user");
@@ -260,9 +260,9 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
-  return c.html(await layout("Dailies (dles) – Find the Best Daily Games", user, `
+  return c.html(await layout("0x9 dles – Find the Best Daily Games", user, `
     <main>
-      ${user ? "" : `<p class="intro" id="home-intro">Dailies collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
+      ${user ? "" : `<p class="intro" id="home-intro">0x9 dles collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
       <script>
         // Returning visitors (anyone who has favorited or voted) don't need the introduction.
         if (window.dglGames.isReturningVisitor()) document.getElementById("home-intro").hidden = true;
@@ -295,12 +295,12 @@ app.get("/", async (c) => {
         </section>
       </div>
       <section>
-        <h1>Dailies (dles) &mdash; Daily Games Hub</h1>
-        <p>Dailies, aka dles, is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
+        <h1>0x9 dles &mdash; Daily Games Hub</h1>
+        <p>0x9 dles is a hub for daily games: browse, vote on, and favorite the best dailies.</p>
       </section>
       <section class="about">
-        <h2>About Dailies</h2>
-        <p>A daily game (or "dle") is a short puzzle that resets once a day, usually with the same challenge for every player. Wordle started the trend, and now there are hundreds of them covering words, geography, movies, music, logic, math and more. Dailies is a community-run directory that keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
+        <h2>About 0x9 dles</h2>
+        <p>A daily game (or "dle") is a short puzzle that resets once a day, usually with the same challenge for every player. Wordle started the trend, and now there are hundreds of them covering words, geography, movies, music, logic, math and more. 0x9 dles is a community-run directory that keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
         <h3>How games are ranked</h3>
         <p>Every game has a community score based on up and down votes, so a game with a few votes can't outrank one that many people like. Newer games get a small freshness boost, and games that are frequently reported or whose links stop working are ranked lower. Anyone can vote, with or without an account.</p>
         <h3>Build your daily rotation</h3>
@@ -328,7 +328,7 @@ app.get("/", async (c) => {
       });
     </script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
-  `, c.env, { path: "/", description: "Dailies (dles) is a hub for daily games. Browse, vote on, and favorite the best daily games, curated by the community." }));
+  `, c.env, { path: "/", description: "0x9 dles is a hub for daily games. Browse, vote on, and favorite the best daily games, curated by the community." }));
 });
 
 app.get("/submit", async (c) => {
@@ -468,7 +468,7 @@ app.get("/mod-log", async (c) => {
          ${hasNext ? `<a href="/mod-log?page=${page + 1}">Older &rarr;</a>` : ""}
        </div>`
     : "";
-  return c.html(await layout("Mod Log | Dailies (dles)", user, `
+  return c.html(await layout("Mod Log | 0x9 dles", user, `
     <main class="narrow">
       <h1>Mod Log</h1>
       <p>A public record of games being approved, denied, hidden, restored, or deleted, and of NSFW and paywall label changes. Newest first.${showActor ? " <em>Editors and admins can also see who made each change.</em>" : ""}</p>
@@ -491,7 +491,7 @@ app.get("/mod-log", async (c) => {
         if (!Number.isNaN(d.getTime())) el.textContent = d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
       });
     </script>
-  `, c.env, { path: "/mod-log", description: "A public log of moderation changes to games on Dailies (dles)." }));
+  `, c.env, { path: "/mod-log", description: "A public log of moderation changes to games on 0x9 dles." }));
 });
 
 app.get("/games", async (c) => {
@@ -582,7 +582,7 @@ app.get("/games", async (c) => {
   }
 
   const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
-  const pageTitle = activeCategory ? `Daily ${activeCategory.name} – Dailies (dles)` : "All Daily Games – Dailies (dles)";
+  const pageTitle = activeCategory ? `Daily ${activeCategory.name} – 0x9 dles` : "All Daily Games – 0x9 dles";
   const categoryPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
   // Later pages list different games, so each is its own canonical page (the sort order is not).
   const canonicalPath = page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
@@ -637,7 +637,7 @@ app.get("/games", async (c) => {
   `, c.env, {
     path: canonicalPath,
     description: activeCategory
-      ? `Browse ${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes. Find your next daily puzzle on Dailies (dles).`
+      ? `Browse ${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes. Find your next daily puzzle on 0x9 dles.`
       : "Browse all daily games. Filter by category, sort by score, trending, or newest.",
     jsonLd: [breadcrumbLd(crumbs)],
     noindex: !!q || hidePaywall || hideNsfw
@@ -719,7 +719,7 @@ app.get("/games/:slug", async (c) => {
     isAccessibleForFree: !game.paywall,
     ...(categories.results.length > 0 ? { genre: categories.results.map((cat) => cat.name) } : {})
   };
-  return c.html(await layout(`${game.title} – Daily Game | Dailies (dles)`, user, `
+  return c.html(await layout(`${game.title} – Daily Game | 0x9 dles`, user, `
     <main class="narrow">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
@@ -1045,7 +1045,7 @@ app.get("/games/:slug", async (c) => {
               });
             }
     </script>
-  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on Dailies. Vote, favorite, and add to your rotation.`,
+  `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on 0x9 dles. Vote, favorite, and add to your rotation.`,
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
 
@@ -1901,7 +1901,7 @@ app.get("/lists", async (c) => {
 
   const userTwitchId = await getUserTwitchId(c.env, user);
   const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }));
-  return c.html(await layout("Curated Lists of Daily Games – Dailies (dles)", user, `
+  return c.html(await layout("Curated Lists of Daily Games – 0x9 dles", user, `
     <main class="narrow">
       <h1>Curated Lists</h1>
       ${isAdminEditor ? `
@@ -2006,7 +2006,7 @@ app.get("/lists/:slug", async (c) => {
     adminGames = games.results;
   }
 
-  return c.html(await layout(`${list.title} – Daily Game List | Dailies (dles)`, user, `
+  return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="Opens Twitch in a new tab">${TWITCH_ICON_SVG}Watch ${escapeHtml(list.twitch_login)} on Twitch<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
@@ -5303,7 +5303,7 @@ async function notifyNewSubmission(
   try {
     await env.EMAIL.send({
       to: env.NOTIFY_EMAIL_TO,
-      from: { email: env.NOTIFY_EMAIL_FROM, name: "Dailies" },
+      from: { email: env.NOTIFY_EMAIL_FROM, name: "0x9 dles" },
       subject: `${prefix}New game submitted: ${oneLine(game.title).slice(0, 120)}`,
       text: lines.join("\n"),
       html
@@ -5985,7 +5985,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   }
   const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
-  const fullTitle = title.includes("Dailies") ? title : `${title} | Dailies (dles)`;
+  const fullTitle = title.includes("0x9 dles") ? title : `${title} | 0x9 dles`;
   // Links that fit in the header on desktop but move into the ☰ menu on phones.
   const secondaryLinks = [
     hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : "",
@@ -6020,21 +6020,21 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#121212" />
     <meta name="apple-mobile-web-app-title" content="0x9 dles" />
-    <meta property="og:site_name" content="Dailies (dles)" />
-    <meta property="og:image" content="https://dailies.0x9.ca/og.png" />
+    <meta property="og:site_name" content="0x9 dles" />
+    <meta property="og:image" content="https://dailies.0x9.ca/og.png?v=2" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Dailies (dles) - a hub for daily games" />
+    <meta property="og:image:alt" content="0x9 dles: the best daily games, all in one place" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:image" content="https://dailies.0x9.ca/og.png" />
+    <meta name="twitter:image" content="https://dailies.0x9.ca/og.png?v=2" />
     <meta name="twitter:title" content="${escapeHtml(fullTitle)}" />
     <meta name="twitter:description" content="${escapeHtml(description)}" />
     <script type="application/ld+json">${scriptJson({
       "@context": "https://schema.org",
       "@type": "WebSite",
-      "name": "Dailies (dles)",
+      "name": "0x9 dles",
       "url": "https://dailies.0x9.ca/",
       "description": "A comprehensive directory and hub for discovering, voting on, and tracking daily web games.",
       "potentialAction": {
