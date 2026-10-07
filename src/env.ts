@@ -1,3 +1,5 @@
+import type { AnnouncementScheduler } from "./index";
+
 export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
@@ -18,6 +20,8 @@ export interface Env {
   DISCORD_NEW_GAME_WEBHOOK_URL?: string;
   /** Role pinged by new-game announcements (@Dle Enjoyer). */
   DISCORD_ROLE_DLE_ENJOYER?: string;
+  /** Durable Object that times batched new-game announcements (see AnnouncementScheduler). */
+  ANNOUNCER: DurableObjectNamespace<AnnouncementScheduler>;
   SESSION_SECRET: string;
 }
 

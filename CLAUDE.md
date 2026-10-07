@@ -66,7 +66,7 @@ npx wrangler dev --ip 127.0.0.1 --port 8799 --persist-to $P --var APP_URL:http:/
 Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scripts, CSS in `layout()`):
 
 - Top of file: middleware (noindex for non-production, edge cache, CSRF), OAuth routes and helpers (`beginOAuth`, `readOAuthCallback`, `exchangeOAuthCode`, `revokeOAuthToken`, `upsertOAuthUser`).
-- Page routes, then `/api/*` routes, then the `scheduled` handler (daily: link checks, score recalculation, expired-session cleanup; every minute: Discord announcement queue).
+- Page routes, then `/api/*` routes, then the `scheduled` handler (daily: link checks, score recalculation, expired-session cleanup, leftover Discord announcements) and the `AnnouncementScheduler` Durable Object (alarm that sends batched Discord announcements).
 - Rendering helpers: `layout()`, `renderCompactGameList()` (game cards), `renderDetailsLink()`, `renderGameMeta()`, `renderResetSpan()`, `getViewerGameState()`.
 - Shared client scripts (template strings injected by `layout()`): `GAME_ACTIONS_SCRIPT` (`window.dglGames`: votes, favorites, local favorites, import), `RESET_LOCALIZE_SCRIPT` (countdowns and the card reset line, refreshed every minute), `LIST_SORT_SCRIPT`.
 - `src/lib/`: `auth.ts` (sessions, role guards), `cache.ts` (KV JSON cache), `ranking.ts` (score), `url.ts` (URL canonicalisation), `assets.ts` (base64 PNGs, generated), `og.ts` (per-game social images), `og-fonts.ts` (base64 fonts, generated).

@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -5100,15 +5101,41 @@ app.onError((error, c) => {
 
 export default {
   fetch: app.fetch,
-  scheduled: async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
-    if (event.cron === ANNOUNCEMENT_CRON) {
-      ctx.waitUntil(flushAnnouncementQueue(env));
-      return;
-    }
+  scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runLinkChecks(env));
     ctx.waitUntil(recalculateAllScores(env));
+    // Backstop: anything the announcement alarm somehow left in the queue goes out with the daily run.
+    ctx.waitUntil(flushAnnouncementQueue(env));
   }
 };
+
+/**
+ * Times new-game announcements (one instance, "new-games"). Every queued approval pushes the alarm back to
+ * ANNOUNCEMENT_QUIET_MS from now, capped at ANNOUNCEMENT_MAX_WAIT_MS after the first game of the batch, so a run of
+ * approvals goes out as one message a few minutes after the last one. The queue itself lives in D1
+ * (announcement_queue); this object only holds the timer. (A per-minute cron was tried first and never fired.)
+ */
+export class AnnouncementScheduler extends DurableObject<Env> {
+  async schedule(): Promise<void> {
+    const now = Date.now();
+    let batchStart = await this.ctx.storage.get<number>("batchStart");
+    if (batchStart === undefined) {
+      batchStart = now;
+      await this.ctx.storage.put("batchStart", batchStart);
+    }
+    await this.ctx.storage.setAlarm(Math.min(now + ANNOUNCEMENT_QUIET_MS, batchStart + ANNOUNCEMENT_MAX_WAIT_MS));
+  }
+
+  async alarm(): Promise<void> {
+    const result = await flushAnnouncementQueue(this.env);
+    if (result === "empty") {
+      await this.ctx.storage.delete("batchStart");
+    } else {
+      // "more": the queue held over 90 games, send the rest shortly. "retry": Discord failed, try again in a minute.
+      await this.ctx.storage.setAlarm(Date.now() + (result === "more" ? 5_000 : 60_000));
+    }
+  }
+}
 
 // Max games checked per scheduled run (oldest-checked first). Each check costs up to 2 fetches + 1 D1 call,
 // so this keeps a run under the Worker subrequest limit instead of silently failing the tail of the list.
@@ -5661,40 +5688,34 @@ async function logGameEvents(
   return newlyApproved;
 }
 
-// New-game announcements are batched: approvals queue the game, and this every-minute cron (wrangler.jsonc) posts the
-// queue as one message once no game has been queued for ANNOUNCEMENT_QUIET_MINUTES, or once the oldest has waited
-// ANNOUNCEMENT_MAX_WAIT_MINUTES, so a long run of approvals still goes out regularly.
-const ANNOUNCEMENT_CRON = "* * * * *";
-const ANNOUNCEMENT_QUIET_MINUTES = 3;
-const ANNOUNCEMENT_MAX_WAIT_MINUTES = 15;
+// New-game announcements are batched: approvals queue the game and set the AnnouncementScheduler alarm, which posts
+// the whole queue as one message 3 minutes after the last approval (at most 15 minutes after the first).
+const ANNOUNCEMENT_QUIET_MS = 3 * 60 * 1000;
+const ANNOUNCEMENT_MAX_WAIT_MS = 15 * 60 * 1000;
 
 async function queueNewGameAnnouncements(env: Env, gameIds: string[]): Promise<void> {
   // Without a webhook (staging, dev) nothing would ever send them, so don't let the queue grow.
   if (!env.DISCORD_NEW_GAME_WEBHOOK_URL || !env.DISCORD_ROLE_DLE_ENJOYER || gameIds.length === 0) return;
   const insert = env.DB.prepare("INSERT OR IGNORE INTO announcement_queue (game_id) VALUES (?1)");
   await env.DB.batch([...new Set(gameIds)].map((id) => insert.bind(id)));
+  await env.ANNOUNCER.get(env.ANNOUNCER.idFromName("new-games")).schedule();
 }
 
-async function flushAnnouncementQueue(env: Env): Promise<void> {
-  const age = await env.DB.prepare(
-    `SELECT COUNT(*) AS n,
-            (julianday('now') - julianday(MAX(queued_at))) * 1440 AS newest_minutes,
-            (julianday('now') - julianday(MIN(queued_at))) * 1440 AS oldest_minutes
-     FROM announcement_queue`
-  ).first<{ n: number; newest_minutes: number | null; oldest_minutes: number | null }>();
-  if (!age || age.n === 0) return;
-  if ((age.newest_minutes ?? 0) < ANNOUNCEMENT_QUIET_MINUTES && (age.oldest_minutes ?? 0) < ANNOUNCEMENT_MAX_WAIT_MINUTES) return;
-  // announceNewGames reads at most 90 ids at a time (D1's bind limit); anything beyond goes out on the next run.
-  const queued = await env.DB.prepare("SELECT game_id FROM announcement_queue ORDER BY queued_at LIMIT 90").all<{ game_id: string }>();
-  const ids = queued.results.map((row) => row.game_id);
+/** Sends up to 90 queued games (D1's bind limit) as one announcement. */
+async function flushAnnouncementQueue(env: Env): Promise<"empty" | "more" | "retry"> {
+  const queued = await env.DB.prepare("SELECT game_id FROM announcement_queue ORDER BY queued_at LIMIT 91").all<{ game_id: string }>();
+  if (queued.results.length === 0) return "empty";
+  const ids = queued.results.slice(0, 90).map((row) => row.game_id);
   const sent = await announceNewGames(env, ids);
-  const placeholders = ids.map((_, i) => `?${i + 1}`).join(",");
-  if (sent) {
-    await env.DB.prepare(`DELETE FROM announcement_queue WHERE game_id IN (${placeholders})`).bind(...ids).run();
-  } else {
-    // Keep them for the next minute's retry, but give up on anything Discord has refused for an hour.
-    await env.DB.prepare("DELETE FROM announcement_queue WHERE queued_at < datetime('now', '-60 minutes')").run();
+  if (!sent) {
+    // Keep them for a retry, but give up on anything Discord has refused for an hour.
+    const dropped = await env.DB.prepare("DELETE FROM announcement_queue WHERE queued_at < datetime('now', '-60 minutes')").run();
+    const remaining = await env.DB.prepare("SELECT COUNT(*) AS n FROM announcement_queue").first<{ n: number }>();
+    if (dropped.meta.changes > 0) console.error(JSON.stringify({ message: "discord announcements dropped after an hour", count: dropped.meta.changes }));
+    return (remaining?.n ?? 0) > 0 ? "retry" : "empty";
   }
+  await env.DB.prepare(`DELETE FROM announcement_queue WHERE game_id IN (${ids.map((_, i) => `?${i + 1}`).join(",")})`).bind(...ids).run();
+  return queued.results.length > 90 ? "more" : "empty";
 }
 
 /**

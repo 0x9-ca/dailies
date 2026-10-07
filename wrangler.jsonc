@@ -44,8 +44,7 @@
   },
   "triggers": {
     "crons": [
-      "15 8 * * *",
-      "* * * * *"
+      "15 8 * * *"
     ]
   },
   "env": {
@@ -84,7 +83,23 @@
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908",
         "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
-      }
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ANNOUNCER",
+            "class_name": "AnnouncementScheduler"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "AnnouncementScheduler"
+          ]
+        }
+      ]
     },
     "production": {
       "name": "daily-game-list-production",
@@ -121,7 +136,39 @@
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908",
         "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
-      }
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ANNOUNCER",
+            "class_name": "AnnouncementScheduler"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": [
+            "AnnouncementScheduler"
+          ]
+        }
+      ]
     }
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ANNOUNCER",
+        "class_name": "AnnouncementScheduler"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AnnouncementScheduler"
+      ]
+    }
+  ]
 }
