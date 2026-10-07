@@ -235,11 +235,11 @@ app.get("/login", async (c) => {
     </style>
     <main>
       <div style="display:flex;flex-direction:column;gap:0.75rem;align-items:stretch;">
-          <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;gap:0.5rem;text-decoration:none;">
+          <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
             <svg width="20" height="20" viewBox="0 0 127.14 96.36" fill="currentColor" aria-hidden="true" focusable="false"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>
             Login using Discord
           </a>
-          ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;gap:0.5rem;text-decoration:none;">
+          ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>
             Login using Twitch
           </a>` : ""}
@@ -266,7 +266,7 @@ app.get("/", async (c) => {
         // Returning visitors (anyone who has favorited or voted) don't need the introduction.
         if (window.dglGames.isReturningVisitor()) document.getElementById("home-intro").hidden = true;
       </script>`}
-      <div class="actions">
+      <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
       </div>
@@ -6092,16 +6092,26 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .hero p { color: var(--muted); }
       .about { margin-top: 2rem; }
       .about p { color: var(--muted); max-width: 70ch; line-height: 1.6; }
+      /* Shared by links and <button>s, so both get the same font, height and text position. */
       .btn {
-        display: inline-block;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
         padding: 0.55rem 0.9rem;
+        border: 1px solid transparent;
         border-radius: 9px;
         background: var(--accent);
         color: var(--on-accent);
+        font: inherit;
         font-weight: 700;
+        line-height: 1.25;
         text-decoration: none;
+        cursor: pointer;
       }
-      ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+      /* Two equal-width buttons side by side, centred; stacked only on very narrow phones where they can't fit. */
+      .actions.home-actions { display: grid; grid-template-columns: 1fr 1fr; max-width: 460px; margin-left: auto; margin-right: auto; }
+      .home-actions .btn { min-width: 0; white-space: nowrap; }
+      ul.games { list-style:none; padding:0; display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); }
       ul.games li { display:flex; background: var(--card); border:1px solid var(--border); border-radius:12px; padding:0.8rem; box-shadow: var(--shadow); }
       ul.games.compact { gap: 0.6rem; }
       ul.games.compact li { padding: 0.65rem 0.75rem; border-radius: 10px; }
@@ -6281,12 +6291,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .compact-actions button::after, .compact-actions .btn-details::after, .card-actions button::after, .card-actions .btn-details::after { content: ""; position: absolute; inset: -9px -2px; }
         .compact-actions, .card-actions { gap: 0.3rem; }
         .actions button, .actions .btn { min-height: 44px; }
+        .home-actions .btn { font-size: 0.85rem; padding: 0.55rem 0.3rem; }
         .btn-play { display: block; text-align: center; }
         .related-games ul { columns: 1; }
         .filters > summary { display: list-item; cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
         .filters-body select { flex: 1 1 45%; }
       }
       /* Narrow phones: Submit moves from the header row into the menu so the row never overlaps. */
+      @media (max-width: 369px) {
+        .actions.home-actions { grid-template-columns: 1fr; max-width: 260px; }
+      }
       @media (max-width: 400px) {
         .site-nav a[href="/submit"] { display: none; }
         .nav-menu-panel > a.menu-narrow-only { display: block; }
