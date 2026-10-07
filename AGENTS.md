@@ -28,7 +28,7 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Cookie sessions (`SESSION_SECRET` hashed session tokens in D1)
 - Role checks (`user`, `editor`, `admin`)
 - CSRF enforcement on mutating `/api/*` requests with double-submit cookie (`csrf_token` + `x-csrf-token`)
-- D1-backed fixed-window rate limiting for submit/vote/report
+- D1-backed fixed-window rate limiting for submit/vote/report (submissions: 10/hour per user or anonymous visitor; admins are exempt)
 
 ## Key behaviors
 
