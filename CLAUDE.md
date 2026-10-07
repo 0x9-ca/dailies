@@ -87,6 +87,7 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scr
 **UI conventions**
 - Game cards and rows are tappable: container `card-click`, game-name link `card-link` (its `::after` covers the card). Other controls inside (buttons, `.btn-details`, `.category-pill`, `.drag`) must stay above it via the `.card-click` CSS. Don't use it on rows dragged as a whole (list edit mode).
 - Game names use `.game-title`. Links to a game's page use `renderDetailsLink()`, a real `<a>` so crawlers can follow it.
+- Page routes return `notFoundPage(c)` for missing content, never `c.text("Not found", 404)` (that leaves visitors on a bare text page and Google sees a soft 404).
 - Text and list pages use `<main class="narrow">`. Grid pages use the full 1200px.
 - Phones: small buttons in cards get an invisible ≥44px tap area (`::after` with negative inset), not a bigger visual size. Test at 320–430px widths. The header moves Submit into the ☰ menu at ≤400px.
 - Colours are CSS variables in `layout()` with dark (default) and `html[data-theme="light"]` values. Add both when adding a colour.
