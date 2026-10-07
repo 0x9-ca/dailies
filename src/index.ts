@@ -2748,6 +2748,18 @@ app.get("/llms.txt", async (c) => {
 });
 
 // Admin SSR pages.
+// Staff opening the admin pages also restarts announcements that are queued without a timer (e.g. queued before the
+// alarm existed, or an alarm lost to an outage), so they never wait for the daily backstop.
+for (const path of ["/admin", "/admin/*"]) {
+  app.use(path, async (c, next) => {
+    const user = c.get("user");
+    if (c.req.method === "GET" && user && (user.role === "admin" || user.role === "editor")) {
+      c.executionCtx.waitUntil(resumeQueuedAnnouncements(c.env));
+    }
+    await next();
+  });
+}
+
 app.get("/admin", async (c) => {
   const auth = requireRole(c, ["editor", "admin"]);
   if (auth instanceof Response) {
@@ -5126,6 +5138,11 @@ export class AnnouncementScheduler extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Math.min(now + ANNOUNCEMENT_QUIET_MS, batchStart + ANNOUNCEMENT_MAX_WAIT_MS));
   }
 
+  /** Starts the timer only if none is pending, so it never delays a batch that is already counting down. */
+  async ensureScheduled(): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) await this.schedule();
+  }
+
   async alarm(): Promise<void> {
     const result = await flushAnnouncementQueue(this.env);
     if (result === "empty") {
@@ -5699,6 +5716,16 @@ async function queueNewGameAnnouncements(env: Env, gameIds: string[]): Promise<v
   const insert = env.DB.prepare("INSERT OR IGNORE INTO announcement_queue (game_id) VALUES (?1)");
   await env.DB.batch([...new Set(gameIds)].map((id) => insert.bind(id)));
   await env.ANNOUNCER.get(env.ANNOUNCER.idFromName("new-games")).schedule();
+}
+
+async function resumeQueuedAnnouncements(env: Env): Promise<void> {
+  if (!env.DISCORD_NEW_GAME_WEBHOOK_URL || !env.DISCORD_ROLE_DLE_ENJOYER) return;
+  try {
+    const queued = await env.DB.prepare("SELECT 1 FROM announcement_queue LIMIT 1").first();
+    if (queued) await env.ANNOUNCER.get(env.ANNOUNCER.idFromName("new-games")).ensureScheduled();
+  } catch (error) {
+    console.error(JSON.stringify({ message: "resume announcements failed", error: String(error) }));
+  }
 }
 
 /** Sends up to 90 queued games (D1's bind limit) as one announcement. */
