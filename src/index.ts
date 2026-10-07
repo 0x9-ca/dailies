@@ -2282,7 +2282,7 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      ${!isAdminEditor && items.results.length > 1 ? renderListSortControl() : ""}
+      ${!isAdminEditor && items.results.length > 1 ? renderListSortControl({ votes: true }) : ""}
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
@@ -2318,9 +2318,64 @@ app.get("/lists/:slug", async (c) => {
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
     </main>
-    ${!isAdminEditor && items.results.length > 1 ? `<script>
+    ${!isAdminEditor ? `<script>
       ${LIST_SORT_SCRIPT}
-      window.dglListSort.init(document.getElementById("list-items"), document.getElementById("list-sort-select"));
+      (() => {
+        const list = document.getElementById("list-items");
+        if (!list) return;
+        const sorter = window.dglListSort.init(list, document.getElementById("list-sort-select"));
+        const rows = () => Array.from(list.children).filter((li) => li.getAttribute("data-game-id"));
+        // The list's own (manual) order, as last rendered.
+        let manualIds = rows().map((li) => li.getAttribute("data-game-id"));
+        if (list.querySelector("li[data-default-index]")) {
+          manualIds = rows().sort((a, b) => Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex)).map((li) => li.getAttribute("data-game-id"));
+        }
+        // Live updates: when an editor adds, removes or reorders games, update this page in place. The list is
+        // checked every 30s while the tab is visible; on a change the new rows come from a fresh render of this page.
+        let checking = false;
+        const check = async () => {
+          if (document.visibilityState !== "visible" || checking) return;
+          checking = true;
+          try {
+            const response = await fetch("/api/lists/" + encodeURIComponent(${scriptJson(list.slug)}), { cache: "no-store" });
+            if (!response.ok) return;
+            const ids = ((await response.json()).items || []).map((item) => item.id);
+            if (ids.join(",") === manualIds.join(",")) return;
+            // A unique query string skips the edge page cache, which can be up to a minute behind the API.
+            const page = await fetch(window.location.pathname + "?live=" + Date.now(), { cache: "no-store" });
+            if (!page.ok) return;
+            const doc = new DOMParser().parseFromString(await page.text(), "text/html");
+            const fresh = new Map(Array.from(doc.querySelectorAll("#list-items > li[data-game-id]")).map((li) => [li.getAttribute("data-game-id"), li]));
+            if (!ids.every((id) => fresh.has(id))) return;
+            const current = new Map(rows().map((li) => [li.getAttribute("data-game-id"), li]));
+            const removed = [...current.keys()].filter((id) => !ids.includes(id));
+            removed.forEach((id) => current.get(id).classList.add("row-leave"));
+            const added = new Map();
+            const incoming = document.createDocumentFragment();
+            ids.filter((id) => !current.has(id)).forEach((id) => {
+              const li = document.importNode(fresh.get(id), true);
+              li.classList.add("row-enter");
+              li.addEventListener("animationend", () => li.classList.remove("row-enter"), { once: true });
+              added.set(id, li);
+              incoming.appendChild(li);
+            });
+            window.dglBindGameRows?.(incoming);
+            window.dglLocalizeResets?.(incoming);
+            window.setTimeout(() => {
+              removed.forEach((id) => current.get(id).remove());
+              ids.forEach((id) => list.appendChild(current.get(id) || added.get(id)));
+              sorter.refresh();
+              manualIds = ids;
+            }, removed.length > 0 ? 350 : 0);
+          } catch {
+            // Offline or a failed request: try again next time.
+          } finally {
+            checking = false;
+          }
+        };
+        window.setInterval(check, 30000);
+        document.addEventListener("visibilitychange", check);
+      })();
     </script>` : ""}
     ${!isAdminEditor ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
     ${isAdminEditor ? `
@@ -6602,8 +6657,9 @@ const APP_UPDATE_SCRIPT = `
 const LIST_SORT_SCRIPT = `
   window.dglListSort = (() => {
     const KEY = "dgl_list_sort_v1";
+    // The saved choice is shared by every list; a page without that option (rotations have no vote counts) uses default.
     const readMode = () => {
-      try { return window.localStorage.getItem(KEY) === "reset" ? "reset" : "default"; } catch { return "default"; }
+      try { return window.localStorage.getItem(KEY) || "default"; } catch { return "default"; }
     };
     const writeMode = (mode) => {
       try { window.localStorage.setItem(KEY, mode); } catch {}
@@ -6615,20 +6671,36 @@ const LIST_SORT_SCRIPT = `
       const current = kind === "utc" ? now.getUTCHours() * 60 + now.getUTCMinutes() : now.getHours() * 60 + now.getMinutes();
       return (((min - current) % 1440) + 1440) % 1440;
     };
+    // Vote counts as currently shown in the row (live updates included).
+    const votes = (li) => ({
+      up: Number(li.querySelector("[data-up-count]")?.textContent || "0"),
+      down: Number(li.querySelector("[data-down-count]")?.textContent || "0")
+    });
+    // Share of upvotes; games nobody has voted on go last.
+    const upvoteShare = (v) => (v.up + v.down > 0 ? v.up / (v.up + v.down) : -1);
     const init = (list, select) => {
       if (!list || !select) return { refresh() {}, apply() {} };
       const items = () => Array.from(list.children).filter((el) => el.tagName === "LI" && el.hasAttribute("data-game-id"));
       const apply = () => {
-        const mode = select.value === "reset" ? "reset" : "default";
+        const mode = select.value;
         const now = new Date();
         list.classList.toggle("sorted-by-reset", mode === "reset");
         const sorted = items().sort((a, b) => {
           const indexDiff = Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex);
-          if (mode !== "reset") return indexDiff;
-          const ua = minutesUntilReset(a, now);
-          const ub = minutesUntilReset(b, now);
-          if (ua === ub) return indexDiff;
-          return ua < ub ? -1 : 1;
+          if (mode === "reset") {
+            const ua = minutesUntilReset(a, now);
+            const ub = minutesUntilReset(b, now);
+            return ua === ub ? indexDiff : ua < ub ? -1 : 1;
+          }
+          if (mode === "liked" || mode === "upvotes") {
+            const va = votes(a);
+            const vb = votes(b);
+            // % upvoted, then more votes first; or most upvotes, then higher %. Ties keep the list's own order.
+            const primary = mode === "liked" ? upvoteShare(vb) - upvoteShare(va) : vb.up - va.up;
+            const secondary = mode === "liked" ? vb.up + vb.down - (va.up + va.down) : upvoteShare(vb) - upvoteShare(va);
+            return primary || secondary || indexDiff;
+          }
+          return indexDiff;
         });
         sorted.forEach((li) => list.appendChild(li));
       };
@@ -6637,7 +6709,8 @@ const LIST_SORT_SCRIPT = `
         items().forEach((li, index) => { li.dataset.defaultIndex = String(index); });
         apply();
       };
-      select.value = readMode();
+      const saved = readMode();
+      select.value = Array.from(select.options).some((option) => option.value === saved) ? saved : "default";
       select.addEventListener("change", () => { writeMode(select.value); apply(); });
       refresh();
       return { refresh, apply };
@@ -6646,11 +6719,14 @@ const LIST_SORT_SCRIPT = `
   })();
 `;
 
-function renderListSortControl(): string {
+// The vote orders need [data-up-count]/[data-down-count] in each row, so only curated lists offer them.
+function renderListSortControl(options: { votes?: boolean } = {}): string {
   return `<label class="list-sort">Sort
     <select id="list-sort-select" aria-label="Sort order">
       <option value="default">Default order</option>
       <option value="reset">Resetting soonest</option>
+      ${options.votes ? `<option value="liked">Highest % upvoted</option>
+      <option value="upvotes">Most upvotes</option>` : ""}
     </select>
   </label>`;
 }
@@ -6994,6 +7070,18 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
       .meta > :not([hidden]) ~ :not([hidden])::before { content: "·"; margin: 0 0.4em; }
+      /* Games added to or removed from a curated list while it's open. */
+      .row-enter { animation: row-enter 0.9s ease-out; }
+      @keyframes row-enter {
+        from { opacity: 0; transform: translateY(-6px); box-shadow: 0 0 0 2px var(--brand-blue); }
+        60% { opacity: 1; transform: none; box-shadow: 0 0 0 2px var(--brand-blue); }
+        to { box-shadow: 0 0 0 2px transparent; }
+      }
+      .row-leave { opacity: 0; transform: scale(0.98); transition: opacity 0.3s ease, transform 0.3s ease; }
+      @media (prefers-reduced-motion: reduce) {
+        @keyframes row-enter { from { opacity: 0; } to { opacity: 1; } }
+        .row-leave { transform: none; }
+      }
       .meta:not(:has(> :not([hidden]))) { display: none; }
       /* A vote count or rating that just changed (live update or the viewer's own vote) pulses once. */
       .count-bump { display: inline-block; animation: count-bump 0.7s ease-out; }
