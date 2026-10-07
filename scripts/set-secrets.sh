@@ -77,6 +77,10 @@ const discordClientIdProduction = fallback(envVar("OAUTH_DISCORD_CLIENT_ID_PRODU
 const discordGuildIdProduction = fallback(envVar("DISCORD_GUILD_ID_PRODUCTION"), discordGuildIdStaging);
 const discordRoleAdminProduction = fallback(envVar("DISCORD_ROLE_ADMIN_PRODUCTION"), discordRoleAdminStaging);
 const discordRoleEditorProduction = fallback(envVar("DISCORD_ROLE_EDITOR_PRODUCTION"), discordRoleEditorStaging);
+// Role pinged by new-game announcements. Only matters where a webhook is set (see DISCORD_NEW_GAME_WEBHOOK_URL below).
+const discordRoleDleEnjoyer = envVar("DISCORD_ROLE_DLE_ENJOYER");
+const discordRoleDleEnjoyerStaging = fallback(envVar("DISCORD_ROLE_DLE_ENJOYER_STAGING"), discordRoleDleEnjoyer);
+const discordRoleDleEnjoyerProduction = fallback(envVar("DISCORD_ROLE_DLE_ENJOYER_PRODUCTION"), discordRoleDleEnjoyer);
 
 const sessionCookieName = fallback(envVar("SESSION_COOKIE_NAME"), "dgl_session");
 // Production has its own D1/KV. Staging and the default (dev) config share a separate staging D1/KV, so nothing
@@ -93,6 +97,7 @@ config.vars.OAUTH_DISCORD_CLIENT_ID = discordClientId;
 config.vars.DISCORD_GUILD_ID = discordGuildId;
 config.vars.DISCORD_ROLE_ADMIN = discordRoleAdmin;
 config.vars.DISCORD_ROLE_EDITOR = discordRoleEditor;
+config.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyer;
 
 config.env ||= {};
 config.env.staging ||= {};
@@ -103,6 +108,7 @@ config.env.staging.vars.OAUTH_DISCORD_CLIENT_ID = discordClientIdStaging;
 config.env.staging.vars.DISCORD_GUILD_ID = discordGuildIdStaging;
 config.env.staging.vars.DISCORD_ROLE_ADMIN = discordRoleAdminStaging;
 config.env.staging.vars.DISCORD_ROLE_EDITOR = discordRoleEditorStaging;
+config.env.staging.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyerStaging;
 
 config.env.production ||= {};
 config.env.production.vars ||= {};
@@ -112,6 +118,7 @@ config.env.production.vars.OAUTH_DISCORD_CLIENT_ID = discordClientIdProduction;
 config.env.production.vars.DISCORD_GUILD_ID = discordGuildIdProduction;
 config.env.production.vars.DISCORD_ROLE_ADMIN = discordRoleAdminProduction;
 config.env.production.vars.DISCORD_ROLE_EDITOR = discordRoleEditorProduction;
+config.env.production.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyerProduction;
 
 const setBindingIds = (target, d1Id, kvId) => {
   if (!target.d1_databases || target.d1_databases.length === 0) {
@@ -164,5 +171,10 @@ put_secret "OAUTH_DISCORD_CLIENT_SECRET" "${OAUTH_DISCORD_CLIENT_SECRET_PRODUCTI
 
 put_secret "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET_STAGING:-${OAUTH_TWITCH_CLIENT_SECRET:-}}" "staging"
 put_secret "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET_PRODUCTION:-${OAUTH_TWITCH_CLIENT_SECRET:-}}" "production"
+
+# New-game announcements to Discord #dailies. Deliberately no shared fallback: staging only posts if it gets its own
+# webhook (e.g. a test channel), so testing approvals there never pings the real server.
+put_secret "DISCORD_NEW_GAME_WEBHOOK_URL" "${DISCORD_NEW_GAME_WEBHOOK_URL_STAGING:-}" "staging"
+put_secret "DISCORD_NEW_GAME_WEBHOOK_URL" "${DISCORD_NEW_GAME_WEBHOOK_URL_PRODUCTION:-${DISCORD_NEW_GAME_WEBHOOK_URL:-}}" "production"
 
 echo "Secrets uploaded for staging and production environments."

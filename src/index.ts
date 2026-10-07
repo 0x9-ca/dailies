@@ -3802,6 +3802,9 @@ app.post("/api/games", async (c) => {
       slug
     })
   );
+  if (bypassModeration) {
+    c.executionCtx.waitUntil(announceNewGames(c.env, [id]));
+  }
   return c.json({ id, status: bypassModeration ? "approved" : "pending" }, 201);
 });
 
@@ -3957,11 +3960,12 @@ app.put("/api/games/:id/admin-update", async (c) => {
   const before = await c.env.DB.prepare("SELECT title, slug, status, paywall, nsfw FROM games WHERE id = ?1")
     .bind(gameId)
     .first<{ title: string; slug: string; status: string; paywall: number; nsfw: number }>();
+  let newlyApproved: string[] = [];
   if (before) {
     if (before.status !== parsed.data.status) {
       const statusAction = ({ approved: "approve", rejected: "reject", disabled: "disable" } as Record<string, "approve" | "reject" | "disable">)[parsed.data.status];
       if (statusAction) {
-        await logGameEvents(c.env, auth.id, [gameId], statusAction);
+        newlyApproved = await logGameEvents(c.env, auth.id, [gameId], statusAction);
       }
     }
     const flagEvents: GameEventAction[] = [];
@@ -4024,6 +4028,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
+  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
   return c.json({ ok: true, slug });
 });
 
@@ -4752,7 +4757,7 @@ app.post("/api/admin/games/bulk", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
 
-  await logGameEvents(c.env, auth.id, parsed.data.ids, parsed.data.action, parsed.data.note ? { note: parsed.data.note } : {});
+  const newlyApproved = await logGameEvents(c.env, auth.id, parsed.data.ids, parsed.data.action, parsed.data.note ? { note: parsed.data.note } : {});
   const statements = parsed.data.ids.map((gameId) => {
     if (parsed.data.action === "approve") {
       return c.env.DB.prepare(
@@ -4779,6 +4784,7 @@ app.post("/api/admin/games/bulk", async (c) => {
   }
 
   await invalidateGameCaches(c.env);
+  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
   return c.json({ ok: true, count: parsed.data.ids.length });
 });
 
@@ -4788,7 +4794,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
     return auth;
   }
   const gameId = c.req.param("id");
-  await logGameEvents(c.env, auth.id, [gameId], "approve");
+  const newlyApproved = await logGameEvents(c.env, auth.id, [gameId], "approve");
   await c.env.DB.prepare(
     `UPDATE games
      SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now')
@@ -4798,6 +4804,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
     .run();
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
+  c.executionCtx.waitUntil(announceNewGames(c.env, newlyApproved));
   return c.json({ ok: true });
 });
 
@@ -5616,8 +5623,10 @@ async function logGameEvents(
   gameIds: string[],
   action: "approve" | "reject" | "disable" | "restore" | "delete",
   extra: Record<string, unknown> = {}
-): Promise<void> {
+): Promise<string[]> {
   const ids = [...new Set(gameIds)];
+  // Games going public for the first time (pending or rejected -> approved), not restores of disabled ones.
+  const newlyApproved: string[] = [];
   const target = GAME_STATUS_FOR_ACTION[action];
   const statements: D1PreparedStatement[] = [];
   for (let i = 0; i < ids.length; i += 90) {
@@ -5631,6 +5640,7 @@ async function logGameEvents(
         continue;
       }
       const label = target === "approved" ? (row.status === "disabled" ? "restore" : "approve") : action;
+      if (label === "approve") newlyApproved.push(row.id);
       statements.push(
         env.DB.prepare(
           "INSERT INTO audit_log (id, actor_user_id, entity_type, entity_id, action, metadata_json) VALUES (?1, ?2, 'game', ?3, ?4, ?5)"
@@ -5640,6 +5650,71 @@ async function logGameEvents(
   }
   if (statements.length > 0) {
     await env.DB.batch(statements);
+  }
+  return newlyApproved;
+}
+
+/**
+ * Posts newly approved games to the Discord #dailies channel through its webhook, pinging @Dle Enjoyer. Best-effort:
+ * never throws, and does nothing unless DISCORD_NEW_GAME_WEBHOOK_URL and DISCORD_ROLE_DLE_ENJOYER are set (only
+ * production has the webhook). Several games approved together go out as one message, split at Discord's length limit.
+ */
+async function announceNewGames(env: Env, gameIds: string[]): Promise<void> {
+  const webhookUrl = env.DISCORD_NEW_GAME_WEBHOOK_URL;
+  const roleId = env.DISCORD_ROLE_DLE_ENJOYER;
+  if (!webhookUrl || !roleId || gameIds.length === 0) return;
+  try {
+    // Read after the status update, so titles and slugs are final and only games still approved are announced.
+    const ids = [...new Set(gameIds)].slice(0, 90);
+    const rows = await env.DB.prepare(
+      `SELECT title, slug, nsfw FROM games WHERE status = 'approved' AND id IN (${ids.map((_, i) => `?${i + 1}`).join(",")}) ORDER BY title`
+    )
+      .bind(...ids)
+      .all<{ title: string; slug: string; nsfw: number }>();
+    if (rows.results.length === 0) return;
+    // Game titles are user-submitted: escape Discord markdown so they render literally.
+    const name = (game: { title: string; nsfw: number }) =>
+      `**${game.title.replace(/[\\*_~`|>]/g, "\\$&").replace(/\s+/g, " ").trim()}**${game.nsfw ? " (NSFW)" : ""}`;
+    const link = (game: { slug: string }) => `${env.APP_URL}/games/${encodeURIComponent(game.slug)}`;
+    const ping = `<@&${roleId}>`;
+    const messages: string[] = [];
+    if (rows.results.length === 1) {
+      const game = rows.results[0];
+      messages.push(`${ping} New game: ${name(game)}\n${link(game)}`);
+    } else {
+      let current = `${ping} New games:`;
+      for (const game of rows.results) {
+        const line = `\n- ${name(game)}: ${link(game)}`;
+        if (current.length + line.length > 1900) {
+          messages.push(current);
+          current = "More new games:";
+        }
+        current += line;
+      }
+      messages.push(current);
+    }
+    for (const content of messages) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // Only the Dle Enjoyer role may be pinged, whatever a title contains.
+          body: JSON.stringify({ content, allowed_mentions: { parse: [], roles: [roleId] } }),
+          signal: AbortSignal.timeout(5000)
+        });
+        if (response.status === 429 && attempt === 0) {
+          const retryAfter = Number(((await response.json().catch(() => ({}))) as { retry_after?: number }).retry_after ?? 1);
+          await new Promise((resolve) => setTimeout(resolve, Math.min(5, Math.max(0.5, retryAfter)) * 1000));
+          continue;
+        }
+        if (!response.ok) {
+          console.error(JSON.stringify({ message: "discord announcement failed", status: response.status }));
+        }
+        break;
+      }
+    }
+  } catch (error) {
+    console.error(JSON.stringify({ message: "discord announcement failed", error: String(error) }));
   }
 }
 

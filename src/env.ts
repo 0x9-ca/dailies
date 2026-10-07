@@ -14,6 +14,10 @@ export interface Env {
   DISCORD_GUILD_ID: string;
   DISCORD_ROLE_ADMIN: string;
   DISCORD_ROLE_EDITOR: string;
+  /** #dailies channel webhook for new-game announcements (secret). Unset = no announcements (e.g. staging, dev). */
+  DISCORD_NEW_GAME_WEBHOOK_URL?: string;
+  /** Role pinged by new-game announcements (@Dle Enjoyer). */
+  DISCORD_ROLE_DLE_ENJOYER?: string;
   SESSION_SECRET: string;
 }
 
