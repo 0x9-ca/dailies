@@ -24,7 +24,11 @@
       "id": "c7bc57c57a0c4279b672ba4622fafa9b"
     }
   ],
-  "send_email": [{ "name": "EMAIL" }],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
   "vars": {
     "APP_ENV": "development",
     "APP_URL": "http://192.168.17.2:8787",
@@ -35,7 +39,8 @@
     "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
     "DISCORD_GUILD_ID": "1544140186915700859",
     "DISCORD_ROLE_ADMIN": "1544140573491863662",
-    "DISCORD_ROLE_EDITOR": "1544140999671156908"
+    "DISCORD_ROLE_EDITOR": "1544140999671156908",
+    "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
   },
   "triggers": {
     "crons": [
@@ -61,7 +66,11 @@
           "id": "c7bc57c57a0c4279b672ba4622fafa9b"
         }
       ],
-      "send_email": [{ "name": "EMAIL" }],
+      "send_email": [
+        {
+          "name": "EMAIL"
+        }
+      ],
       "vars": {
         "APP_ENV": "staging",
         "APP_URL": "https://dailies-stg.0x9.ca",
@@ -72,7 +81,8 @@
         "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
-        "DISCORD_ROLE_EDITOR": "1544140999671156908"
+        "DISCORD_ROLE_EDITOR": "1544140999671156908",
+        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
       }
     },
     "production": {
@@ -93,7 +103,11 @@
           "id": "59fe208f58e2486884a6f2460f415b7a"
         }
       ],
-      "send_email": [{ "name": "EMAIL" }],
+      "send_email": [
+        {
+          "name": "EMAIL"
+        }
+      ],
       "vars": {
         "APP_ENV": "production",
         "APP_URL": "https://dailies.0x9.ca",
@@ -104,7 +118,8 @@
         "NOTIFY_EMAIL_FROM": "noreply@0x9.ca",
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
-        "DISCORD_ROLE_EDITOR": "1544140999671156908"
+        "DISCORD_ROLE_EDITOR": "1544140999671156908",
+        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
       }
     }
   }
