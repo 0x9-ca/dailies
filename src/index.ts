@@ -682,10 +682,53 @@ app.get("/games", async (c) => {
           form?.querySelectorAll("select, input[type=checkbox]").forEach((control) => {
             control.addEventListener("change", () => form.requestSubmit());
           });
+
+          // Live search: as the user types, fetch this page for the new query and swap in its results (all games,
+          // not just this page's), keeping the address bar in step. Enter/Search still does a normal submit.
+          const input = form?.querySelector("input[name=q]");
+          if (!form || !input) return;
+          let timer = 0;
+          let controller = null;
+          const search = async () => {
+            const params = new URLSearchParams(new FormData(form));
+            for (const [key, value] of [...params]) if (!value) params.delete(key);
+            if (params.get("sort") === "top") params.delete("sort");
+            const url = "/games" + (params.toString() ? "?" + params.toString() : "");
+            // Looked up here: this script runs before the results container further down the page exists.
+            const results = document.getElementById("game-results");
+            if (!results) return;
+            controller?.abort();
+            controller = new AbortController();
+            results.setAttribute("aria-busy", "true");
+            try {
+              const response = await fetch(url, { signal: controller.signal });
+              if (!response.ok) throw new Error("search failed");
+              const next = new DOMParser().parseFromString(await response.text(), "text/html").getElementById("game-results");
+              if (!next) throw new Error("no results");
+              results.replaceChildren(...[...next.childNodes].map((node) => document.importNode(node, true)));
+              window.dglBindGameRows?.(results);
+              window.dglLocalizeResets?.(results);
+              const found = results.querySelectorAll("[data-game-row]").length;
+              const status = document.getElementById("search-status");
+              if (status) status.textContent = found === 0 ? "No games found" : found + (results.querySelector(".pagination a[href*='page=']") ? "+" : "") + " games found";
+              window.history.replaceState(null, "", url);
+            } catch (error) {
+              if (error.name !== "AbortError") form.requestSubmit();
+            } finally {
+              results.removeAttribute("aria-busy");
+            }
+          };
+          input.addEventListener("input", () => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(search, 250);
+          });
         })();
       </script>
-      ${gamesMarkup}
-      ${paginationMarkup}
+      <p id="search-status" class="visually-hidden" aria-live="polite"></p>
+      <div id="game-results">
+        ${gamesMarkup}
+        ${paginationMarkup}
+      </div>
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
   `, c.env, {
@@ -5616,7 +5659,9 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
         }
       }
 
-      document.querySelectorAll("[data-game-row]").forEach((node) => {
+      // Wires up vote/favorite buttons on every game row under root. Exposed so pages that swap in new rows
+      // (live search on /games) can wire those too.
+      const bindRows = (root) => root.querySelectorAll("[data-game-row]").forEach((node) => {
         if (!(node instanceof HTMLElement)) return;
         const gameId = node.getAttribute("data-game-row");
         if (!gameId) return;
@@ -5672,6 +5717,8 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
           setLocalFavoriteState(games.isLocalFavorite(gameId));
         }
       });
+      bindRows(document);
+      window.dglBindGameRows = bindRows;
     })();
   </script>`;
 }
@@ -6491,6 +6538,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .site-nav a[href="/submit"] { display: none; }
         .nav-menu-panel > a.menu-narrow-only { display: block; }
       }
+      #game-results[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s; }
       .game-count { text-align: center; color: var(--muted); font-size: 1.05rem; margin: 0.25rem 0 0.9rem; }
       .game-count strong { color: var(--brand-blue); font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 0.2rem; }
       /* Big screens: larger cards and text, with the buttons in a 2x2 grid (votes left, favorite top right, details bottom right). */
