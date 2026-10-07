@@ -240,7 +240,7 @@ app.get("/login", async (c) => {
             Login using Discord
           </a>
           ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>
+            ${TWITCH_ICON_SVG}
             Login using Twitch
           </a>` : ""}
           <p style="max-width:22rem;margin:0.5rem 0 0;font-size:0.85rem;text-align:center;">We only receive your account ID and username (and, for Discord, your roles in our server). We never see your password or email, and we don't keep access to your account after you sign in.</p>
@@ -2009,7 +2009,7 @@ app.get("/lists/:slug", async (c) => {
   return c.html(await layout(`${list.title} – Daily Game List | Dailies (dles)`, user, `
     <main class="narrow">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
-      ${list.twitch_login ? `<p><a class="btn" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer">Watch ${escapeHtml(list.twitch_login)} on Twitch</a></p>` : ""}
+      ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="Opens Twitch in a new tab">${TWITCH_ICON_SVG}Watch ${escapeHtml(list.twitch_login)} on Twitch<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
       <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
@@ -4959,6 +4959,8 @@ async function lookupTwitchUser(env: Env, login: string): Promise<{ id: string; 
   return user ? { id: user.id, login: user.login } : null;
 }
 
+const TWITCH_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z"/></svg>`;
+
 function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
   if (!twitchLogin) {
     return "";
@@ -6143,6 +6145,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* Two equal-width buttons side by side, centred; stacked only on very narrow phones where they can't fit. */
       /* Home: Popular Today and Newly Added side by side, one card per row, on wide screens; stacked (5 each) otherwise. */
       .home-columns ul.games { grid-template-columns: 1fr; }
+      .twitch-watch { text-align: center; }
+      .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
+      .external-arrow { font-size: 0.9em; opacity: 0.85; }
+      .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       @media (min-width: 800px) {
         .home-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; align-items: start; }
       }
