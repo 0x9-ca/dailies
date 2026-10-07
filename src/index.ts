@@ -1088,9 +1088,9 @@ app.get("/rotation/:shareToken", async (c) => {
             .map(
               (item) => {
                 const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-                return `<li data-game-id="${item.id}" ${reset.attrs}>
+                return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
                 <div class="item-main">
-                  <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                  <a class="card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                   ${renderCategoryPills(categoriesByGameId.get(item.id))}
                   ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
@@ -1238,6 +1238,7 @@ app.get("/me/rotation", async (c) => {
           list.innerHTML = "";
           favorites.forEach((item) => {
             const li = document.createElement("li");
+            li.className = "card-click";
             li.setAttribute("data-game-id", item.id);
             li.setAttribute("data-game-slug", item.slug);
             li.setAttribute("data-game-title", item.title);
@@ -1250,7 +1251,9 @@ app.get("/me/rotation", async (c) => {
             const itemMain = document.createElement("div");
             itemMain.className = "item-main";
 
+            // Points at the details page until rotation-info supplies the game's own address.
             const link = document.createElement("a");
+            link.className = "card-link";
             link.href = "/games/" + encodeURIComponent(item.slug);
             link.textContent = item.title;
             itemMain.appendChild(link);
@@ -1281,6 +1284,14 @@ app.get("/me/rotation", async (c) => {
             reorder.appendChild(down);
             actions.appendChild(reorder);
 
+            const details = document.createElement("a");
+            details.className = "btn-details";
+            details.href = "/games/" + encodeURIComponent(item.slug);
+            details.title = "Details";
+            details.setAttribute("aria-label", item.title + " details");
+            details.textContent = "…";
+            actions.appendChild(details);
+
             const remove = document.createElement("button");
             remove.type = "button";
             remove.setAttribute("data-local-remove", "1");
@@ -1294,25 +1305,33 @@ app.get("/me/rotation", async (c) => {
           wireInteractions();
           listSorter.refresh();
           loadCategoryPills(favorites.map((item) => item.id));
-          loadResetInfo(favorites.map((item) => item.id));
+          loadGameInfo(favorites.map((item) => item.id));
         };
 
-        const resetInfoCache = new Map();
-        const applyResetInfo = () => {
+        const gameInfoCache = new Map();
+        const applyGameInfo = () => {
           if (!list) return;
           list.querySelectorAll("li[data-game-id]").forEach((li) => {
-            const info = resetInfoCache.get(li.getAttribute("data-game-id"));
+            const info = gameInfoCache.get(li.getAttribute("data-game-id"));
             if (!info) return;
-            li.dataset.resetKind = info.kind;
-            li.dataset.resetMin = String(info.min);
+            const link = li.querySelector(".card-link");
+            if (link && info.url) {
+              link.href = info.url;
+              link.target = "_blank";
+              link.rel = "noopener noreferrer";
+            }
+            const reset = info.reset;
+            if (!reset) return;
+            li.dataset.resetKind = reset.kind;
+            li.dataset.resetMin = String(reset.min);
             const itemMain = li.querySelector(".item-main");
             if (itemMain && !itemMain.querySelector(".meta")) {
               const meta = document.createElement("div");
               meta.className = "meta";
               const label = document.createElement("span");
-              label.setAttribute("data-reset-at-kind", info.kind);
-              label.setAttribute("data-reset-at", String(info.min));
-              label.textContent = info.label;
+              label.setAttribute("data-reset-at-kind", reset.kind);
+              label.setAttribute("data-reset-at", String(reset.min));
+              label.textContent = reset.label;
               meta.appendChild(label);
               itemMain.appendChild(meta);
               window.dglLocalizeResets(meta);
@@ -1321,20 +1340,20 @@ app.get("/me/rotation", async (c) => {
           listSorter.apply();
         };
 
-        const loadResetInfo = async (gameIds) => {
-          const missing = gameIds.filter((id) => !resetInfoCache.has(id));
-          if (missing.length === 0) { applyResetInfo(); return; }
+        const loadGameInfo = async (gameIds) => {
+          const missing = gameIds.filter((id) => !gameInfoCache.has(id));
+          if (missing.length === 0) { applyGameInfo(); return; }
           try {
             for (let i = 0; i < missing.length; i += 50) {
               const chunk = missing.slice(i, i + 50);
-              const response = await fetch("/api/games/reset-info?ids=" + chunk.map(encodeURIComponent).join(","));
+              const response = await fetch("/api/games/rotation-info?ids=" + chunk.map(encodeURIComponent).join(","));
               if (!response.ok) continue;
               const body = await response.json();
-              chunk.forEach((id) => resetInfoCache.set(id, body[id] || null));
+              chunk.forEach((id) => gameInfoCache.set(id, body[id] || null));
             }
-            applyResetInfo();
+            applyGameInfo();
           } catch {
-            // Reset times are a non-critical enhancement; ignore failures.
+            // Links fall back to the details page and reset times are optional; ignore failures.
           }
         };
 
@@ -1490,10 +1509,10 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => {
               const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              return `<li data-game-id="${item.id}" ${reset.attrs}>
+              return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
-                <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                <a class="card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" style="font-weight:bold;font-size:inherit;line-height:inherit;">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
                 ${renderCategoryPills(categoriesByGameId.get(item.id))}
                 ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
               </div>
@@ -3301,24 +3320,28 @@ app.get("/api/games/categories", async (c) => {
   return c.json(result);
 });
 
-// Reset timing for a set of games; used by the local (anonymous) rotation page to sort and label items.
-app.get("/api/games/reset-info", async (c) => {
+// Link and reset timing for a set of games, for the logged-out rotation page (its local favorites only store
+// id, slug and title): the link lets a tap on a row open the game, the reset time sorts and labels it.
+app.get("/api/games/rotation-info", async (c) => {
   const ids = (c.req.query("ids") || "")
     .split(",")
     .map((id) => id.trim())
     .filter((id) => id.length > 0)
     .slice(0, 90);
-  const result: Record<string, { kind: "utc" | "local"; min: number; label: string } | null> = {};
+  const result: Record<string, { url: string; reset: { kind: "utc" | "local"; min: number; label: string } | null }> = {};
   if (ids.length > 0) {
     const placeholders = ids.map((_id, index) => `?${index + 1}`).join(", ");
     const rows = await c.env.DB.prepare(
-      `SELECT id, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE status = 'approved' AND id IN (${placeholders})`
+      `SELECT id, url, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE status = 'approved' AND id IN (${placeholders})`
     )
       .bind(...ids)
-      .all<{ id: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+      .all<{ id: string; url: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
     for (const row of rows.results) {
       const data = getResetSortData(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
-      result[row.id] = data ? { ...data, label: getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone) } : null;
+      result[row.id] = {
+        url: row.url,
+        reset: data ? { ...data, label: getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone) } : null
+      };
     }
   }
   return c.json(result);
@@ -6143,7 +6166,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* The game name's link stretches over the whole card, so a tap anywhere opens the game; buttons and tags sit above it. */
       .card-click { position: relative; }
       .card-click .card-link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; }
-      .card-click button, .card-click .btn-details, .card-click .category-pill { position: relative; z-index: 1; }
+      .card-click button, .card-click .btn-details, .card-click .category-pill, .card-click .drag { position: relative; z-index: 1; }
       .card-click:hover { border-color: var(--accent); }
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
