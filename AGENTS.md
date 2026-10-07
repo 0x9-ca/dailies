@@ -71,4 +71,5 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - If adding public list queries, consider cache invalidation with `invalidateGameCaches`.
 - The `/me/rotation` page has separate rendering paths for anonymous (localStorage) and authenticated (DB) users — update both if changing rotation UI.
 - Inline `<script>` blocks in `src/index.ts` handle client-side rendering for rotation and game list pages. These are not separate files.
+- Client-side voting and favoriting (account and local/anonymous), the local favorites store, and the local-to-account import all go through `window.dglGames` (`GAME_ACTIONS_SCRIPT`, loaded in `<head>` by `layout()`). Use it rather than calling those APIs or touching `dgl_local_favorites_v1` directly.
 - The `game_categories` table has a required `assigned_by_user_id` column — always include it in INSERT statements.

@@ -829,10 +829,13 @@ app.get("/games/:slug", async (c) => {
           : ""
       }
     </main>
-    ${
-      user
-        ? `<script>
-            const gameId = ${scriptJson(game.id)};
+    <script>
+            const game = {
+              id: ${scriptJson(game.id)},
+              title: ${scriptJson(game.title)},
+              slug: ${scriptJson(game.slug)}
+            };
+            const gameId = game.id;
             const status = document.getElementById("game-action-status");
             const upCountNode = document.getElementById("vote-up-count");
             const downCountNode = document.getElementById("vote-down-count");
@@ -845,23 +848,14 @@ app.get("/games/:slug", async (c) => {
             const setStatus = (text) => {
               if (status) status.textContent = text;
             };
+            const notify = (text, level) => {
+              setStatus(text);
+              if (window.appToast) window.appToast(text, level);
+            };
 
             const setVoteState = (value) => {
               voteButtons.up?.classList.toggle("active", value === 1);
               voteButtons.down?.classList.toggle("active", value === -1);
-            };
-
-            const applyOptimisticVote = (fromValue, toValue) => {
-              const upCurrent = Number(upCountNode?.textContent || "0");
-              const downCurrent = Number(downCountNode?.textContent || "0");
-              let upNext = upCurrent;
-              let downNext = downCurrent;
-              if (fromValue === 1) upNext -= 1;
-              if (fromValue === -1) downNext -= 1;
-              if (toValue === 1) upNext += 1;
-              if (toValue === -1) downNext += 1;
-              if (upCountNode) upCountNode.textContent = String(Math.max(0, upNext));
-              if (downCountNode) downCountNode.textContent = String(Math.max(0, downNext));
             };
 
             const submitVote = async (value) => {
@@ -870,54 +864,52 @@ app.get("/games/:slug", async (c) => {
                 setStatus("Vote already set.");
                 return;
               }
-              applyOptimisticVote(previousVote, value);
+              window.dglGames.shiftVoteCounts(upCountNode, downCountNode, previousVote, value);
               currentVote = value;
               setVoteState(value);
               setStatus("Saving vote...");
-              const response = await fetch("/api/games/" + gameId + "/vote", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ value })
-              });
-              if (response.ok) {
-                setStatus("Vote saved.");
-                if (window.appToast) window.appToast("Vote saved.", "success");
+              if (await window.dglGames.saveVote(gameId, value)) {
+                notify("Vote saved.", "success");
                 return;
               }
-              applyOptimisticVote(value, previousVote);
+              window.dglGames.shiftVoteCounts(upCountNode, downCountNode, value, previousVote);
               currentVote = previousVote;
               setVoteState(previousVote);
-              setStatus("Could not save vote.");
-              if (window.appToast) window.appToast("Could not save vote.", "error");
+              notify("Could not save vote.", "error");
             };
 
-            voteButtons.up?.addEventListener("click", async () => {
-              await submitVote(1);
-            });
+            voteButtons.up?.addEventListener("click", () => submitVote(1));
+            voteButtons.down?.addEventListener("click", () => submitVote(-1));
 
-            voteButtons.down?.addEventListener("click", async () => {
-              await submitVote(-1);
-            });
-
+            // Signed in: the favorite is saved to the account.
             const favoriteButton = document.getElementById("favorite-toggle");
             favoriteButton?.addEventListener("click", async () => {
               const favorited = favoriteButton.getAttribute("data-favorited") === "yes";
               favoriteButton.setAttribute("data-favorited", favorited ? "no" : "yes");
               favoriteButton.textContent = favorited ? "Add favorite" : "Remove favorite";
               setStatus("Updating favorites...");
-              const response = await fetch("/api/games/" + gameId + "/favorite", {
-                method: favorited ? "DELETE" : "POST"
-              });
-              if (!response.ok) {
+              if (!(await window.dglGames.setAccountFavorite(gameId, !favorited))) {
                 favoriteButton.setAttribute("data-favorited", favorited ? "yes" : "no");
                 favoriteButton.textContent = favorited ? "Remove favorite" : "Add favorite";
-                setStatus("Could not update favorite.");
-                if (window.appToast) window.appToast("Could not update favorite.", "error");
+                notify("Could not update favorite.", "error");
                 return;
               }
-              setStatus(favorited ? "Removed from rotation." : "Added to rotation.");
-              if (window.appToast) window.appToast(favorited ? "Removed from rotation." : "Added to rotation.", "success");
+              notify(favorited ? "Removed from rotation." : "Added to rotation.", "success");
             });
+
+            // Signed out: the favorite lives in this browser's local rotation.
+            const localFavoriteButton = document.getElementById("favorite-local-toggle");
+            const setLocalFavoriteState = (favorited) => {
+              if (!localFavoriteButton) return;
+              localFavoriteButton.setAttribute("data-favorited", favorited ? "yes" : "no");
+              localFavoriteButton.textContent = favorited ? "Remove favorite" : "Add favorite";
+            };
+            localFavoriteButton?.addEventListener("click", async () => {
+              const favorited = await window.dglGames.toggleLocalFavorite(game);
+              setLocalFavoriteState(favorited);
+              notify(favorited ? "Added to favorites." : "Removed from favorites.", "success");
+            });
+            setLocalFavoriteState(window.dglGames.isLocalFavorite(gameId));
 
             const reportForm = document.getElementById("report-form");
             const reportStatus = document.getElementById("report-status");
@@ -1038,148 +1030,7 @@ app.get("/games/:slug", async (c) => {
                 }
               });
             }
-           </script>`
-        : `<script>
-            const storageKey = "dgl_local_favorites_v1";
-            const game = {
-              id: ${scriptJson(game.id)},
-              title: ${scriptJson(game.title)},
-              slug: ${scriptJson(game.slug)}
-            };
-            const status = document.getElementById("game-action-status");
-            const upCountNode = document.getElementById("vote-up-count");
-            const downCountNode = document.getElementById("vote-down-count");
-            const voteButtons = {
-              up: document.getElementById("vote-up"),
-              down: document.getElementById("vote-down")
-            };
-            let currentVote = ${userVote};
-            const favoriteButton = document.getElementById("favorite-local-toggle");
-            const anonIdKey = "dgl_anon_favorites_id_v1";
-
-            const setStatus = (text) => {
-              if (status) status.textContent = text;
-            };
-
-            const setVoteState = (value) => {
-              voteButtons.up?.classList.toggle("active", value === 1);
-              voteButtons.down?.classList.toggle("active", value === -1);
-            };
-
-            const applyOptimisticVote = (fromValue, toValue) => {
-              const upCurrent = Number(upCountNode?.textContent || "0");
-              const downCurrent = Number(downCountNode?.textContent || "0");
-              let upNext = upCurrent;
-              let downNext = downCurrent;
-              if (fromValue === 1) upNext -= 1;
-              if (fromValue === -1) downNext -= 1;
-              if (toValue === 1) upNext += 1;
-              if (toValue === -1) downNext += 1;
-              if (upCountNode) upCountNode.textContent = String(Math.max(0, upNext));
-              if (downCountNode) downCountNode.textContent = String(Math.max(0, downNext));
-            };
-
-            const submitVote = async (value) => {
-              const previousVote = currentVote;
-              if (currentVote === value) {
-                setStatus("Vote already set.");
-                return;
-              }
-              applyOptimisticVote(previousVote, value);
-              currentVote = value;
-              setVoteState(value);
-              setStatus("Saving vote...");
-              const response = await fetch("/api/games/" + game.id + "/vote", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ value })
-              });
-              if (response.ok) {
-                setStatus("Vote saved.");
-                if (window.appToast) window.appToast("Vote saved.", "success");
-                return;
-              }
-              applyOptimisticVote(value, previousVote);
-              currentVote = previousVote;
-              setVoteState(previousVote);
-              setStatus("Could not save vote.");
-              if (window.appToast) window.appToast("Could not save vote.", "error");
-            };
-
-            const readFavorites = () => {
-              try {
-                const raw = window.localStorage.getItem(storageKey);
-                if (!raw) return [];
-                const parsed = JSON.parse(raw);
-                return Array.isArray(parsed) ? parsed : [];
-              } catch {
-                return [];
-              }
-            };
-
-            const writeFavorites = (items) => {
-              window.localStorage.setItem(storageKey, JSON.stringify(items));
-            };
-
-            const getAnonId = () => {
-              let value = window.localStorage.getItem(anonIdKey) || "";
-              if (value) return value;
-              if (typeof crypto !== "undefined" && crypto.randomUUID) {
-                value = crypto.randomUUID();
-              } else {
-                value = "anon-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-              }
-              window.localStorage.setItem(anonIdKey, value);
-              return value;
-            };
-
-            const isFavorite = () => readFavorites().some((item) => item && item.id === game.id);
-
-            const setButtonState = (favorited) => {
-              if (!favoriteButton) return;
-              favoriteButton.setAttribute("data-favorited", favorited ? "yes" : "no");
-              favoriteButton.textContent = favorited ? "Remove favorite" : "Add favorite";
-            };
-
-            favoriteButton?.addEventListener("click", async () => {
-              const current = readFavorites();
-              const exists = current.some((item) => item && item.id === game.id);
-              if (exists) {
-                writeFavorites(current.filter((item) => item && item.id !== game.id));
-                await fetch("/api/games/" + game.id + "/favorite-anon", {
-                  method: "DELETE",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ anonId: getAnonId() })
-                }).catch(() => undefined);
-                setButtonState(false);
-                setStatus("Removed from favorites.");
-                if (window.appToast) window.appToast("Removed from favorites.", "success");
-                return;
-              }
-              current.push(game);
-              writeFavorites(current);
-              await fetch("/api/games/" + game.id + "/favorite-anon", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ anonId: getAnonId() })
-              }).catch(() => undefined);
-              setButtonState(true);
-              setStatus("Added to favorites.");
-              if (window.appToast) window.appToast("Added to favorites.", "success");
-            });
-
-            voteButtons.up?.addEventListener("click", async () => {
-              await submitVote(1);
-            });
-
-            voteButtons.down?.addEventListener("click", async () => {
-              await submitVote(-1);
-            });
-
-            setVoteState(currentVote);
-            setButtonState(isFavorite());
-          </script>`
-    }
+    </script>
   `, c.env, { path: `/games/${game.slug}`, description: game.description || `Play ${game.title} on Dailies. Vote, favorite, and add to your rotation.`,
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
@@ -1266,7 +1117,6 @@ app.get("/me/rotation", async (c) => {
       </main>
       <script>
         ${LIST_SORT_SCRIPT}
-        const storageKey = "dgl_local_favorites_v1";
         const list = document.getElementById("local-rotation-list");
         const listSorter = window.dglListSort.init(list, document.getElementById("list-sort-select"));
         const status = document.getElementById("rotation-status");
@@ -1275,20 +1125,8 @@ app.get("/me/rotation", async (c) => {
           if (status) status.textContent = text;
         };
 
-        const readFavorites = () => {
-          try {
-            const raw = window.localStorage.getItem(storageKey);
-            if (!raw) return [];
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed.filter((row) => row && row.id && row.slug && row.title) : [];
-          } catch {
-            return [];
-          }
-        };
-
-        const writeFavorites = (items) => {
-          window.localStorage.setItem(storageKey, JSON.stringify(items));
-        };
+        const readFavorites = () => window.dglGames.readLocalFavorites().filter((row) => row.slug && row.title);
+        const writeFavorites = window.dglGames.writeLocalFavorites;
 
         const moveItemByDirection = (item, direction) => {
           if (!list) return;
@@ -1666,24 +1504,11 @@ app.get("/me/rotation", async (c) => {
         if (importStatus) importStatus.textContent = text;
       };
 
-      const localStorageKey = "dgl_local_favorites_v1";
-      const readLocalFavorites = () => {
-        try {
-          const raw = window.localStorage.getItem(localStorageKey);
-          if (!raw) return [];
-          const parsed = JSON.parse(raw);
-          if (!Array.isArray(parsed)) return [];
-          return parsed.filter((row) => row && typeof row.id === "string" && row.id.length > 0);
-        } catch {
-          return [];
-        }
-      };
-
-      const localFavorites = readLocalFavorites();
-      if (importPanel && localFavorites.length > 0) {
+      const localFavoriteCount = window.dglGames.readLocalFavorites().length;
+      if (importPanel && localFavoriteCount > 0) {
         importPanel.hidden = false;
         if (importSummary) {
-          importSummary.textContent = "Found " + localFavorites.length + " local favorite" + (localFavorites.length === 1 ? "" : "s") + ".";
+          importSummary.textContent = "Found " + localFavoriteCount + " local favorite" + (localFavoriteCount === 1 ? "" : "s") + ".";
         }
       }
 
@@ -1692,29 +1517,12 @@ app.get("/me/rotation", async (c) => {
       });
 
       importButton?.addEventListener("click", async () => {
-        const ids = [];
-        const seen = new Set();
-        for (const row of localFavorites) {
-          if (!row || typeof row.id !== "string") continue;
-          if (seen.has(row.id)) continue;
-          seen.add(row.id);
-          ids.push(row.id);
-        }
-        if (ids.length === 0) {
-          setImportStatus("No valid local favorites to import.");
-          return;
-        }
         setImportStatus("Importing local favorites...");
-        const response = await fetch("/api/me/favorites/import-local", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids })
-        });
-        if (!response.ok) {
-          setImportStatus("Could not import local favorites.");
+        const result = await window.dglGames.importLocalFavorites();
+        if (result !== "imported") {
+          setImportStatus(result === "empty" ? "No valid local favorites to import." : "Could not import local favorites.");
           return;
         }
-        window.localStorage.removeItem(localStorageKey);
         setImportStatus("Imported local favorites.");
         if (window.appToast) window.appToast("Imported local favorites.", "success");
         window.location.reload();
@@ -1918,8 +1726,7 @@ app.get("/me/rotation", async (c) => {
             const gameId = btn.getAttribute("data-unfavorite");
             if (!gameId) return;
             setStatus("Removing from rotation...");
-            const res = await fetch("/api/games/" + gameId + "/favorite", { method: "DELETE" });
-            if (res.ok) {
+            if (await window.dglGames.setAccountFavorite(gameId, false)) {
               btn.closest("li")?.remove();
               setStatus("Removed from rotation.");
               if (window.appToast) window.appToast("Removed from rotation.", "success");
@@ -5557,35 +5364,7 @@ function renderCompactGameList(
 function renderGameListInteractionScript(opts: { includeImportPanel: boolean; promptFromQuery: boolean }): string {
   return `<script>
     (() => {
-      const storageKey = "dgl_local_favorites_v1";
-      const readFavorites = () => {
-        try {
-          const raw = window.localStorage.getItem(storageKey);
-          if (!raw) return [];
-          const parsed = JSON.parse(raw);
-          return Array.isArray(parsed) ? parsed : [];
-        } catch {
-          return [];
-        }
-      };
-      const writeFavorites = (items) => {
-        window.localStorage.setItem(storageKey, JSON.stringify(items));
-      };
-      const anonIdKey = "dgl_anon_favorites_id_v1";
-      const getAnonId = () => {
-        let value = window.localStorage.getItem(anonIdKey) || "";
-        if (value) {
-          return value;
-        }
-        if (typeof crypto !== "undefined" && crypto.randomUUID) {
-          value = crypto.randomUUID();
-        } else {
-          value = "anon-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-        }
-        window.localStorage.setItem(anonIdKey, value);
-        return value;
-      };
-
+      const games = window.dglGames;
       const promptFromQuery = ${opts.promptFromQuery ? "true" : "false"};
       const includeImportPanel = ${opts.includeImportPanel ? "true" : "false"};
       if (includeImportPanel && promptFromQuery) {
@@ -5597,11 +5376,11 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
         const setStatus = (text) => {
           if (status) status.textContent = text;
         };
-        const favorites = readFavorites().filter((row) => row && typeof row.id === "string" && row.id.length > 0);
-        if (panel && favorites.length > 0) {
+        const favoriteCount = games.readLocalFavorites().length;
+        if (panel && favoriteCount > 0) {
           panel.hidden = false;
           if (summary) {
-            summary.textContent = "Found " + favorites.length + " local favorite" + (favorites.length === 1 ? "" : "s") + ".";
+            summary.textContent = "Found " + favoriteCount + " local favorite" + (favoriteCount === 1 ? "" : "s") + ".";
           }
           const dismiss = () => {
             panel.hidden = true;
@@ -5611,29 +5390,12 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
           };
           dismissButton?.addEventListener("click", dismiss);
           importButton?.addEventListener("click", async () => {
-            const ids = [];
-            const seen = new Set();
-            for (const row of favorites) {
-              if (!row || typeof row.id !== "string") continue;
-              if (seen.has(row.id)) continue;
-              seen.add(row.id);
-              ids.push(row.id);
-            }
-            if (ids.length === 0) {
-              setStatus("No valid local favorites to import.");
-              return;
-            }
             setStatus("Importing favorites...");
-            const response = await fetch("/api/me/favorites/import-local", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ids })
-            });
-            if (!response.ok) {
-              setStatus("Could not import local favorites.");
+            const result = await games.importLocalFavorites();
+            if (result !== "imported") {
+              setStatus(result === "empty" ? "No valid local favorites to import." : "Could not import local favorites.");
               return;
             }
-            window.localStorage.removeItem(storageKey);
             setStatus("Imported. Redirecting to your rotation...");
             if (window.appToast) window.appToast("Imported local favorites.", "success");
             window.setTimeout(() => {
@@ -5656,19 +5418,8 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
         let currentVote = Number(node.getAttribute("data-vote") || "0");
 
         const setVoteState = (value) => {
-          if (upButton instanceof HTMLButtonElement) upButton.classList.toggle("active", value === 1);
-          if (downButton instanceof HTMLButtonElement) downButton.classList.toggle("active", value === -1);
-        };
-        const applyVoteCounts = (fromValue, toValue) => {
-          if (!(upCount instanceof HTMLElement) || !(downCount instanceof HTMLElement)) return;
-          let up = Number(upCount.textContent || "0");
-          let down = Number(downCount.textContent || "0");
-          if (fromValue === 1) up -= 1;
-          if (fromValue === -1) down -= 1;
-          if (toValue === 1) up += 1;
-          if (toValue === -1) down += 1;
-          upCount.textContent = String(Math.max(0, up));
-          downCount.textContent = String(Math.max(0, down));
+          upButton?.classList.toggle("active", value === 1);
+          downButton?.classList.toggle("active", value === -1);
         };
 
         const submitVote = async (value) => {
@@ -5676,77 +5427,38 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
           if (currentVote === value) return;
           currentVote = value;
           setVoteState(value);
-          applyVoteCounts(previous, value);
-          const response = await fetch("/api/games/" + gameId + "/vote", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ value })
-          });
-          if (response.ok) return;
+          games.shiftVoteCounts(upCount, downCount, previous, value);
+          if (await games.saveVote(gameId, value)) return;
           currentVote = previous;
           setVoteState(previous);
-          applyVoteCounts(value, previous);
+          games.shiftVoteCounts(upCount, downCount, value, previous);
           if (window.appToast) window.appToast("Could not save vote.", "error");
         };
 
-        if (upButton instanceof HTMLButtonElement) {
-          upButton.addEventListener("click", () => {
-            void submitVote(1);
-          });
-        }
-        if (downButton instanceof HTMLButtonElement) {
-          downButton.addEventListener("click", () => {
-            void submitVote(-1);
-          });
-        }
+        upButton?.addEventListener("click", () => submitVote(1));
+        downButton?.addEventListener("click", () => submitVote(-1));
 
-        if (favoriteButton instanceof HTMLButtonElement) {
-          favoriteButton.addEventListener("click", async () => {
-            const favorited = favoriteButton.getAttribute("data-list-favorite") === "yes";
-            favoriteButton.setAttribute("data-list-favorite", favorited ? "no" : "yes");
-            favoriteButton.textContent = favorited ? "☆" : "★";
-            const response = await fetch("/api/games/" + gameId + "/favorite", {
-              method: favorited ? "DELETE" : "POST"
-            });
-            if (!response.ok) {
-              favoriteButton.setAttribute("data-list-favorite", favorited ? "yes" : "no");
-              favoriteButton.textContent = favorited ? "★" : "☆";
-              if (window.appToast) window.appToast("Could not update favorite.", "error");
-            }
-          });
-        }
+        favoriteButton?.addEventListener("click", async () => {
+          const favorited = favoriteButton.getAttribute("data-list-favorite") === "yes";
+          favoriteButton.setAttribute("data-list-favorite", favorited ? "no" : "yes");
+          favoriteButton.textContent = favorited ? "☆" : "★";
+          if (!(await games.setAccountFavorite(gameId, !favorited))) {
+            favoriteButton.setAttribute("data-list-favorite", favorited ? "yes" : "no");
+            favoriteButton.textContent = favorited ? "★" : "☆";
+            if (window.appToast) window.appToast("Could not update favorite.", "error");
+          }
+        });
 
-        if (localFavoriteButton instanceof HTMLButtonElement) {
-          const title = node.getAttribute("data-game-title") || "";
-          const slug = node.getAttribute("data-game-slug") || "";
-          const syncLocalButton = () => {
-            const items = readFavorites();
-            const found = items.some((item) => item && item.id === gameId);
-            localFavoriteButton.setAttribute("data-local-favorite", found ? "yes" : "no");
-            localFavoriteButton.textContent = found ? "★" : "☆";
+        if (localFavoriteButton) {
+          const game = { id: gameId, slug: node.getAttribute("data-game-slug") || "", title: node.getAttribute("data-game-title") || "" };
+          const setLocalFavoriteState = (favorited) => {
+            localFavoriteButton.setAttribute("data-local-favorite", favorited ? "yes" : "no");
+            localFavoriteButton.textContent = favorited ? "★" : "☆";
           };
           localFavoriteButton.addEventListener("click", async () => {
-            const items = readFavorites();
-            const found = items.some((item) => item && item.id === gameId);
-            if (found) {
-              writeFavorites(items.filter((item) => !(item && item.id === gameId)));
-              await fetch("/api/games/" + gameId + "/favorite-anon", {
-                method: "DELETE",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ anonId: getAnonId() })
-              }).catch(() => undefined);
-            } else {
-              items.push({ id: gameId, slug, title });
-              writeFavorites(items);
-              await fetch("/api/games/" + gameId + "/favorite-anon", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ anonId: getAnonId() })
-              }).catch(() => undefined);
-            }
-            syncLocalButton();
+            setLocalFavoriteState(await games.toggleLocalFavorite(game));
           });
-          syncLocalButton();
+          setLocalFavoriteState(games.isLocalFavorite(gameId));
         }
       });
     })();
@@ -5976,6 +5688,82 @@ const RESET_LOCALIZE_SCRIPT = `
 `;
 
 // Client helper: toggles a list between its manual order and "resetting soonest" order.
+// Shared client-side vote/favorite actions, loaded on every page by layout(). Logged-out favorites live in
+// localStorage (key dgl_local_favorites_v1) and are mirrored to /favorite-anon so they count toward scoring.
+const GAME_ACTIONS_SCRIPT = `
+  window.dglGames = (() => {
+    const FAVORITES_KEY = "dgl_local_favorites_v1";
+    const ANON_ID_KEY = "dgl_anon_favorites_id_v1";
+    const readLocalFavorites = () => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(FAVORITES_KEY) || "[]");
+        return Array.isArray(parsed) ? parsed.filter((row) => row && typeof row.id === "string" && row.id.length > 0) : [];
+      } catch {
+        return [];
+      }
+    };
+    const writeLocalFavorites = (items) => {
+      window.localStorage.setItem(FAVORITES_KEY, JSON.stringify(items));
+    };
+    // The API only accepts a UUID. randomUUID is missing outside secure contexts (e.g. the LAN dev URL), and older
+    // clients stored non-UUID ids, so those are replaced.
+    const getAnonId = () => {
+      let value = window.localStorage.getItem(ANON_ID_KEY) || "";
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+        value = crypto.randomUUID
+          ? crypto.randomUUID()
+          : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+        window.localStorage.setItem(ANON_ID_KEY, value);
+      }
+      return value;
+    };
+    const isLocalFavorite = (gameId) => readLocalFavorites().some((row) => row.id === gameId);
+    // Adds or removes a game ({ id, slug, title }) from the local rotation. Returns true if it is now a favorite.
+    const toggleLocalFavorite = async (game) => {
+      const items = readLocalFavorites();
+      const exists = items.some((row) => row.id === game.id);
+      writeLocalFavorites(exists ? items.filter((row) => row.id !== game.id) : items.concat([{ id: game.id, slug: game.slug, title: game.title }]));
+      await fetch("/api/games/" + encodeURIComponent(game.id) + "/favorite-anon", {
+        method: exists ? "DELETE" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ anonId: getAnonId() })
+      }).catch(() => undefined);
+      return !exists;
+    };
+    const succeeded = (request) => request.then((response) => response.ok, () => false);
+    const setAccountFavorite = (gameId, favorite) =>
+      succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/favorite", { method: favorite ? "POST" : "DELETE" }));
+    const saveVote = (gameId, value) =>
+      succeeded(fetch("/api/games/" + encodeURIComponent(gameId) + "/vote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value })
+      }));
+    // Moves one vote from fromValue to toValue (1, -1 or 0) in the displayed up/down counts.
+    const shiftVoteCounts = (upNode, downNode, fromValue, toValue) => {
+      if (!(upNode instanceof HTMLElement) || !(downNode instanceof HTMLElement)) return;
+      const up = Number(upNode.textContent || "0") - (fromValue === 1 ? 1 : 0) + (toValue === 1 ? 1 : 0);
+      const down = Number(downNode.textContent || "0") - (fromValue === -1 ? 1 : 0) + (toValue === -1 ? 1 : 0);
+      upNode.textContent = String(Math.max(0, up));
+      downNode.textContent = String(Math.max(0, down));
+    };
+    // Copies local favorites into the signed-in account and clears them locally. Returns "empty", "failed" or "imported".
+    const importLocalFavorites = async () => {
+      const ids = [...new Set(readLocalFavorites().map((row) => row.id))];
+      if (ids.length === 0) return "empty";
+      const ok = await succeeded(fetch("/api/me/favorites/import-local", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids })
+      }));
+      if (!ok) return "failed";
+      window.localStorage.removeItem(FAVORITES_KEY);
+      return "imported";
+    };
+    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, importLocalFavorites };
+  })();
+`;
+
 const LIST_SORT_SCRIPT = `
   window.dglListSort = (() => {
     const KEY = "dgl_list_sort_v1";
@@ -6088,6 +5876,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
+    <script>${GAME_ACTIONS_SCRIPT}</script>
     <title>${escapeHtml(title)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
