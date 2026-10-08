@@ -2370,7 +2370,7 @@ app.get("/lists/:slug", async (c) => {
             vote.className = "suggest-vote" + (item.voted ? " active" : "");
             vote.dataset.action = "vote";
             vote.setAttribute("aria-pressed", item.voted ? "true" : "false");
-            vote.title = item.voted ? (signedIn ? "You agree. Tap to take it back." : "You agree.") : "Agree with this suggestion";
+            vote.title = item.voted ? (item.votes === 1 ? "Only your vote. Tap to take it back and withdraw the suggestion." : "You agree. Tap to take it back.") : "Agree with this suggestion";
             vote.textContent = "▲ " + item.votes;
             vote.setAttribute("aria-label", item.votes + (item.votes === 1 ? " vote" : " votes") + (item.voted ? ", including yours" : "") + ". Agree with " + item.title);
             li.append(link, vote);
@@ -2427,9 +2427,9 @@ app.get("/lists/:slug", async (c) => {
           if (!item) return;
           const action = button.dataset.action;
           if (action === "vote") {
-            if (item.voted && !signedIn) { toast("You've already voted for " + item.title + ". Log in to take votes back.", "error"); return; }
             const result = await send(item.voted ? "DELETE" : "PUT", base + "/" + encodeURIComponent(gameId) + "/vote");
             if (!result.ok) toast(result.data.error || "Could not save your vote.", "error");
+            else if (result.data.withdrawn) toast(item.title + " had no other votes, so the suggestion was withdrawn.");
           } else if (action === "accept") {
             const result = await send("POST", base + "/" + encodeURIComponent(gameId) + "/accept");
             if (result.ok) {
@@ -5164,12 +5164,9 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 });
 
-// Agree (PUT) or take back agreement (DELETE, signed-in only) with a suggestion.
+// Agree (PUT) or take back agreement (DELETE) with a suggestion. Taking back the last vote withdraws the suggestion;
+// unlike a dismissal, that doesn't stop the game being suggested again.
 const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVariables }>, agree: boolean) => {
-  // Logged-out visitors can add suggestions and votes but not take them back.
-  if (!agree && !c.get("user")) {
-    return c.json({ error: "Log in to take back a vote" }, 401);
-  }
   const voterKey = await getSuggestionVoterKey(c);
   const list = await getViewableList(c, c.req.param("id") ?? "");
   if (!list) {
@@ -5184,14 +5181,22 @@ const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVaria
   if (!exists) {
     return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, list.id, voterKey) }, 404);
   }
-  await c.env.DB.prepare(
-    agree
-      ? "INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, voter_key) VALUES (?1, ?2, ?3)"
-      : "DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2 AND voter_key = ?3"
-  )
-    .bind(list.id, gameId, voterKey)
-    .run();
-  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
+  let withdrawn = false;
+  if (agree) {
+    await c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, voter_key) VALUES (?1, ?2, ?3)")
+      .bind(list.id, gameId, voterKey)
+      .run();
+  } else {
+    const [, withdraw] = await c.env.DB.batch([
+      c.env.DB.prepare("DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2 AND voter_key = ?3").bind(list.id, gameId, voterKey),
+      c.env.DB.prepare(
+        `DELETE FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2
+           AND NOT EXISTS (SELECT 1 FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2)`
+      ).bind(list.id, gameId)
+    ]);
+    withdrawn = ((withdraw.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
+  }
+  return c.json({ ok: true, withdrawn, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 };
 app.put("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, true));
 app.delete("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, false));
