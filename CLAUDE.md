@@ -81,7 +81,7 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scr
 - OAuth stores only the provider user id, a placeholder email (`<provider>-<id>@users.noreply.dailies`, never shown to anyone) and the initial display name. Provider tokens are revoked right after the profile read. Discord roles are re-synced on every login.
 
 **Edge cache**
-- Logged-out GETs of `/`, `/games`, `/games/:slug`, `/lists`, `/lists/:slug` and `/mod-log` are cached for 60s. Sessions and the `dgl_voted` cookie (set after a vote) bypass it.
+- Logged-out GETs of `/`, `/games`, `/games/:slug`, `/lists`, `/lists/:slug`, `/mod-log` and `/changelog` are cached for 60s. Sessions and the `dgl_voted` cookie (set after a vote) bypass it.
 - A cached page is shown to every visitor, so **never render per-visitor state when `c.get("publicCache")` is true**. Use `getViewerGameState()` for votes and favorites; it already handles this.
 
 **UI conventions**
@@ -92,6 +92,9 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, inline client scr
 - Phones: small buttons in cards get an invisible ≥44px tap area (`::after` with negative inset), not a bigger visual size. Test at 320–430px widths. The header moves Submit into the ☰ menu at ≤400px.
 - Colours are CSS variables in `layout()` with dark (default) and `html[data-theme="light"]` values. Add both when adding a colour.
 - The brand is **"0x9 dles"** (page titles get the `| 0x9 dles` suffix automatically), with the "x" in `--brand-blue`.
+
+**Changelog**
+- Every user-visible feature or change gets a line in `src/lib/changelog.ts` (shown at `/changelog`, linked from the footer) in the same commit: newest day first, one short plain-English sentence per change, written for visitors. Skip internal work (infrastructure, refactors, dependency bumps, docs).
 
 **Data**
 - Migrations are append-only. Never edit a file that has been applied. (Production's `games` table already lacks the `reset_basis`/`reset_time_minutes` CHECK constraints that today's `0012` creates, because that file was edited after it ran. The app validates both fields itself.) Run `npm run schema:dump` after adding one.

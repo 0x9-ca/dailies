@@ -9,6 +9,7 @@ import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from 
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
+import { CHANGELOG } from "./lib/changelog";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
@@ -48,7 +49,7 @@ app.use("*", async (c, next) => {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|mod-log)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|mod-log|changelog)?$/;
 
 app.use("*", async (c, next) => {
   const cacheable =
@@ -570,6 +571,21 @@ app.get("/mod-log", async (c) => {
       });
     </script>
   `, c.env, { path: "/mod-log", description: "A public log of moderation changes to games on 0x9 dles." }));
+});
+
+app.get("/changelog", async (c) => {
+  const formatDay = (date: string) =>
+    new Date(`${date}T00:00:00Z`).toLocaleDateString("en", { dateStyle: "long", timeZone: "UTC" });
+  return c.html(await layout("Changelog | 0x9 dles", c.get("user"), `
+    <main class="narrow changelog">
+      <h1>Changelog</h1>
+      <p>What's new on 0x9 dles, newest first.</p>
+      ${CHANGELOG.map((day) => `<section>
+        <h2><time datetime="${escapeHtml(day.date)}">${escapeHtml(formatDay(day.date))}</time></h2>
+        <ul>${day.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      </section>`).join("")}
+    </main>
+  `, c.env, { path: "/changelog", description: "What's new on 0x9 dles: every feature update since launch." }));
 });
 
 app.get("/games", async (c) => {
@@ -2972,6 +2988,7 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/games", lastmod: latestGame },
     { loc: "/lists", lastmod: latestList },
     { loc: "/mod-log", lastmod: null as string | null },
+    { loc: "/changelog", lastmod: `${CHANGELOG[0].date}T00:00:00Z` },
     ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: latestGame })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
@@ -3129,6 +3146,7 @@ app.get("/llms.txt", async (c) => {
     "",
     `- [Sitemap](${base}/sitemap.xml): every game, category and list page`,
     `- [Moderation log](${base}/mod-log): public record of games added, removed and changed`,
+    `- [Changelog](${base}/changelog): feature updates since launch`,
     ""
   ].join("\n");
   return c.body(body, 200, { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "public, max-age=3600" });
@@ -7661,6 +7679,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .nav-menu-account { border-top: 1px solid var(--border); margin-top: 0.3rem; padding: 0.75rem 0.75rem 0.35rem; color: var(--muted); }
       main { max-width: 1200px; margin: 1rem auto; padding: 0 1rem 2rem; }
       main.narrow { max-width: 820px; }
+      .changelog h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
+      .changelog li { margin: 0.35rem 0; line-height: 1.5; }
       h1, h2 { letter-spacing: 0.01em; }
       .hero {
         background: var(--card);
@@ -8074,7 +8094,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         |
         <a href="https://discord.gg/uRApjQJ4vh" target="_blank" rel="noopener noreferrer">discord</a>
         |
-        <a href="/mod-log">mod log</a>
+        <a href="/mod-log">modlog</a>
+        |
+        <a href="/changelog">changelog</a>
       </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
