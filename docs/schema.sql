@@ -152,17 +152,17 @@ CREATE TABLE list_blocked_games (
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,
   game_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
+  voter_key TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (curated_list_id, game_id, user_id),
-  FOREIGN KEY (curated_list_id, game_id) REFERENCES list_suggestions(curated_list_id, game_id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  PRIMARY KEY (curated_list_id, game_id, voter_key),
+  FOREIGN KEY (curated_list_id, game_id) REFERENCES list_suggestions(curated_list_id, game_id) ON DELETE CASCADE
 );
 
 CREATE TABLE list_suggestions (
   curated_list_id TEXT NOT NULL,
   game_id TEXT NOT NULL,
-  suggested_by_user_id TEXT NOT NULL,
+  suggested_by_user_id TEXT,
+  suggested_by_anon_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (curated_list_id, game_id),
   FOREIGN KEY (curated_list_id) REFERENCES curated_lists(id) ON DELETE CASCADE,

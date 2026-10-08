@@ -2218,8 +2218,9 @@ app.get("/lists/:slug", async (c) => {
   }
 
   const twitchLive = list.twitch_user_id ? await isTwitchUserLive(c.env, list.twitch_user_id) : false;
-  // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get them.
-  const suggestions = isAdminEditor ? [] : await getListSuggestions(c.env, list.id, user?.id ?? null);
+  // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get the
+  // viewer's own; logged-out pages load theirs from the API.
+  const suggestions = isAdminEditor ? [] : await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null);
 
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${isAdminEditor ? "" : " list-page"}">
@@ -2270,13 +2271,13 @@ app.get("/lists/:slug", async (c) => {
         <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
         <div class="suggest-body">
           <p class="suggest-help">Know a game that belongs here? Suggest it, or agree with someone else's suggestion.</p>
-          ${user ? `<form class="suggest-form" id="suggest-form" autocomplete="off">
+          <form class="suggest-form" id="suggest-form" autocomplete="off">
             <div class="game-search-wrap">
               <input type="text" id="suggest-input" placeholder="Search games…" aria-label="Search for a game to suggest" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest-options" maxlength="100" />
               <div id="suggest-options" class="game-search-list" role="listbox"></div>
             </div>
             <button type="submit" id="suggest-submit" disabled>Suggest</button>
-          </form>` : `<p class="suggest-login"><a href="/login">Log in</a> to suggest games and vote on suggestions.</p>`}
+          </form>
           <ol class="suggest-list" id="suggest-list"></ol>
           <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet.</p>
         </div>
@@ -2426,7 +2427,6 @@ app.get("/lists/:slug", async (c) => {
           if (!item) return;
           const action = button.dataset.action;
           if (action === "vote") {
-            if (!signedIn) { toast("Log in to vote on suggestions.", "error"); return; }
             const result = await send(item.voted ? "DELETE" : "PUT", base + "/" + encodeURIComponent(gameId) + "/vote");
             if (!result.ok) toast(result.data.error || "Could not save your vote.", "error");
           } else if (action === "accept") {
@@ -5045,22 +5045,22 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
   return c.json({ ok: true });
 });
 
-// Suggestions: signed-in viewers suggest games for a curated list and agree with each other's suggestions (one vote
-// each, the suggester's included). Editors, admins and the list's Twitch owner move them onto the list or dismiss them.
+// Suggestions: viewers suggest games for a curated list and agree with each other's suggestions (one vote each, the
+// suggester's included). Logged-out visitors count by hashed IP, like anonymous game votes. Editors, admins and the list's Twitch owner move them onto the list or dismiss them.
 type ListSuggestion = { gameId: string; slug: string; title: string; paywall: boolean; nsfw: boolean; votes: number; voted: boolean };
 
-async function getListSuggestions(env: Env, listId: string, userId: string | null): Promise<ListSuggestion[]> {
+async function getListSuggestions(env: Env, listId: string, voterKey: string | null): Promise<ListSuggestion[]> {
   const rows = await env.DB.prepare(
     `SELECT list_suggestions.game_id, games.slug, games.title, games.paywall, games.nsfw,
             (SELECT COUNT(*) FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id) AS votes,
-            EXISTS(SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.user_id = ?2) AS voted
+            EXISTS(SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.voter_key = ?2) AS voted
      FROM list_suggestions
      JOIN games ON games.id = list_suggestions.game_id AND games.status = 'approved'
      WHERE list_suggestions.curated_list_id = ?1
      ORDER BY votes DESC, list_suggestions.created_at ASC
      LIMIT 200`
   )
-    .bind(listId, userId ?? "")
+    .bind(listId, voterKey ?? "")
     .all<{ game_id: string; slug: string; title: string; paywall: number; nsfw: number; votes: number; voted: number }>();
   return rows.results.map((row) => ({
     gameId: row.game_id,
@@ -5090,6 +5090,12 @@ async function blockListGame(env: Env, listId: string, gameId: string, reason: "
   ]);
 }
 
+/** 'user:<id>' for a signed-in visitor, otherwise 'anon:<hashed IP>' (the anonymous game-vote key). */
+async function getSuggestionVoterKey(c: Context<{ Bindings: Env; Variables: AppVariables }>): Promise<string> {
+  const user = c.get("user");
+  return user ? `user:${user.id}` : `anon:${await getAnonymousVoteKey(c)}`;
+}
+
 /** The list when the current visitor may see it (and so read and make suggestions), otherwise null. */
 async function getViewableList(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<{ id: string } | null> {
   const user = c.get("user");
@@ -5107,14 +5113,12 @@ app.get("/api/lists/:id/suggestions", async (c) => {
   if (!list) {
     return c.json({ error: "Not found" }, 404);
   }
-  return c.json({ suggestions: await getListSuggestions(c.env, list.id, c.get("user")?.id ?? null) }, 200, { "Cache-Control": "no-store" });
+  return c.json({ suggestions: await getListSuggestions(c.env, list.id, await getSuggestionVoterKey(c)) }, 200, { "Cache-Control": "no-store" });
 });
 
 app.post("/api/lists/:id/suggestions", async (c) => {
-  const auth = requireAuth(c);
-  if (auth instanceof Response) {
-    return auth;
-  }
+  const user = c.get("user");
+  const voterKey = await getSuggestionVoterKey(c);
   const list = await getViewableList(c, c.req.param("id"));
   if (!list) {
     return c.json({ error: "Not found" }, 404);
@@ -5124,7 +5128,7 @@ app.post("/api/lists/:id/suggestions", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const gameId = parsed.data.gameId;
-  const rate = await enforceRateLimit(c.env, `list-suggest:user:${auth.id}`, 30, 60 * 60);
+  const rate = await enforceRateLimit(c.env, `list-suggest:${voterKey}`, 30, 60 * 60);
   if (!rate.ok) {
     return c.json({ error: "Too many suggestions. Try again later.", retryAfterSeconds: rate.retryAfterSeconds }, 429);
   }
@@ -5148,42 +5152,41 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   }
   // Suggesting a game that's already suggested counts as agreeing with it.
   const statements = [
-    c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestions (curated_list_id, game_id, suggested_by_user_id) VALUES (?1, ?2, ?3)").bind(list.id, gameId, auth.id),
-    c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id) VALUES (?1, ?2, ?3)").bind(list.id, gameId, auth.id)
+    c.env.DB.prepare(
+      "INSERT OR IGNORE INTO list_suggestions (curated_list_id, game_id, suggested_by_user_id, suggested_by_anon_hash) VALUES (?1, ?2, ?3, ?4)"
+    ).bind(list.id, gameId, user?.id ?? null, user ? null : voterKey.slice("anon:".length)),
+    c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, voter_key) VALUES (?1, ?2, ?3)").bind(list.id, gameId, voterKey)
   ];
   const [, vote] = await c.env.DB.batch(statements);
   const voteAdded = ((vote.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
   const result = !state.suggested ? "suggested" : voteAdded ? "voted" : "already_voted";
-  return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, auth.id) });
+  return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 });
 
 // Agree (PUT) or take back agreement (DELETE) with a suggestion.
 const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVariables }>, agree: boolean) => {
-  const auth = requireAuth(c);
-  if (auth instanceof Response) {
-    return auth;
-  }
+  const voterKey = await getSuggestionVoterKey(c);
   const list = await getViewableList(c, c.req.param("id") ?? "");
   if (!list) {
     return c.json({ error: "Not found" }, 404);
   }
   const gameId = c.req.param("gameId") ?? "";
-  const rate = await enforceRateLimit(c.env, `list-suggest-vote:user:${auth.id}`, 120, 60 * 60);
+  const rate = await enforceRateLimit(c.env, `list-suggest-vote:${voterKey}`, 120, 60 * 60);
   if (!rate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
   }
   const exists = await c.env.DB.prepare("SELECT 1 AS ok FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2").bind(list.id, gameId).first();
   if (!exists) {
-    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, list.id, auth.id) }, 404);
+    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, list.id, voterKey) }, 404);
   }
   await c.env.DB.prepare(
     agree
-      ? "INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id) VALUES (?1, ?2, ?3)"
-      : "DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2 AND user_id = ?3"
+      ? "INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, voter_key) VALUES (?1, ?2, ?3)"
+      : "DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2 AND voter_key = ?3"
   )
-    .bind(list.id, gameId, auth.id)
+    .bind(list.id, gameId, voterKey)
     .run();
-  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, list.id, auth.id) });
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 };
 app.put("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, true));
 app.delete("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, false));
@@ -5203,7 +5206,7 @@ app.post("/api/lists/:id/suggestions/:gameId/accept", async (c) => {
     .bind(listId, gameId)
     .first();
   if (!exists) {
-    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, listId, auth.id) }, 404);
+    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) }, 404);
   }
   const maxPos = await c.env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS maxPos FROM curated_list_items WHERE curated_list_id = ?1")
     .bind(listId)
@@ -5217,7 +5220,7 @@ app.post("/api/lists/:id/suggestions/:gameId/accept", async (c) => {
     ...deleteSuggestionStatements(c.env, listId, gameId)
   ]);
   await writeAudit(c.env, auth.id, "list", listId, "accept_suggestion", { gameId, position });
-  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, auth.id) });
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) });
 });
 
 // Dismisses a suggestion; the game can't be suggested for this list again.
@@ -5233,7 +5236,7 @@ app.delete("/api/lists/:id/suggestions/:gameId", async (c) => {
     await blockListGame(c.env, listId, gameId, "dismissed", auth.id);
     await writeAudit(c.env, auth.id, "list", listId, "dismiss_suggestion", { gameId });
   }
-  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, auth.id) });
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) });
 });
 
 app.get("/api/admin/submissions", async (c) => {
@@ -7725,7 +7728,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .suggest-panel > summary { cursor: pointer; padding: 0.75rem 0.85rem; font-weight: 700; }
       .suggest-count { color: var(--muted); font-weight: 600; }
       .suggest-body { padding: 0 0.85rem 0.85rem; }
-      .suggest-help, .suggest-login, .suggest-empty { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.65rem; }
+      .suggest-help, .suggest-empty { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.65rem; }
       .suggest-empty { margin: 0; }
       .suggest-form { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
       .suggest-form .game-search-wrap { flex: 1; min-width: 0; max-width: none; }
@@ -8148,10 +8151,10 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     reassign("curated_lists", "updated_by_user_id"),
     reassign("curated_list_items", "added_by_user_id"),
     env.DB.prepare(
-      `INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id, created_at)
-       SELECT curated_list_id, game_id, ?2, created_at FROM list_suggestion_votes WHERE user_id = ?1`
+      `INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, voter_key, created_at)
+       SELECT curated_list_id, game_id, 'user:' || ?2, created_at FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1`
     ).bind(fromId, intoId),
-    env.DB.prepare("DELETE FROM list_suggestion_votes WHERE user_id = ?1").bind(fromId),
+    env.DB.prepare("DELETE FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1").bind(fromId),
     reassign("list_suggestions", "suggested_by_user_id"),
     reassign("list_blocked_games", "blocked_by_user_id"),
     // Keep a shared-rotation link if only the merged-away account had one (cleared first: the token is unique).

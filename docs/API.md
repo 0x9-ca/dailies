@@ -9,13 +9,15 @@
 - `GET /api/lists`
 - `GET /api/lists/:slug`
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
-- `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, paywall, nsfw, votes, voted }] }`, most votes first (`voted` is the signed-in viewer's own vote).
+- `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, paywall, nsfw, votes, voted }] }`, most votes first (`voted`: whether this visitor, signed in or by hashed IP, agreed).
 
 ## Anonymous-capable
 
 - `POST /api/games/:id/vote` (anonymous by IP hash or authenticated by user ID; repeat vote updates existing value)
 - `POST /api/games/:id/favorite-anon`
 - `DELETE /api/games/:id/favorite-anon`
+- `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour per user or IP. Logged-out visitors are identified by hashed IP.
+- `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back)
 - `POST /api/games/:id/click` (increments click count for scoring; capped per visitor per game)
 
 ## Auth pages/routes
@@ -40,8 +42,6 @@
 - `GET /api/me/rotation?weekday=1..7`
 - `PATCH /api/me/profile`
 - `DELETE /api/me/sessions/:id`
-- `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour.
-- `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back)
 - `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
 
 ## Editor/Admin
