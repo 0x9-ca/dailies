@@ -8,6 +8,8 @@
 - `GET /api/categories`
 - `GET /api/lists`
 - `GET /api/lists/:slug`
+- `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
+- `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, paywall, nsfw, votes, voted }] }`, most votes first (`voted` is the signed-in viewer's own vote).
 
 ## Anonymous-capable
 
@@ -38,6 +40,8 @@
 - `GET /api/me/rotation?weekday=1..7`
 - `PATCH /api/me/profile`
 - `DELETE /api/me/sessions/:id`
+- `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour.
+- `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back)
 - `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
 
 ## Editor/Admin
@@ -65,6 +69,10 @@
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
 - `PATCH /api/lists/:id/items/reorder`
+- `POST /api/lists/:id/suggestions/:gameId/accept` (moves a suggestion to the end of the list)
+- `DELETE /api/lists/:id/suggestions/:gameId` (dismisses a suggestion; the game can't be suggested for that list again)
+
+The list item and suggestion routes (`PATCH /api/lists/:id`, `/items*`, `/suggestions/:gameId/accept`, `DELETE /suggestions/:gameId`) are also open to the list's tagged Twitch user. Removing a game from a list (`DELETE /items/:gameId`) blocks it from being suggested there again; adding it directly (`POST /items`) lifts the block. Suggestion mutations return the updated `suggestions`.
 
 ## Security notes
 
