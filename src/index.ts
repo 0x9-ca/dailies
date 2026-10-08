@@ -401,6 +401,7 @@ app.get("/", async (c) => {
         const game = await response.json();
         if (newTab) newTab.location = game.url;
         fetch("/api/games/" + game.id + "/click", { method: "POST" }).catch(() => {});
+        window.dglMarkPlayed?.(game.id);
         window.location.href = "/games/" + game.slug;
       });
     </script>
@@ -895,7 +896,7 @@ app.get("/games/:slug", async (c) => {
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       <p>${escapeHtml(game.description || "")}</p>
-      <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
+      <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
         <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}" title="Vote up"><span class="visually-hidden">Vote up, </span>▲ <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
         <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}" title="Vote down"><span class="visually-hidden">Vote down, </span>▼ <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
@@ -6398,10 +6399,34 @@ const RESET_LOCALIZE_SCRIPT = `
     return {
       at: next.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
       in: (hours > 0 ? hours + "h " : "") + (minutesLeft % 60) + "m",
-      minutesLeft
+      minutesLeft,
+      lastResetAt: next.getTime() - 24 * 60 * 60 * 1000
     };
   };
+  // When this browser last opened each game ({ gameId: epoch ms }), so cards played since the last reset can be
+  // faded. Kept for 3 days; only the latest reset matters.
+  const PLAYED_KEY = "dgl_played_v1";
+  const readPlayed = () => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(PLAYED_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+  window.dglMarkPlayed = (gameId) => {
+    if (!gameId) return;
+    const played = readPlayed();
+    const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    Object.keys(played).forEach((id) => { if (!(played[id] > cutoff)) delete played[id]; });
+    played[gameId] = Date.now();
+    try { window.localStorage.setItem(PLAYED_KEY, JSON.stringify(played)); } catch {}
+    window.dglLocalizeResets();
+  };
+  const cardGameId = (card) =>
+    card.getAttribute("data-game-id") || card.querySelector("[data-game-row]")?.getAttribute("data-game-row") || "";
   window.dglLocalizeResets = (root) => {
+    const played = readPlayed();
     (root || document).querySelectorAll("[data-reset-at]").forEach((el) => {
       const reset = window.dglResetCountdown(el.getAttribute("data-reset-at-kind"), el.getAttribute("data-reset-at"));
       if (!reset) return;
@@ -6413,9 +6438,28 @@ const RESET_LOCALIZE_SCRIPT = `
       if (card) {
         card.classList.add("reset-bar");
         card.style.setProperty("--reset-left", String(Math.min(1, reset.minutesLeft / 1440)));
+        // Played since the last reset: fade the card. Not played and under two hours left: red bar.
+        const playedAt = Number(played[cardGameId(card)]) || 0;
+        const isPlayed = playedAt > reset.lastResetAt;
+        card.classList.toggle("played", isPlayed);
+        card.classList.toggle("reset-soon", !isPlayed && reset.minutesLeft <= 120);
+        if (isPlayed) card.title = "Played since the last reset";
+        else if (card.title === "Played since the last reset") card.removeAttribute("title");
       }
     });
   };
+  // Opening a game (its card link or Play button, to another site) counts as playing it.
+  const onGameOpen = (event) => {
+    if (event.type === "auxclick" && event.button !== 1) return;
+    const link = event.target instanceof Element ? event.target.closest("a.card-link, a[data-play-id]") : null;
+    if (!link || !/^https?:/.test(link.href) || new URL(link.href).origin === window.location.origin) return;
+    const card = link.closest("li");
+    window.dglMarkPlayed(link.getAttribute("data-play-id") || (card ? cardGameId(card) : ""));
+  };
+  document.addEventListener("click", onGameOpen, true);
+  document.addEventListener("auxclick", onGameOpen, true);
+  window.addEventListener("storage", (event) => { if (event.key === PLAYED_KEY) window.dglLocalizeResets(); });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") window.dglLocalizeResets(); });
   window.dglLocalizeResets();
   window.setInterval(() => window.dglLocalizeResets(), 60 * 1000);
 `;
@@ -6910,6 +6954,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-nsfw: #f87171;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
+        --reset-bar-soon: #f87171;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -6931,6 +6976,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-nsfw: #b91c1c;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
+        --reset-bar-soon: #dc2626;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -7011,6 +7057,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       li.reset-bar { position: relative; }
       ul.games.compact li.reset-bar, .rotation-list li.reset-bar { padding-bottom: calc(0.65rem + 5px); }
       li.reset-bar::after { content: ""; position: absolute; left: 10px; bottom: 4px; height: 3px; width: calc((100% - 20px) * var(--reset-left, 0)); border-radius: 2px; background: var(--reset-bar); opacity: 0.85; pointer-events: none; }
+      /* Under two hours to the reset and not played yet: the bar turns red. */
+      li.reset-bar.reset-soon::after { background: var(--reset-bar-soon); }
+      /* Played since the last reset (this browser): faded, back to full on hover or focus. */
+      li.played { opacity: 0.6; transition: opacity 0.15s ease; }
+      li.played:hover, li.played:focus-within { opacity: 0.85; }
       .twitch-watch { text-align: center; }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
       .btn-discord { gap: 0.5rem; background: #5865F2; border-color: #5865F2; color: #fff; }
