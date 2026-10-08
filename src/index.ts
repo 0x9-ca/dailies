@@ -2337,7 +2337,7 @@ app.get("/lists/:slug", async (c) => {
         const base = "/api/lists/" + encodeURIComponent(listId) + "/suggestions";
 
         // Always open beside the list on wide screens; a collapsed panel above it on phones.
-        const wide = window.matchMedia("(min-width: 1100px)");
+        const wide = window.matchMedia("(min-width: 900px)");
         const syncOpen = () => { if (wide.matches) panel.open = true; };
         wide.addEventListener("change", syncOpen);
         syncOpen();
@@ -7849,12 +7849,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .suggest-title:hover { color: var(--accent); }
       .suggest-item button { padding: 0.2rem 0.5rem; font-size: 0.85rem; white-space: nowrap; position: relative; }
       .suggest-item button::after { content: ""; position: absolute; inset: -8px -2px; }
-      @media (min-width: 1100px) {
+      /* From 900px (landscape phones and "desktop site" mode lay out at about 900-980px) the panel moves beside the list. */
+      @media (min-width: 900px) {
         main.list-page { max-width: 1200px; }
-        .list-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+        .list-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 1rem; align-items: start; }
         .suggest-panel { margin: 0.5rem 0 0; }
         .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
         .suggest-panel > summary::-webkit-details-marker { display: none; }
+      }
+      @media (min-width: 1100px) {
+        .list-layout { grid-template-columns: 320px minmax(0, 1fr); gap: 1.5rem; }
       }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
