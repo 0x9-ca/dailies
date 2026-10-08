@@ -2283,7 +2283,7 @@ app.get("/lists/:slug", async (c) => {
         </div>
       </details>
       <div class="list-main">`}
-      ${!isAdminEditor && items.results.length > 1 ? renderListSortControl({ votes: true }) : ""}
+      ${isAdminEditor ? "" : `<div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div>`}
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
@@ -2453,13 +2453,18 @@ app.get("/lists/:slug", async (c) => {
             if (!response.ok || busy) return;
             const data = await response.json();
             if (Array.isArray(data.suggestions)) {
+              const now = new Set(data.suggestions.map((item) => item.gameId));
+              const gone = suggestions.some((item) => !now.has(item.gameId));
               suggestions = data.suggestions;
               render();
+              // A suggestion that disappeared may have been added to the list.
+              if (gone) window.dglListRefresh?.();
             }
           } catch {
             // Try again next time.
           }
         };
+        window.dglSuggestRefresh = refresh;
         if (!signedIn) void refresh();
         window.setInterval(refresh, 30000);
         document.addEventListener("visibilitychange", refresh);
@@ -2582,8 +2587,12 @@ app.get("/lists/:slug", async (c) => {
         // Live updates: when an editor adds, removes or reorders games, update this page in place. The list is
         // checked every 30s while the tab is visible; on a change the new rows come from a fresh render of this page.
         let checking = false;
+        let again = false;
+        const sortWrap = document.getElementById("list-sort-wrap");
         const check = async () => {
-          if (document.visibilityState !== "visible" || checking) return;
+          if (document.visibilityState !== "visible") return;
+          // A change made while a check is running (say, two quick adds) gets its own check straight after.
+          if (checking) { again = true; return; }
           checking = true;
           try {
             const response = await fetch("/api/lists/" + encodeURIComponent(${scriptJson(list.slug)}), { cache: "no-store" });
@@ -2615,16 +2624,22 @@ app.get("/lists/:slug", async (c) => {
               ids.forEach((id) => list.appendChild(current.get(id) || added.get(id)));
               sorter.refresh();
               manualIds = ids;
+              if (sortWrap) sortWrap.hidden = ids.length < 2;
             }, removed.length > 0 ? 350 : 0);
+            // A game that joined (or left) the list has left the suggestions too.
+            window.dglSuggestRefresh?.();
           } catch {
             // Offline or a failed request: try again next time.
           } finally {
             checking = false;
+            if (again) { again = false; void check(); }
           }
         };
         window.setInterval(check, 30000);
         document.addEventListener("visibilitychange", check);
         window.dglListRefresh = check;
+        // A logged-out page can come from the edge cache (up to a minute old); bring it up to date straight away.
+        if (${scriptJson(!user)}) void check();
       })();
     </script>` : ""}
     ${!isAdminEditor ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
@@ -4868,6 +4883,7 @@ app.patch("/api/lists/:id/visibility", async (c) => {
     .bind(visibility.data, auth.id, c.req.param("id"))
     .run();
   await writeAudit(c.env, auth.id, "list", c.req.param("id"), "update_visibility", { visibility: visibility.data });
+  await purgeListPageCache(c, c.req.param("id"));
   return c.json({ ok: true });
 });
 
@@ -4913,6 +4929,7 @@ app.patch("/api/lists/:id", async (c) => {
     )
     .run();
   await writeAudit(c.env, auth.id, "list", listId, "update_list", parsed.data);
+  await purgeListPageCache(c, listId);
   return c.json({ ok: true });
 });
 
@@ -4997,6 +5014,7 @@ app.post("/api/lists/:id/items", async (c) => {
     ...deleteSuggestionStatements(c.env, listId, parsed.data.gameId)
   ]);
   await writeAudit(c.env, auth.id, "list", listId, "add_item", { gameId: parsed.data.gameId, position: nextPos });
+  await purgeListPageCache(c, listId);
   return c.json({ ok: true });
 });
 
@@ -5013,6 +5031,7 @@ app.delete("/api/lists/:id/items/:gameId", async (c) => {
     await blockListGame(c.env, c.req.param("id"), c.req.param("gameId"), "removed", auth.id);
   }
   await writeAudit(c.env, auth.id, "list", c.req.param("id"), "remove_item", { gameId: c.req.param("gameId") });
+  await purgeListPageCache(c, c.req.param("id"));
   return c.json({ ok: true });
 });
 
@@ -5043,6 +5062,7 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
   );
   await c.env.DB.batch([...clearPassStatements, ...finalPassStatements]);
   await writeAudit(c.env, auth.id, "list", listId, "reorder_items", { count: parsed.data.items.length });
+  await purgeListPageCache(c, listId);
   return c.json({ ok: true });
 });
 
@@ -5089,6 +5109,21 @@ async function blockListGame(env: Env, listId: string, gameId: string, reason: "
     ).bind(listId, gameId, reason, userId),
     ...deleteSuggestionStatements(env, listId, gameId)
   ]);
+}
+
+/**
+ * Drops this data centre's cached logged-out copy of a list page (and the lists index) after a change, so a visitor
+ * nearby sees it on their next load. Other data centres catch up within PUBLIC_CACHE_SECONDS.
+ */
+async function purgeListPageCache(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<void> {
+  if (isDevEnv(c.env)) return;
+  const row = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE id = ?1").bind(listId).first<{ slug: string }>();
+  for (const path of [row ? `/lists/${row.slug}` : null, "/lists"]) {
+    if (!path) continue;
+    const url = new URL(path, c.req.url);
+    url.searchParams.set("__v", appVersion(c.env));
+    c.executionCtx.waitUntil(caches.default.delete(new Request(url.toString())));
+  }
 }
 
 /** 'user:<id>' for a signed-in visitor, otherwise 'anon:<hashed IP>' (the anonymous game-vote key). */
@@ -5161,6 +5196,7 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   const [, vote] = await c.env.DB.batch(statements);
   const voteAdded = ((vote.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
   const result = !state.suggested ? "suggested" : voteAdded ? "voted" : "already_voted";
+  await purgeListPageCache(c, list.id);
   return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 });
 
@@ -5196,6 +5232,7 @@ const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVaria
     ]);
     withdrawn = ((withdraw.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
   }
+  await purgeListPageCache(c, list.id);
   return c.json({ ok: true, withdrawn, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 };
 app.put("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, true));
@@ -5218,18 +5255,36 @@ app.post("/api/lists/:id/suggestions/:gameId/accept", async (c) => {
   if (!exists) {
     return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) }, 404);
   }
-  const maxPos = await c.env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS maxPos FROM curated_list_items WHERE curated_list_id = ?1")
-    .bind(listId)
-    .first<{ maxPos: number }>();
-  const position = (maxPos?.maxPos ?? 0) + 1;
-  await c.env.DB.batch([
+  // One transaction: the position is read inside the INSERT, so two quick accepts can't collide, and the suggestion
+  // is only cleared once the game is really on the list.
+  const [insert] = await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT OR IGNORE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id) VALUES (?1, ?2, ?3, ?4)"
-    ).bind(listId, gameId, position, auth.id),
-    c.env.DB.prepare("DELETE FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, gameId),
-    ...deleteSuggestionStatements(c.env, listId, gameId)
+      `INSERT OR IGNORE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id)
+       SELECT ?1, ?2, COALESCE(MAX(position), 0) + 1, ?3 FROM curated_list_items WHERE curated_list_id = ?1`
+    ).bind(listId, gameId, auth.id),
+    c.env.DB.prepare(
+      `DELETE FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = ?2
+         AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2)`
+    ).bind(listId, gameId),
+    c.env.DB.prepare(
+      `DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2
+         AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2)`
+    ).bind(listId, gameId),
+    c.env.DB.prepare(
+      `DELETE FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2
+         AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2)`
+    ).bind(listId, gameId)
   ]);
-  await writeAudit(c.env, auth.id, "list", listId, "accept_suggestion", { gameId, position });
+  const onList = await c.env.DB.prepare("SELECT position FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2")
+    .bind(listId, gameId)
+    .first<{ position: number }>();
+  if (!onList) {
+    return c.json({ error: "Could not add it to the list. Try again.", suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) }, 500);
+  }
+  if (((insert.meta as { changes?: number } | undefined)?.changes ?? 0) > 0) {
+    await writeAudit(c.env, auth.id, "list", listId, "accept_suggestion", { gameId, position: onList.position });
+  }
+  await purgeListPageCache(c, listId);
   return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) });
 });
 
@@ -5245,6 +5300,7 @@ app.delete("/api/lists/:id/suggestions/:gameId", async (c) => {
   if (exists) {
     await blockListGame(c.env, listId, gameId, "dismissed", auth.id);
     await writeAudit(c.env, auth.id, "list", listId, "dismiss_suggestion", { gameId });
+    await purgeListPageCache(c, listId);
   }
   return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, `user:${auth.id}`) });
 });
