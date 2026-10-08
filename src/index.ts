@@ -896,36 +896,21 @@ app.get("/games/:slug", async (c) => {
       ${renderCategoryPills(categories.results)}
       <p>${escapeHtml(game.description || "")}</p>
       <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
-      ${(() => {
-        const resetSpan = renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long");
-        return resetSpan ? `<p>${resetSpan}</p>` : "";
-      })()}
-      <p>Votes: +<span id="vote-up-count" data-up-count>${game.vote_up_count}</span> / -<span id="vote-down-count" data-down-count>${game.vote_down_count}</span>${isAdminOrEditor ? ` | Reports: ${game.report_count}` : ""}</p>
-      ${
-        user
-          ? `<section class="panel">
-               <h2>Actions</h2>
-               <div class="actions">
-                 <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}">Vote up</button>
-                 <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}">Vote down</button>
-                 <button type="button" id="favorite-toggle" data-favorited="${userFavorite ? "yes" : "no"}">${
-                     userFavorite ? "Remove favorite" : "Add favorite"
-                   }</button>
-               </div>
-               <p id="game-action-status" class="status" aria-live="polite"></p>
-             </section>`
-          : `<section class="panel">
-               <h2>Actions</h2>
-                <p>Build your rotation locally without an account.</p>
-                <div class="actions">
-                  <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}">Vote up</button>
-                  <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}">Vote down</button>
-                  <button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>
-                  <a href="/me/rotation">View my rotation</a>
-                </div>
-                <p id="game-action-status" class="status" aria-live="polite"></p>
-              </section>`
-      }
+      <div class="game-actions" role="group" aria-label="Vote and favorite">
+        <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}" title="Vote up"><span class="visually-hidden">Vote up, </span>▲ <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
+        <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}" title="Vote down"><span class="visually-hidden">Vote down, </span>▼ <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
+        ${user
+          ? `<button type="button" id="favorite-toggle" data-favorited="${userFavorite ? "yes" : "no"}">${userFavorite ? "Remove favorite" : "Add favorite"}</button>`
+          : `<button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>`}
+      </div>
+      ${renderGameMeta(game.vote_up_count, game.vote_down_count, renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long")).replace('class="meta"', 'class="meta game-meta"')}
+      <p class="game-actions-note">${user ? `Favorites are added to <a href="/me/rotation">your rotation</a>.` : `Favorites are added to <a href="/me/rotation">your rotation</a>, no account needed.`}${isAdminOrEditor ? ` Reports: ${game.report_count}.` : ""}</p>
+      <p id="game-action-status" class="status" aria-live="polite"></p>
+      ${gameFacts}
+      ${related.results.length > 0 ? `<section class="related-games">
+        <h2>${escapeHtml(relatedHeading)}</h2>
+        <ul>${related.results.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
+      </section>` : ""}
       <details class="panel report-panel">
         <summary>Report a problem</summary>
         <form id="report-form" class="stack-form">
@@ -942,11 +927,6 @@ app.get("/games/:slug", async (c) => {
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
       </details>
-      ${gameFacts}
-      ${related.results.length > 0 ? `<section class="related-games">
-        <h2>${escapeHtml(relatedHeading)}</h2>
-        <ul>${related.results.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
-      </section>` : ""}
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -6921,6 +6901,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --brand-blue: #00a4fc;
         --vote-up-flash: #4ade80;
         --vote-down-flash: #f87171;
+        --badge-paywall: #4ade80;
+        --badge-nsfw: #f87171;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
       }
@@ -6940,6 +6922,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --brand-blue: #0077c2;
         --vote-up-flash: #15803d;
         --vote-down-flash: #b91c1c;
+        --badge-paywall: #166534;
+        --badge-nsfw: #b91c1c;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
       }
@@ -7150,8 +7134,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       button.active { background: var(--accent); color: var(--on-accent); }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
       .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
-      .paywall-badge { color:#22c55e; font-weight:700; margin-left:0.3rem; font-size:1em; }
-      .nsfw-badge { color:#ef4444; font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
+      .paywall-badge { color: var(--badge-paywall); font-weight:700; margin-left:0.3rem; font-size:1em; }
+      .nsfw-badge { color: var(--badge-nsfw); font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
       .moderation-badge {
         display: inline-flex;
         align-items: center;
@@ -7234,6 +7218,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       p { color: var(--muted); }
       .intro { color: var(--ink); font-size: 1.05rem; line-height: 1.5; margin: 0.25rem 0 1rem; }
       .btn-play { font-size: 1.1rem; padding: 0.8rem 1.4rem; }
+      /* Game page: votes and favorite in one row under the Play button, score and reset time beneath. */
+      .game-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.25rem 0 0.5rem; }
+      .game-actions button { min-height: 44px; min-width: 4.2rem; font-size: 1rem; }
+      .game-meta { color: var(--muted); font-size: 0.95rem; margin: 0.25rem 0; }
+      .game-actions-note { color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0 0; }
+      #game-action-status:empty { margin: 0; }
       .report-panel > summary { cursor: pointer; font-weight: 700; }
       .report-panel[open] > summary { margin-bottom: 0.75rem; }
       .game-facts { margin-top: 1.5rem; }
