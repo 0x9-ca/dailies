@@ -2370,7 +2370,7 @@ app.get("/lists/:slug", async (c) => {
             vote.className = "suggest-vote" + (item.voted ? " active" : "");
             vote.dataset.action = "vote";
             vote.setAttribute("aria-pressed", item.voted ? "true" : "false");
-            vote.title = item.voted ? "You agree. Tap to take it back." : "Agree with this suggestion";
+            vote.title = item.voted ? (signedIn ? "You agree. Tap to take it back." : "You agree.") : "Agree with this suggestion";
             vote.textContent = "▲ " + item.votes;
             vote.setAttribute("aria-label", item.votes + (item.votes === 1 ? " vote" : " votes") + (item.voted ? ", including yours" : "") + ". Agree with " + item.title);
             li.append(link, vote);
@@ -2427,6 +2427,7 @@ app.get("/lists/:slug", async (c) => {
           if (!item) return;
           const action = button.dataset.action;
           if (action === "vote") {
+            if (item.voted && !signedIn) { toast("You've already voted for " + item.title + ". Log in to take votes back.", "error"); return; }
             const result = await send(item.voted ? "DELETE" : "PUT", base + "/" + encodeURIComponent(gameId) + "/vote");
             if (!result.ok) toast(result.data.error || "Could not save your vote.", "error");
           } else if (action === "accept") {
@@ -5163,8 +5164,12 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, voterKey) });
 });
 
-// Agree (PUT) or take back agreement (DELETE) with a suggestion.
+// Agree (PUT) or take back agreement (DELETE, signed-in only) with a suggestion.
 const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVariables }>, agree: boolean) => {
+  // Logged-out visitors can add suggestions and votes but not take them back.
+  if (!agree && !c.get("user")) {
+    return c.json({ error: "Log in to take back a vote" }, 401);
+  }
   const voterKey = await getSuggestionVoterKey(c);
   const list = await getViewableList(c, c.req.param("id") ?? "");
   if (!list) {
