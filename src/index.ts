@@ -2176,12 +2176,12 @@ app.get("/lists/:slug", async (c) => {
   const user = c.get("user");
   const isStaff = !!user && (user.role === "editor" || user.role === "admin");
   const list = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id
+    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id, suggestions_enabled
      FROM curated_lists
      WHERE slug = ?1`
   )
     .bind(slug)
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null }>();
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; suggestions_enabled: number }>();
   const userTwitchId = await getUserTwitchId(c.env, user);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return notFoundPage(c);
@@ -2220,10 +2220,11 @@ app.get("/lists/:slug", async (c) => {
   const twitchLive = list.twitch_user_id ? await isTwitchUserLive(c.env, list.twitch_user_id) : false;
   // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get the
   // viewer's own; logged-out pages load theirs from the API.
-  const suggestions = isAdminEditor ? [] : await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null);
+  const suggestionsOn = !isAdminEditor && list.suggestions_enabled === 1;
+  const suggestions = suggestionsOn ? await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null) : [];
 
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
-    <main class="narrow${isAdminEditor ? "" : " list-page"}">
+    <main class="narrow${suggestionsOn ? " list-page" : ""}">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
@@ -2236,6 +2237,7 @@ app.get("/lists/:slug", async (c) => {
             <input type="text" name="title" value="${escapeHtml(list.title)}" required />
             ${isStaff ? `<input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />` : ""}
             <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
+            <label class="check"><input type="checkbox" id="list-suggestions-toggle"${list.suggestions_enabled === 1 ? " checked" : ""} /> Allow suggestions <small class="muted">(turning this off hides the panel; existing suggestions are kept)</small></label>
             <div class="actions">
               <button type="submit">Save details</button>
               ${isStaff ? `<button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>
@@ -2266,7 +2268,7 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      ${isAdminEditor ? "" : `<div class="list-layout">
+      ${!suggestionsOn ? "" : `<div class="list-layout">
       <details class="suggest-panel" id="suggest-panel">
         <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
         <div class="suggest-body">
@@ -2318,7 +2320,7 @@ app.get("/lists/:slug", async (c) => {
         }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
-      ${isAdminEditor ? "" : `</div></div>`}
+      ${!suggestionsOn ? "" : `</div></div>`}
     </main>
     ${!isAdminEditor ? `<script>
       (() => {
@@ -2411,6 +2413,7 @@ app.get("/lists/:slug", async (c) => {
               suggestions = data.suggestions;
               render();
             }
+            if (data.code === "disabled") window.setTimeout(hidePanel, 1500);
             return { ok: response.ok, status: response.status, data };
           } catch {
             return { ok: false, status: 0, data: {} };
@@ -2452,7 +2455,8 @@ app.get("/lists/:slug", async (c) => {
             const response = await fetch(base, { cache: "no-store" });
             if (!response.ok || busy) return;
             const data = await response.json();
-            if (Array.isArray(data.suggestions)) {
+            if (data.enabled === false) hidePanel();
+            else if (Array.isArray(data.suggestions)) {
               const now = new Set(data.suggestions.map((item) => item.gameId));
               const gone = suggestions.some((item) => !now.has(item.gameId));
               suggestions = data.suggestions;
@@ -2466,8 +2470,17 @@ app.get("/lists/:slug", async (c) => {
         };
         window.dglSuggestRefresh = refresh;
         if (!signedIn) void refresh();
-        window.setInterval(refresh, 30000);
+        const timer = window.setInterval(refresh, 30000);
         document.addEventListener("visibilitychange", refresh);
+        // Turned off while the page is open: back to the list alone, in a single column.
+        const hidePanel = () => {
+          window.clearInterval(timer);
+          document.removeEventListener("visibilitychange", refresh);
+          const layout = panel.closest(".list-layout");
+          const main = layout?.querySelector(".list-main");
+          if (layout && main) layout.replaceWith(...Array.from(main.childNodes));
+          document.querySelector("main.list-page")?.classList.remove("list-page");
+        };
 
         const form = document.getElementById("suggest-form");
         if (!form) return;
@@ -2669,6 +2682,24 @@ app.get("/lists/:slug", async (c) => {
           } else {
             const body = await res.json().catch(() => ({}));
             setStatus(body.error || "Could not save.");
+          }
+        });
+
+        document.getElementById("list-suggestions-toggle")?.addEventListener("change", async (e) => {
+          const box = e.target;
+          box.disabled = true;
+          setStatus("Saving...");
+          const res = await fetch("/api/lists/" + listId, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ suggestionsEnabled: box.checked })
+          }).catch(() => null);
+          box.disabled = false;
+          if (res && res.ok) {
+            setStatus(box.checked ? "Suggestions are on." : "Suggestions are off.");
+          } else {
+            box.checked = !box.checked;
+            setStatus("Could not save.");
           }
         });
 
@@ -4845,7 +4876,8 @@ const createListSchema = z.object({
 const updateListSchema = z.object({
   title: z.string().min(2).max(100).optional(),
   description: z.string().max(300).optional(),
-  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional()
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
+  suggestionsEnabled: z.boolean().optional()
 });
 
 app.post("/api/lists", async (c) => {
@@ -4898,9 +4930,9 @@ app.patch("/api/lists/:id", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const isStaff = auth.role === "editor" || auth.role === "admin";
-  const existing = await c.env.DB.prepare("SELECT title, description, slug FROM curated_lists WHERE id = ?1")
+  const existing = await c.env.DB.prepare("SELECT title, description, slug, suggestions_enabled FROM curated_lists WHERE id = ?1")
     .bind(listId)
-    .first<{ title: string; description: string | null; slug: string }>();
+    .first<{ title: string; description: string | null; slug: string; suggestions_enabled: number }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
   }
@@ -4917,7 +4949,7 @@ app.patch("/api/lists/:id", async (c) => {
   }
   await c.env.DB.prepare(
     `UPDATE curated_lists
-     SET title = ?1, description = ?2, slug = ?3, updated_by_user_id = ?4, updated_at = datetime('now')
+     SET title = ?1, description = ?2, slug = ?3, updated_by_user_id = ?4, updated_at = datetime('now'), suggestions_enabled = ?6
      WHERE id = ?5`
   )
     .bind(
@@ -4925,7 +4957,8 @@ app.patch("/api/lists/:id", async (c) => {
       parsed.data.description === undefined ? existing.description : parsed.data.description,
       parsed.data.slug ?? existing.slug,
       auth.id,
-      listId
+      listId,
+      parsed.data.suggestionsEnabled === undefined ? existing.suggestions_enabled : parsed.data.suggestionsEnabled ? 1 : 0
     )
     .run();
   await writeAudit(c.env, auth.id, "list", listId, "update_list", parsed.data);
@@ -5133,23 +5166,28 @@ async function getSuggestionVoterKey(c: Context<{ Bindings: Env; Variables: AppV
 }
 
 /** The list when the current visitor may see it (and so read and make suggestions), otherwise null. */
-async function getViewableList(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<{ id: string } | null> {
+async function getViewableList(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<{ id: string; suggestionsEnabled: boolean } | null> {
   const user = c.get("user");
-  const list = await c.env.DB.prepare("SELECT id, visibility, owner_user_id, twitch_user_id FROM curated_lists WHERE id = ?1")
+  const list = await c.env.DB.prepare("SELECT id, visibility, owner_user_id, twitch_user_id, suggestions_enabled FROM curated_lists WHERE id = ?1")
     .bind(listId)
-    .first<{ id: string; visibility: "public" | "private"; owner_user_id: string; twitch_user_id: string | null }>();
+    .first<{ id: string; visibility: "public" | "private"; owner_user_id: string; twitch_user_id: string | null; suggestions_enabled: number }>();
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId: await getUserTwitchId(c.env, user) })) {
     return null;
   }
-  return { id: list.id };
+  return { id: list.id, suggestionsEnabled: list.suggestions_enabled === 1 };
 }
+
+const SUGGESTIONS_OFF_ERROR = "Suggestions are turned off for this list";
 
 app.get("/api/lists/:id/suggestions", async (c) => {
   const list = await getViewableList(c, c.req.param("id"));
   if (!list) {
     return c.json({ error: "Not found" }, 404);
   }
-  return c.json({ suggestions: await getListSuggestions(c.env, list.id, await getSuggestionVoterKey(c)) }, 200, { "Cache-Control": "no-store" });
+  if (!list.suggestionsEnabled) {
+    return c.json({ enabled: false, suggestions: [] }, 200, { "Cache-Control": "no-store" });
+  }
+  return c.json({ enabled: true, suggestions: await getListSuggestions(c.env, list.id, await getSuggestionVoterKey(c)) }, 200, { "Cache-Control": "no-store" });
 });
 
 app.post("/api/lists/:id/suggestions", async (c) => {
@@ -5158,6 +5196,9 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   const list = await getViewableList(c, c.req.param("id"));
   if (!list) {
     return c.json({ error: "Not found" }, 404);
+  }
+  if (!list.suggestionsEnabled) {
+    return c.json({ error: SUGGESTIONS_OFF_ERROR, code: "disabled" }, 403);
   }
   const parsed = z.object({ gameId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
@@ -5207,6 +5248,9 @@ const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVaria
   const list = await getViewableList(c, c.req.param("id") ?? "");
   if (!list) {
     return c.json({ error: "Not found" }, 404);
+  }
+  if (!list.suggestionsEnabled) {
+    return c.json({ error: SUGGESTIONS_OFF_ERROR, code: "disabled" }, 403);
   }
   const gameId = c.req.param("gameId") ?? "";
   const rate = await enforceRateLimit(c.env, `list-suggest-vote:${voterKey}`, 120, 60 * 60);
