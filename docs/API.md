@@ -9,7 +9,7 @@
 - `GET /api/lists`
 - `GET /api/lists/:slug`
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
-- `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, paywall, nsfw, votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
+- `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, url, paywall, nsfw, categories: [{ slug, name, hue }], votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
 
 ## Anonymous-capable
 

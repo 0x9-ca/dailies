@@ -2350,10 +2350,18 @@ app.get("/lists/:slug", async (c) => {
             const li = document.createElement("li");
             li.className = "suggest-item";
             li.dataset.gameId = item.gameId;
+            // The title opens the game itself in a new tab (counted as a click and a play, like a list row).
+            const main = document.createElement("div");
+            main.className = "suggest-main";
             const link = document.createElement("a");
             link.className = "suggest-title";
-            link.href = "/games/" + encodeURIComponent(item.slug);
+            link.href = item.url;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.dataset.playId = item.gameId;
+            link.title = "Play " + item.title + " (opens in a new tab)";
             link.textContent = item.title;
+            link.addEventListener("click", () => { fetch("/api/games/" + encodeURIComponent(item.gameId) + "/click", { method: "POST" }).catch(() => {}); });
             if (item.paywall) {
               const badge = document.createElement("span");
               badge.className = "paywall-badge";
@@ -2367,6 +2375,22 @@ app.get("/lists/:slug", async (c) => {
               badge.textContent = "nsfw";
               link.appendChild(badge);
             }
+            main.appendChild(link);
+            if (item.categories.length > 0) {
+              const pills = document.createElement("div");
+              pills.className = "category-pills";
+              item.categories.forEach((cat) => {
+                const pill = document.createElement("a");
+                pill.className = "tag category-pill";
+                pill.href = "/games?category=" + encodeURIComponent(cat.slug);
+                pill.textContent = cat.name;
+                pill.style.color = "hsl(" + cat.hue + ", 65%, 28%)";
+                pill.style.background = "hsl(" + cat.hue + ", 65%, 90%)";
+                pill.style.borderColor = "hsl(" + cat.hue + ", 55%, 72%)";
+                pills.appendChild(pill);
+              });
+              main.appendChild(pills);
+            }
             const vote = document.createElement("button");
             vote.type = "button";
             vote.className = "suggest-vote" + (item.voted ? " active" : "");
@@ -2375,7 +2399,10 @@ app.get("/lists/:slug", async (c) => {
             vote.title = item.voted ? (item.votes === 1 ? "Only your vote. Tap to take it back and withdraw the suggestion." : "You agree. Tap to take it back.") : "Agree with this suggestion";
             vote.textContent = "▲ " + item.votes;
             vote.setAttribute("aria-label", item.votes + (item.votes === 1 ? " vote" : " votes") + (item.voted ? ", including yours" : "") + ". Agree with " + item.title);
-            li.append(link, vote);
+            const actions = document.createElement("div");
+            actions.className = "suggest-actions";
+            actions.appendChild(vote);
+            li.append(main, actions);
             if (canModerate) {
               const accept = document.createElement("button");
               accept.type = "button";
@@ -2391,7 +2418,7 @@ app.get("/lists/:slug", async (c) => {
               dismiss.textContent = "✕";
               dismiss.title = "Remove suggestion (it can't be suggested again)";
               dismiss.setAttribute("aria-label", "Remove suggestion " + item.title);
-              li.append(accept, dismiss);
+              actions.append(accept, dismiss);
             }
             return li;
           });
@@ -5101,11 +5128,21 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
 
 // Suggestions: viewers suggest games for a curated list and agree with each other's suggestions (one vote each, the
 // suggester's included). Logged-out visitors count by hashed IP, like anonymous game votes. Editors, admins and the list's Twitch owner move them onto the list or dismiss them.
-type ListSuggestion = { gameId: string; slug: string; title: string; paywall: boolean; nsfw: boolean; votes: number; voted: boolean };
+type ListSuggestion = {
+  gameId: string;
+  slug: string;
+  title: string;
+  url: string;
+  paywall: boolean;
+  nsfw: boolean;
+  categories: Array<{ slug: string; name: string; hue: number }>;
+  votes: number;
+  voted: boolean;
+};
 
 async function getListSuggestions(env: Env, listId: string, voterKey: string | null): Promise<ListSuggestion[]> {
   const rows = await env.DB.prepare(
-    `SELECT list_suggestions.game_id, games.slug, games.title, games.paywall, games.nsfw,
+    `SELECT list_suggestions.game_id, games.slug, games.title, games.url, games.paywall, games.nsfw,
             (SELECT COUNT(*) FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id) AS votes,
             EXISTS(SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.voter_key = ?2) AS voted
      FROM list_suggestions
@@ -5115,13 +5152,16 @@ async function getListSuggestions(env: Env, listId: string, voterKey: string | n
      LIMIT 200`
   )
     .bind(listId, voterKey ?? "")
-    .all<{ game_id: string; slug: string; title: string; paywall: number; nsfw: number; votes: number; voted: number }>();
+    .all<{ game_id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; votes: number; voted: number }>();
+  const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.game_id));
   return rows.results.map((row) => ({
     gameId: row.game_id,
     slug: row.slug,
     title: row.title,
+    url: row.url,
     paywall: row.paywall === 1,
     nsfw: row.nsfw === 1,
+    categories: (categoriesByGameId.get(row.game_id) ?? []).map((cat) => ({ ...cat, hue: categoryHue(cat.slug) })),
     votes: row.votes,
     voted: row.voted === 1
   }));
@@ -7844,8 +7884,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .suggest-form .game-search-wrap { flex: 1; min-width: 0; max-width: none; }
       .suggest-form input { width: 100%; box-sizing: border-box; }
       .suggest-list { list-style: none; padding: 0; margin: 0 0 0.25rem; display: flex; flex-direction: column; gap: 0.4rem; }
-      .suggest-item { display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
-      .suggest-title { flex: 1; min-width: 0; color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+      .suggest-item { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
+      /* The buttons drop below the title when the panel is too narrow for both. */
+      .suggest-main { flex: 1 1 150px; min-width: 0; }
+      .suggest-actions { display: flex; align-items: center; gap: 0.4rem; margin-left: auto; }
+      .suggest-main .category-pills { margin-top: 0.25rem; }
+      .suggest-main .category-pill { font-size: 0.75rem; }
+      .suggest-title { color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
       .suggest-title:hover { color: var(--accent); }
       .suggest-item button { padding: 0.2rem 0.5rem; font-size: 0.85rem; white-space: nowrap; position: relative; }
       .suggest-item button::after { content: ""; position: absolute; inset: -8px -2px; }
