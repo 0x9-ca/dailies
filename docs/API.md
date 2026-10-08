@@ -17,7 +17,7 @@
 - `POST /api/games/:id/favorite-anon`
 - `DELETE /api/games/:id/favorite-anon`
 - `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour per user or IP. Logged-out visitors are identified by hashed IP.
-- `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back)
+- `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back; taking it back needs a signed-in account)
 - `POST /api/games/:id/click` (increments click count for scoring; capped per visitor per game)
 
 ## Auth pages/routes
