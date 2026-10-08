@@ -137,6 +137,39 @@ CREATE TABLE games (
 CREATE INDEX idx_games_status_created ON games(status, created_at DESC);
 CREATE INDEX idx_games_status_score ON games(status, score DESC);
 
+CREATE TABLE list_blocked_games (
+  curated_list_id TEXT NOT NULL,
+  game_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('removed', 'dismissed')),
+  blocked_by_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (curated_list_id, game_id),
+  FOREIGN KEY (curated_list_id) REFERENCES curated_lists(id) ON DELETE CASCADE,
+  FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  FOREIGN KEY (blocked_by_user_id) REFERENCES users(id)
+);
+
+CREATE TABLE list_suggestion_votes (
+  curated_list_id TEXT NOT NULL,
+  game_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (curated_list_id, game_id, user_id),
+  FOREIGN KEY (curated_list_id, game_id) REFERENCES list_suggestions(curated_list_id, game_id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE list_suggestions (
+  curated_list_id TEXT NOT NULL,
+  game_id TEXT NOT NULL,
+  suggested_by_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (curated_list_id, game_id),
+  FOREIGN KEY (curated_list_id) REFERENCES curated_lists(id) ON DELETE CASCADE,
+  FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
+  FOREIGN KEY (suggested_by_user_id) REFERENCES users(id)
+);
+
 CREATE TABLE "oauth_accounts" (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,

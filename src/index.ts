@@ -2218,9 +2218,11 @@ app.get("/lists/:slug", async (c) => {
   }
 
   const twitchLive = list.twitch_user_id ? await isTwitchUserLive(c.env, list.twitch_user_id) : false;
+  // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get them.
+  const suggestions = isAdminEditor ? [] : await getListSuggestions(c.env, list.id, user?.id ?? null);
 
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
-    <main class="narrow">
+    <main class="narrow${isAdminEditor ? "" : " list-page"}">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <p>${escapeHtml(list.description || "")}</p>
@@ -2263,6 +2265,23 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
+      ${isAdminEditor ? "" : `<div class="list-layout">
+      <details class="suggest-panel" id="suggest-panel">
+        <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
+        <div class="suggest-body">
+          <p class="suggest-help">Know a game that belongs here? Suggest it, or agree with someone else's suggestion.</p>
+          ${user ? `<form class="suggest-form" id="suggest-form" autocomplete="off">
+            <div class="game-search-wrap">
+              <input type="text" id="suggest-input" placeholder="Search games…" aria-label="Search for a game to suggest" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest-options" maxlength="100" />
+              <div id="suggest-options" class="game-search-list" role="listbox"></div>
+            </div>
+            <button type="submit" id="suggest-submit" disabled>Suggest</button>
+          </form>` : `<p class="suggest-login"><a href="/login">Log in</a> to suggest games and vote on suggestions.</p>`}
+          <ol class="suggest-list" id="suggest-list"></ol>
+          <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet.</p>
+        </div>
+      </details>
+      <div class="list-main">`}
       ${!isAdminEditor && items.results.length > 1 ? renderListSortControl({ votes: true }) : ""}
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item) => {
@@ -2298,8 +2317,256 @@ app.get("/lists/:slug", async (c) => {
         }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
+      ${isAdminEditor ? "" : `</div></div>`}
     </main>
     ${!isAdminEditor ? `<script>
+      (() => {
+        const panel = document.getElementById("suggest-panel");
+        if (!panel) return;
+        const listId = ${scriptJson(list.id)};
+        const signedIn = ${scriptJson(!!user)};
+        const canModerate = ${scriptJson(canEdit)};
+        let suggestions = ${scriptJson(suggestions)};
+        const listEl = document.getElementById("suggest-list");
+        const countEl = document.getElementById("suggest-count");
+        const emptyEl = document.getElementById("suggest-empty");
+        const toast = (message, level) => window.appToast?.(message, level || "success", level === "error" ? 3500 : 2500);
+        const base = "/api/lists/" + encodeURIComponent(listId) + "/suggestions";
+
+        // Always open beside the list on wide screens; a collapsed panel above it on phones.
+        const wide = window.matchMedia("(min-width: 1100px)");
+        const syncOpen = () => { if (wide.matches) panel.open = true; };
+        wide.addEventListener("change", syncOpen);
+        syncOpen();
+        panel.querySelector("summary")?.addEventListener("click", (event) => { if (wide.matches) event.preventDefault(); });
+
+        const render = () => {
+          countEl.textContent = suggestions.length > 0 ? "(" + suggestions.length + ")" : "";
+          emptyEl.hidden = suggestions.length > 0;
+          const rows = suggestions.map((item) => {
+            const li = document.createElement("li");
+            li.className = "suggest-item";
+            li.dataset.gameId = item.gameId;
+            const link = document.createElement("a");
+            link.className = "suggest-title";
+            link.href = "/games/" + encodeURIComponent(item.slug);
+            link.textContent = item.title;
+            if (item.paywall) {
+              const badge = document.createElement("span");
+              badge.className = "paywall-badge";
+              badge.title = "This game requires payment to play";
+              badge.textContent = "$";
+              link.appendChild(badge);
+            }
+            if (item.nsfw) {
+              const badge = document.createElement("span");
+              badge.className = "nsfw-badge";
+              badge.textContent = "nsfw";
+              link.appendChild(badge);
+            }
+            const vote = document.createElement("button");
+            vote.type = "button";
+            vote.className = "suggest-vote" + (item.voted ? " active" : "");
+            vote.dataset.action = "vote";
+            vote.setAttribute("aria-pressed", item.voted ? "true" : "false");
+            vote.title = item.voted ? "You agree. Tap to take it back." : "Agree with this suggestion";
+            vote.textContent = "▲ " + item.votes;
+            vote.setAttribute("aria-label", item.votes + (item.votes === 1 ? " vote" : " votes") + (item.voted ? ", including yours" : "") + ". Agree with " + item.title);
+            li.append(link, vote);
+            if (canModerate) {
+              const accept = document.createElement("button");
+              accept.type = "button";
+              accept.className = "suggest-accept";
+              accept.dataset.action = "accept";
+              accept.textContent = "Add";
+              accept.title = "Add to the list";
+              accept.setAttribute("aria-label", "Add " + item.title + " to the list");
+              const dismiss = document.createElement("button");
+              dismiss.type = "button";
+              dismiss.className = "suggest-dismiss";
+              dismiss.dataset.action = "dismiss";
+              dismiss.textContent = "✕";
+              dismiss.title = "Remove suggestion (it can't be suggested again)";
+              dismiss.setAttribute("aria-label", "Remove suggestion " + item.title);
+              li.append(accept, dismiss);
+            }
+            return li;
+          });
+          listEl.replaceChildren(...rows);
+        };
+        render();
+
+        let busy = false;
+        const send = async (method, url, body) => {
+          busy = true;
+          try {
+            const response = await fetch(url, {
+              method,
+              headers: body ? { "Content-Type": "application/json" } : undefined,
+              body: body ? JSON.stringify(body) : undefined
+            });
+            const data = await response.json().catch(() => ({}));
+            if (Array.isArray(data.suggestions)) {
+              suggestions = data.suggestions;
+              render();
+            }
+            return { ok: response.ok, status: response.status, data };
+          } catch {
+            return { ok: false, status: 0, data: {} };
+          } finally {
+            busy = false;
+          }
+        };
+
+        listEl.addEventListener("click", async (event) => {
+          const button = event.target.closest("button[data-action]");
+          if (!button || busy) return;
+          const gameId = button.closest("li")?.dataset.gameId;
+          const item = suggestions.find((entry) => entry.gameId === gameId);
+          if (!item) return;
+          const action = button.dataset.action;
+          if (action === "vote") {
+            if (!signedIn) { toast("Log in to vote on suggestions.", "error"); return; }
+            const result = await send(item.voted ? "DELETE" : "PUT", base + "/" + encodeURIComponent(gameId) + "/vote");
+            if (!result.ok) toast(result.data.error || "Could not save your vote.", "error");
+          } else if (action === "accept") {
+            const result = await send("POST", base + "/" + encodeURIComponent(gameId) + "/accept");
+            if (result.ok) {
+              toast(item.title + " added to the list.");
+              window.dglListRefresh?.();
+            } else {
+              toast(result.data.error || "Could not add it to the list.", "error");
+            }
+          } else if (action === "dismiss") {
+            if (!window.confirm("Remove the suggestion " + item.title + "? It can't be suggested for this list again.")) return;
+            const result = await send("DELETE", base + "/" + encodeURIComponent(gameId));
+            if (result.ok) toast("Suggestion removed."); else toast(result.data.error || "Could not remove it.", "error");
+          }
+        });
+
+        // Keeps counts current while the page is open (and refreshes a cached page's copy on load).
+        const refresh = async () => {
+          if (document.visibilityState !== "visible" || busy) return;
+          try {
+            const response = await fetch(base, { cache: "no-store" });
+            if (!response.ok || busy) return;
+            const data = await response.json();
+            if (Array.isArray(data.suggestions)) {
+              suggestions = data.suggestions;
+              render();
+            }
+          } catch {
+            // Try again next time.
+          }
+        };
+        if (!signedIn) void refresh();
+        window.setInterval(refresh, 30000);
+        document.addEventListener("visibilitychange", refresh);
+
+        const form = document.getElementById("suggest-form");
+        if (!form) return;
+        const input = document.getElementById("suggest-input");
+        const options = document.getElementById("suggest-options");
+        const submit = document.getElementById("suggest-submit");
+        let games = null;
+        let loading = null;
+        let picked = null;
+        let active = -1;
+        const loadGames = () => {
+          loading = loading || fetch("/api/games/titles").then((r) => r.json()).then((data) => { games = data.games || []; }).catch(() => { loading = null; });
+          return loading;
+        };
+        const close = () => { options.classList.remove("open"); input.setAttribute("aria-expanded", "false"); active = -1; };
+        const pick = (game) => {
+          picked = game;
+          input.value = game.title;
+          submit.disabled = false;
+          close();
+        };
+        const showMatches = async () => {
+          const query = input.value.trim().toLowerCase();
+          if (!query) { close(); return; }
+          if (!games) await loadGames();
+          if (!games || input.value.trim().toLowerCase() !== query) return;
+          const onList = new Set(Array.from(document.querySelectorAll("#list-items > li[data-game-id]")).map((li) => li.getAttribute("data-game-id")));
+          const suggested = new Set(suggestions.map((item) => item.gameId));
+          const matches = games
+            .filter((game) => game.title.toLowerCase().includes(query))
+            .sort((a, b) => Number(!a.title.toLowerCase().startsWith(query)) - Number(!b.title.toLowerCase().startsWith(query)))
+            .slice(0, 12);
+          options.replaceChildren(...matches.map((game, index) => {
+            const option = document.createElement("div");
+            option.className = "game-search-item";
+            option.id = "suggest-option-" + index;
+            option.setAttribute("role", "option");
+            option.textContent = game.title;
+            const note = onList.has(game.id) ? "on the list" : suggested.has(game.id) ? "suggested" : "";
+            if (note) {
+              const small = document.createElement("small");
+              small.textContent = " · " + note;
+              option.appendChild(small);
+            }
+            option.addEventListener("mousedown", (event) => { event.preventDefault(); pick(game); });
+            return option;
+          }));
+          if (matches.length === 0) {
+            const none = document.createElement("div");
+            none.className = "game-search-item";
+            none.textContent = "No games match.";
+            options.replaceChildren(none);
+          }
+          options.classList.add("open");
+          input.setAttribute("aria-expanded", "true");
+          active = -1;
+          options._matches = matches;
+        };
+        input.addEventListener("focus", () => { void loadGames(); });
+        input.addEventListener("input", () => {
+          if (picked && input.value !== picked.title) { picked = null; submit.disabled = true; }
+          void showMatches();
+        });
+        input.addEventListener("blur", () => window.setTimeout(close, 150));
+        input.addEventListener("keydown", (event) => {
+          const matches = options._matches || [];
+          if (!options.classList.contains("open") || matches.length === 0) {
+            if (event.key === "Escape") close();
+            return;
+          }
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            active = event.key === "ArrowDown" ? Math.min(active + 1, matches.length - 1) : Math.max(active - 1, 0);
+            Array.from(options.children).forEach((el, i) => el.classList.toggle("active", i === active));
+            input.setAttribute("aria-activedescendant", "suggest-option-" + active);
+          } else if (event.key === "Enter" && active >= 0) {
+            event.preventDefault();
+            pick(matches[active]);
+          } else if (event.key === "Escape") {
+            close();
+          }
+        });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          if (!picked || busy) return;
+          submit.disabled = true;
+          const game = picked;
+          const result = await send("POST", base, { gameId: game.id });
+          if (result.ok) {
+            picked = null;
+            input.value = "";
+            const messages = {
+              suggested: "Suggested " + game.title + ".",
+              voted: game.title + " was already suggested, so it counts as your vote.",
+              already_voted: "You've already voted for " + game.title + "."
+            };
+            toast(messages[result.data.result] || "Suggested.");
+          } else {
+            submit.disabled = false;
+            toast(result.data.error || "Could not suggest that game.", "error");
+          }
+        });
+      })();
+    </script>
+    <script>
       ${LIST_SORT_SCRIPT}
       (() => {
         const list = document.getElementById("list-items");
@@ -2356,6 +2623,7 @@ app.get("/lists/:slug", async (c) => {
         };
         window.setInterval(check, 30000);
         document.addEventListener("visibilitychange", check);
+        window.dglListRefresh = check;
       })();
     </script>` : ""}
     ${!isAdminEditor ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
@@ -3724,6 +3992,23 @@ app.get("/api/games/vote-counts", async (c) => {
   return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 });
 
+// Every approved game's id, slug and title, for the list suggestion search. Shared through the edge cache for 5 minutes.
+app.get("/api/games/titles", async (c) => {
+  const cacheKey = new Request(new URL("/api/games/titles", c.req.url).toString());
+  const useCache = !isDevEnv(c.env);
+  if (useCache) {
+    const cached = await caches.default.match(cacheKey);
+    if (cached) return new Response(cached.body, { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
+  }
+  const rows = await c.env.DB.prepare("SELECT id, slug, title FROM games WHERE status = 'approved' ORDER BY title COLLATE NOCASE ASC")
+    .all<{ id: string; slug: string; title: string }>();
+  const body = JSON.stringify({ games: rows.results });
+  if (useCache) {
+    c.executionCtx.waitUntil(caches.default.put(cacheKey, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=300" } })));
+  }
+  return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+});
+
 app.get("/api/games/rotation-info", async (c) => {
   const ids = (c.req.query("ids") || "")
     .split(",")
@@ -4705,6 +4990,11 @@ app.post("/api/lists/:id/items", async (c) => {
   )
     .bind(listId, parsed.data.gameId, nextPos, auth.id)
     .run();
+  // Adding a game directly lifts any suggestion block and settles an open suggestion for it.
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, parsed.data.gameId),
+    ...deleteSuggestionStatements(c.env, listId, parsed.data.gameId)
+  ]);
   await writeAudit(c.env, auth.id, "list", listId, "add_item", { gameId: parsed.data.gameId, position: nextPos });
   return c.json({ ok: true });
 });
@@ -4714,9 +5004,13 @@ app.delete("/api/lists/:id/items/:gameId", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  await c.env.DB.prepare("DELETE FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2")
+  const removed = await c.env.DB.prepare("DELETE FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2")
     .bind(c.req.param("id"), c.req.param("gameId"))
     .run();
+  // A game taken off a list can't be suggested for it again.
+  if (((removed.meta as { changes?: number } | undefined)?.changes ?? 0) > 0) {
+    await blockListGame(c.env, c.req.param("id"), c.req.param("gameId"), "removed", auth.id);
+  }
   await writeAudit(c.env, auth.id, "list", c.req.param("id"), "remove_item", { gameId: c.req.param("gameId") });
   return c.json({ ok: true });
 });
@@ -4749,6 +5043,197 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
   await c.env.DB.batch([...clearPassStatements, ...finalPassStatements]);
   await writeAudit(c.env, auth.id, "list", listId, "reorder_items", { count: parsed.data.items.length });
   return c.json({ ok: true });
+});
+
+// Suggestions: signed-in viewers suggest games for a curated list and agree with each other's suggestions (one vote
+// each, the suggester's included). Editors, admins and the list's Twitch owner move them onto the list or dismiss them.
+type ListSuggestion = { gameId: string; slug: string; title: string; paywall: boolean; nsfw: boolean; votes: number; voted: boolean };
+
+async function getListSuggestions(env: Env, listId: string, userId: string | null): Promise<ListSuggestion[]> {
+  const rows = await env.DB.prepare(
+    `SELECT list_suggestions.game_id, games.slug, games.title, games.paywall, games.nsfw,
+            (SELECT COUNT(*) FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id) AS votes,
+            EXISTS(SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.user_id = ?2) AS voted
+     FROM list_suggestions
+     JOIN games ON games.id = list_suggestions.game_id AND games.status = 'approved'
+     WHERE list_suggestions.curated_list_id = ?1
+     ORDER BY votes DESC, list_suggestions.created_at ASC
+     LIMIT 200`
+  )
+    .bind(listId, userId ?? "")
+    .all<{ game_id: string; slug: string; title: string; paywall: number; nsfw: number; votes: number; voted: number }>();
+  return rows.results.map((row) => ({
+    gameId: row.game_id,
+    slug: row.slug,
+    title: row.title,
+    paywall: row.paywall === 1,
+    nsfw: row.nsfw === 1,
+    votes: row.votes,
+    voted: row.voted === 1
+  }));
+}
+
+function deleteSuggestionStatements(env: Env, listId: string, gameId: string): D1PreparedStatement[] {
+  return [
+    env.DB.prepare("DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, gameId),
+    env.DB.prepare("DELETE FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, gameId)
+  ];
+}
+
+async function blockListGame(env: Env, listId: string, gameId: string, reason: "removed" | "dismissed", userId: string): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO list_blocked_games (curated_list_id, game_id, reason, blocked_by_user_id) VALUES (?1, ?2, ?3, ?4)
+       ON CONFLICT (curated_list_id, game_id) DO UPDATE SET reason = excluded.reason, blocked_by_user_id = excluded.blocked_by_user_id, created_at = datetime('now')`
+    ).bind(listId, gameId, reason, userId),
+    ...deleteSuggestionStatements(env, listId, gameId)
+  ]);
+}
+
+/** The list when the current visitor may see it (and so read and make suggestions), otherwise null. */
+async function getViewableList(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<{ id: string } | null> {
+  const user = c.get("user");
+  const list = await c.env.DB.prepare("SELECT id, visibility, owner_user_id, twitch_user_id FROM curated_lists WHERE id = ?1")
+    .bind(listId)
+    .first<{ id: string; visibility: "public" | "private"; owner_user_id: string; twitch_user_id: string | null }>();
+  if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId: await getUserTwitchId(c.env, user) })) {
+    return null;
+  }
+  return { id: list.id };
+}
+
+app.get("/api/lists/:id/suggestions", async (c) => {
+  const list = await getViewableList(c, c.req.param("id"));
+  if (!list) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  return c.json({ suggestions: await getListSuggestions(c.env, list.id, c.get("user")?.id ?? null) }, 200, { "Cache-Control": "no-store" });
+});
+
+app.post("/api/lists/:id/suggestions", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const list = await getViewableList(c, c.req.param("id"));
+  if (!list) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const parsed = z.object({ gameId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const gameId = parsed.data.gameId;
+  const rate = await enforceRateLimit(c.env, `list-suggest:user:${auth.id}`, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Too many suggestions. Try again later.", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const state = await c.env.DB.prepare(
+    `SELECT games.title,
+            EXISTS(SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = games.id) AS on_list,
+            EXISTS(SELECT 1 FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = games.id) AS blocked,
+            EXISTS(SELECT 1 FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = games.id) AS suggested
+     FROM games WHERE games.id = ?2 AND games.status = 'approved'`
+  )
+    .bind(list.id, gameId)
+    .first<{ title: string; on_list: number; blocked: number; suggested: number }>();
+  if (!state) {
+    return c.json({ error: "Game not found" }, 404);
+  }
+  if (state.on_list) {
+    return c.json({ error: `${state.title} is already on this list`, code: "on_list" }, 409);
+  }
+  if (state.blocked) {
+    return c.json({ error: `${state.title} was removed from this list and can't be suggested again`, code: "blocked" }, 409);
+  }
+  // Suggesting a game that's already suggested counts as agreeing with it.
+  const statements = [
+    c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestions (curated_list_id, game_id, suggested_by_user_id) VALUES (?1, ?2, ?3)").bind(list.id, gameId, auth.id),
+    c.env.DB.prepare("INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id) VALUES (?1, ?2, ?3)").bind(list.id, gameId, auth.id)
+  ];
+  const [, vote] = await c.env.DB.batch(statements);
+  const voteAdded = ((vote.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
+  const result = !state.suggested ? "suggested" : voteAdded ? "voted" : "already_voted";
+  return c.json({ ok: true, result, title: state.title, suggestions: await getListSuggestions(c.env, list.id, auth.id) });
+});
+
+// Agree (PUT) or take back agreement (DELETE) with a suggestion.
+const setSuggestionVote = async (c: Context<{ Bindings: Env; Variables: AppVariables }>, agree: boolean) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const list = await getViewableList(c, c.req.param("id") ?? "");
+  if (!list) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const gameId = c.req.param("gameId") ?? "";
+  const rate = await enforceRateLimit(c.env, `list-suggest-vote:user:${auth.id}`, 120, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const exists = await c.env.DB.prepare("SELECT 1 AS ok FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2").bind(list.id, gameId).first();
+  if (!exists) {
+    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, list.id, auth.id) }, 404);
+  }
+  await c.env.DB.prepare(
+    agree
+      ? "INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id) VALUES (?1, ?2, ?3)"
+      : "DELETE FROM list_suggestion_votes WHERE curated_list_id = ?1 AND game_id = ?2 AND user_id = ?3"
+  )
+    .bind(list.id, gameId, auth.id)
+    .run();
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, list.id, auth.id) });
+};
+app.put("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, true));
+app.delete("/api/lists/:id/suggestions/:gameId/vote", (c) => setSuggestionVote(c, false));
+
+// Moves a suggestion to the end of the list.
+app.post("/api/lists/:id/suggestions/:gameId/accept", async (c) => {
+  const listId = c.req.param("id");
+  const gameId = c.req.param("gameId");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const exists = await c.env.DB.prepare(
+    `SELECT 1 AS ok FROM list_suggestions JOIN games ON games.id = list_suggestions.game_id AND games.status = 'approved'
+     WHERE list_suggestions.curated_list_id = ?1 AND list_suggestions.game_id = ?2`
+  )
+    .bind(listId, gameId)
+    .first();
+  if (!exists) {
+    return c.json({ error: "That suggestion is no longer open", suggestions: await getListSuggestions(c.env, listId, auth.id) }, 404);
+  }
+  const maxPos = await c.env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS maxPos FROM curated_list_items WHERE curated_list_id = ?1")
+    .bind(listId)
+    .first<{ maxPos: number }>();
+  const position = (maxPos?.maxPos ?? 0) + 1;
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT OR IGNORE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id) VALUES (?1, ?2, ?3, ?4)"
+    ).bind(listId, gameId, position, auth.id),
+    c.env.DB.prepare("DELETE FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, gameId),
+    ...deleteSuggestionStatements(c.env, listId, gameId)
+  ]);
+  await writeAudit(c.env, auth.id, "list", listId, "accept_suggestion", { gameId, position });
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, auth.id) });
+});
+
+// Dismisses a suggestion; the game can't be suggested for this list again.
+app.delete("/api/lists/:id/suggestions/:gameId", async (c) => {
+  const listId = c.req.param("id");
+  const gameId = c.req.param("gameId");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const exists = await c.env.DB.prepare("SELECT 1 AS ok FROM list_suggestions WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, gameId).first();
+  if (exists) {
+    await blockListGame(c.env, listId, gameId, "dismissed", auth.id);
+    await writeAudit(c.env, auth.id, "list", listId, "dismiss_suggestion", { gameId });
+  }
+  return c.json({ ok: true, suggestions: await getListSuggestions(c.env, listId, auth.id) });
 });
 
 app.get("/api/admin/submissions", async (c) => {
@@ -7235,6 +7720,29 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .game-search-item { padding: 0.5rem 0.65rem; cursor: pointer; color: var(--ink); font-size: 0.9rem; }
       .game-search-item:hover, .game-search-item.active { background: var(--card); }
       .game-search-item small { color: var(--muted); }
+      /* Curated list suggestions: a collapsed panel above the list on phones, a column beside it on wide screens. */
+      .suggest-panel { margin: 0.75rem 0; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+      .suggest-panel > summary { cursor: pointer; padding: 0.75rem 0.85rem; font-weight: 700; }
+      .suggest-count { color: var(--muted); font-weight: 600; }
+      .suggest-body { padding: 0 0.85rem 0.85rem; }
+      .suggest-help, .suggest-login, .suggest-empty { color: var(--muted); font-size: 0.9rem; margin: 0 0 0.65rem; }
+      .suggest-empty { margin: 0; }
+      .suggest-form { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+      .suggest-form .game-search-wrap { flex: 1; min-width: 0; max-width: none; }
+      .suggest-form input { width: 100%; box-sizing: border-box; }
+      .suggest-list { list-style: none; padding: 0; margin: 0 0 0.25rem; display: flex; flex-direction: column; gap: 0.4rem; }
+      .suggest-item { display: flex; align-items: center; gap: 0.4rem; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); }
+      .suggest-title { flex: 1; min-width: 0; color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+      .suggest-title:hover { color: var(--accent); }
+      .suggest-item button { padding: 0.2rem 0.5rem; font-size: 0.85rem; white-space: nowrap; position: relative; }
+      .suggest-item button::after { content: ""; position: absolute; inset: -8px -2px; }
+      @media (min-width: 1100px) {
+        main.list-page { max-width: 1200px; }
+        .list-layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+        .suggest-panel { margin: 0.5rem 0 0; }
+        .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
+        .suggest-panel > summary::-webkit-details-marker { display: none; }
+      }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
       #toast-stack {
@@ -7639,6 +8147,13 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     reassign("curated_lists", "created_by_user_id"),
     reassign("curated_lists", "updated_by_user_id"),
     reassign("curated_list_items", "added_by_user_id"),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO list_suggestion_votes (curated_list_id, game_id, user_id, created_at)
+       SELECT curated_list_id, game_id, ?2, created_at FROM list_suggestion_votes WHERE user_id = ?1`
+    ).bind(fromId, intoId),
+    env.DB.prepare("DELETE FROM list_suggestion_votes WHERE user_id = ?1").bind(fromId),
+    reassign("list_suggestions", "suggested_by_user_id"),
+    reassign("list_blocked_games", "blocked_by_user_id"),
     // Keep a shared-rotation link if only the merged-away account had one (cleared first: the token is unique).
     env.DB.prepare("UPDATE users SET rotation_share_token = NULL WHERE id = ?1").bind(fromId),
     env.DB.prepare("UPDATE users SET rotation_share_token = ?2 WHERE id = ?1 AND rotation_share_token IS NULL").bind(intoId, fromShareToken),
