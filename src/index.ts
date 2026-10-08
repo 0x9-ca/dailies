@@ -7261,9 +7261,17 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details { position: relative; min-height: 30px; }
         .compact-actions button::after, .compact-actions .btn-details::after, .card-actions button::after, .card-actions .btn-details::after { content: ""; position: absolute; inset: -9px -2px; }
         .compact-actions, .card-actions { gap: 0.3rem; }
-        /* List and rotation rows: details get the full width, buttons move to their own line beneath. */
-        .rotation-list li:not(.empty-state) { flex-wrap: wrap; row-gap: 0.5rem; }
-        .rotation-list li > .item-main { flex: 1 1 calc(100% - 2.5rem); }
+        /* List and rotation rows on phones: the name, then "% liked · Resets in" across the full width, then the
+           category pills with the buttons beside them (the buttons drop below the pills only if both don't fit). */
+        .rotation-list li:not(.empty-state) { flex-wrap: wrap; row-gap: 0.4rem; column-gap: 0.5rem; }
+        .rotation-list li > .item-main { display: contents; }
+        .rotation-list li > .item-main > a { order: 1; flex: 1 1 calc(100% - 2.5rem); min-width: 0; }
+        .rotation-list li > .item-main > .meta { order: 2; flex: 1 1 100%; }
+        .rotation-list li > .item-main > .category-pills { order: 3; flex: 0 1 auto; min-width: 0; }
+        .rotation-list li > .item-main .category-pill { white-space: nowrap; }
+        .rotation-list li > .card-actions { order: 4; }
+        /* Rows with a drag handle: line the details up under the name rather than under the handle. */
+        .rotation-list li:has(> .drag) > .item-main > .meta, .rotation-list li:has(> .drag) > .item-main > .category-pills { padding-left: calc(var(--drag-width, 1rem) + 0.5rem); }
         .actions button, .actions .btn { min-height: 44px; }
         .home-actions .btn { font-size: 0.85rem; padding: 0.55rem 0.3rem; }
         .btn-play { display: block; text-align: center; }
