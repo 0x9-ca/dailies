@@ -2225,8 +2225,10 @@ app.get("/lists/:slug", async (c) => {
 
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${suggestionsOn ? " list-page" : ""}">
+      <div class="list-head">
       <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
+      </div>
       <p>${escapeHtml(list.description || "")}</p>
       ${canEdit ? `<p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>` : ""}
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
@@ -7701,6 +7703,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       li.played { opacity: 0.6; transition: opacity 0.15s ease; }
       li.played:hover, li.played:focus-within { opacity: 0.85; }
       .twitch-watch { text-align: center; }
+      /* Wide screens: the list title and its Twitch button share a line. */
+      @media (min-width: 900px) {
+        .list-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; margin: 1.34rem 0 1rem; }
+        .list-head h1 { margin: 0; }
+        .list-head .twitch-watch { margin: 0; }
+      }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
       .btn-discord { gap: 0.5rem; background: #5865F2; border-color: #5865F2; color: #fff; }
       .linked-accounts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.6rem; }
