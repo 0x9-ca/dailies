@@ -7894,16 +7894,18 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .suggest-title:hover { color: var(--accent); }
       .suggest-item button { padding: 0.2rem 0.5rem; font-size: 0.85rem; white-space: nowrap; position: relative; }
       .suggest-item button::after { content: ""; position: absolute; inset: -8px -2px; }
-      /* From 900px (landscape phones and "desktop site" mode lay out at about 900-980px) the panel moves beside the list. */
+      /* From 900px (landscape phones and "desktop site" mode lay out at about 900-980px) the panel moves to the right of the list. */
       @media (min-width: 900px) {
         main.list-page { max-width: 1200px; }
-        .list-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 1rem; align-items: start; }
-        .suggest-panel { margin: 0.5rem 0 0; }
+        .list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 1rem; align-items: start; }
+        /* First in the page (so it sits above the list on phones), but in the right-hand column here. */
+        .list-main { grid-column: 1; grid-row: 1; }
+        .suggest-panel { grid-column: 2; grid-row: 1; margin: 0.5rem 0 0; }
         .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
         .suggest-panel > summary::-webkit-details-marker { display: none; }
       }
       @media (min-width: 1100px) {
-        .list-layout { grid-template-columns: 320px minmax(0, 1fr); gap: 1.5rem; }
+        .list-layout { grid-template-columns: minmax(0, 1fr) 320px; gap: 1.5rem; }
       }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
