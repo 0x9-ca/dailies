@@ -1247,7 +1247,7 @@ app.get("/rotation/:shareToken", async (c) => {
                 const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
                 return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
                 <div class="item-main">
-                  <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                  <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
                   ${renderCategoryPills(categoriesByGameId.get(item.id))}
                   ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
@@ -1669,7 +1669,7 @@ app.get("/me/rotation", async (c) => {
               return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
-                <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+                <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
                 ${renderCategoryPills(categoriesByGameId.get(item.id))}
                 ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
               </div>
@@ -2270,7 +2270,7 @@ app.get("/lists/:slug", async (c) => {
           return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${escapeHtml(item.title)}${item.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${item.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
@@ -5984,6 +5984,11 @@ async function getViewerGameState(
 }
 
 // A real link (not a scripted button) so crawlers can follow it to the game's page.
+// A list/rotation row's game name plus its paywall/NSFW badges (the name wraps on narrow screens; see .rotation-list CSS).
+function renderRowTitle(title: string, paywall: number | boolean, nsfw: number | boolean): string {
+  return `<span class="title-text">${escapeHtml(title)}</span>${paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}`;
+}
+
 function renderDetailsLink(slug: string, title: string): string {
   return `<a class="btn-details" href="/games/${encodeURIComponent(slug)}" aria-label="${escapeHtml(`${title} details`)}" title="Details">…</a>`;
 }
@@ -7054,6 +7059,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
       .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
       .meta > :not([hidden]) ~ :not([hidden])::before { content: "·"; margin: 0 0.4em; }
+      /* "83% liked" and "Resets in 3h 12m" never break mid-phrase; a part that doesn't fit moves to the next line. */
+      .meta > * { white-space: nowrap; }
       /* Games added to or removed from a curated list while it's open. */
       .row-enter { animation: row-enter 0.9s ease-out; }
       @keyframes row-enter {
@@ -7157,7 +7164,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
       .rotation-list li > .item-main { flex: 1; min-width: 0; }
-      .rotation-list li > .item-main > a { display:block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* Long names wrap (as on the game cards) rather than being cut off, so the $ / nsfw badges are never hidden. */
+      .rotation-list li > .item-main > a { display: block; overflow-wrap: break-word; }
+      .rotation-list li > .item-main > a .paywall-badge, .rotation-list li > .item-main > a .nsfw-badge { white-space: nowrap; }
       .rotation-list .item-main .tag { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
       .category-pills { display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem; }
       .category-pills:empty { display:none; margin-top:0; }
@@ -7252,6 +7261,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details { position: relative; min-height: 30px; }
         .compact-actions button::after, .compact-actions .btn-details::after, .card-actions button::after, .card-actions .btn-details::after { content: ""; position: absolute; inset: -9px -2px; }
         .compact-actions, .card-actions { gap: 0.3rem; }
+        /* List and rotation rows: details get the full width, buttons move to their own line beneath. */
+        .rotation-list li:not(.empty-state) { flex-wrap: wrap; row-gap: 0.5rem; }
+        .rotation-list li > .item-main { flex: 1 1 calc(100% - 2.5rem); }
         .actions button, .actions .btn { min-height: 44px; }
         .home-actions .btn { font-size: 0.85rem; padding: 0.55rem 0.3rem; }
         .btn-play { display: block; text-align: center; }
