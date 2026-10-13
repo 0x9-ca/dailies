@@ -4,6 +4,12 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-13",
+    items: [
+      "The home page explains what a dle is, names some of the best-known ones, and links every category."
+    ]
+  },
+  {
     date: "2026-10-08",
     items: [
       "Added this changelog, linked from the footer.",

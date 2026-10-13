@@ -323,10 +323,28 @@ app.get("/", async (c) => {
   const newGameIds = newGames.map((game) => game.id);
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds])]);
   const playableCount = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
+  // For the title, description and "What is a dle?": a rounded-down count ("800+") and well-known games people search
+  // for, linked only when they're listed.
+  const roundedCount = playableCount >= 100 ? `${Math.floor(playableCount / 100) * 100}+` : String(playableCount);
+  const famousTitles = ["NYT Wordle", "NYT Connections", "NYT Strands", "Worldle", "Globle", "Bandle", "Framed", "Costcodle"];
+  const famousGames = (await c.env.DB.prepare(
+    `SELECT slug, title FROM games WHERE status = 'approved' AND title IN (${famousTitles.map((_, i) => `?${i + 1}`).join(",")})`
+  ).bind(...famousTitles).all<{ slug: string; title: string }>()).results
+    .sort((a, b) => famousTitles.indexOf(a.title) - famousTitles.indexOf(b.title));
+  const famousGamesMarkup = famousGames.map((game) => `<a href="/games/${escapeHtml(game.slug)}">${escapeHtml(game.title.replace(/^NYT /, ""))}</a>`);
+  const homeCategories = (await c.env.DB.prepare(
+    `SELECT categories.slug, categories.name, COUNT(*) AS n
+     FROM categories
+     JOIN game_categories ON game_categories.category_id = categories.id
+     JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
+     WHERE categories.is_active = 1
+     GROUP BY categories.id
+     ORDER BY n DESC, categories.name ASC`
+  ).all<{ slug: string; name: string; n: number }>()).results;
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
-  return c.html(await layout("0x9 dles – Find the Best Daily Games", user, `
+  return c.html(await layout(`0x9 dles – ${roundedCount} Free Daily Games like Wordle & Connections`, user, `
     <main>
       ${user ? "" : `<p class="intro" id="home-intro">0x9 dles collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
       <script>
@@ -378,7 +396,12 @@ app.get("/", async (c) => {
       </div>
       <section class="about">
         <h2>About 0x9 dles</h2>
-        <p>A daily game (or "dle") is a short puzzle that resets once a day, usually with the same challenge for every player. Wordle started the trend, and now there are hundreds of them covering words, geography, movies, music, logic, math and more. 0x9 dles is a community-run directory that keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
+        <p>0x9 dles is a free, community-run directory of ${playableCount.toLocaleString("en-US")} daily games. It keeps them all in one place so you can find the ones worth playing and build a daily routine around them.</p>
+        <h3>What is a dle?</h3>
+        <p>A daily game, or "dle", is a short puzzle that resets once a day with the same challenge for every player, so you can compare results with friends. Wordle started the trend, and the name stuck: many of them end in "-dle". There are now hundreds, covering words, geography, movies, music, logic, math and more. Nearly all are free to play in your browser, with no account or download.</p>
+        ${famousGamesMarkup.length > 0 ? `<p>Popular ones include ${famousGamesMarkup.length > 1 ? `${famousGamesMarkup.slice(0, -1).join(", ")} and ${famousGamesMarkup[famousGamesMarkup.length - 1]}` : famousGamesMarkup[0]}.</p>` : ""}
+        ${homeCategories.length > 0 ? `<h3>Browse by category</h3>
+        <ul class="about-categories">${homeCategories.map((cat) => `<li><a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a> <span>${cat.n}</span></li>`).join("")}</ul>` : ""}
         <h3>How games are ranked</h3>
         <p>Every game has a community score based on up and down votes, so a game with a few votes can't outrank one that many people like. Newer games get a small freshness boost, and games that are frequently reported or whose links stop working are ranked lower. Anyone can vote, with or without an account.</p>
         <h3>Build your daily rotation</h3>
@@ -407,7 +430,7 @@ app.get("/", async (c) => {
       });
     </script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
-  `, c.env, { path: "/", description: "0x9 dles is a hub for daily games. Browse, vote on, and favorite the best daily games, curated by the community." }));
+  `, c.env, { path: "/", description: `${roundedCount} free daily games like Wordle, Connections, Worldle and Bandle in one place: word, geography, music, trivia and logic puzzles. Vote, favorite and build your daily rotation.` }));
 });
 
 app.get("/submit", async (c) => {
@@ -7694,6 +7717,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .hero p { color: var(--muted); }
       .about { margin-top: 2rem; }
       .about p { color: var(--muted); max-width: 70ch; line-height: 1.6; }
+      .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; }
+      .about-categories span { color: var(--muted); font-size: 0.85em; }
       /* Shared by links and <button>s, so both get the same font, height and text position. */
       .btn {
         display: inline-flex;
