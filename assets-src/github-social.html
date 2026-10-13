@@ -1,0 +1,104 @@
+<!doctype html>
+<!--
+  Source for the GitHub repository's social preview (1280x640). Render it at exactly 1280x640 in a browser (wait for
+  document.fonts.ready), save it as assets-src/github-social.png, and upload that under the repo's
+  Settings > General > Social preview. Card styles mirror the site's (categoryHue pill colours, reset bar).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=JetBrains+Mono:wght@500;700&display=block" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: "Manrope", sans-serif;
+    color: #f2f2f2;
+    background:
+      radial-gradient(950px 560px at 0% 0%, rgba(0, 164, 252, 0.22), transparent 60%),
+      radial-gradient(760px 520px at 100% 100%, rgba(125, 211, 252, 0.10), transparent 60%),
+      #0e1013;
+    position: relative;
+  }
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px);
+    background-size: 40px 40px;
+    mask-image: linear-gradient(90deg, rgba(0,0,0,0.9), rgba(0,0,0,0.25));
+  }
+  .left { position: absolute; left: 84px; top: 76px; width: 610px; }
+  .repo { font-family: "JetBrains Mono", monospace; font-size: 24px; font-weight: 500; color: #a8adb5; display: flex; align-items: center; gap: 12px; }
+  .repo svg { width: 28px; height: 28px; fill: #a8adb5; }
+  .repo b { color: #f2f2f2; font-weight: 700; }
+  .logo { margin-top: 34px; font-size: 120px; font-weight: 800; letter-spacing: -2px; line-height: 1; }
+  .logo .x { color: #00a4fc; }
+  .tagline { margin-top: 26px; font-size: 40px; font-weight: 700; line-height: 1.2; }
+  .sub { margin-top: 16px; font-size: 24px; font-weight: 500; color: #a8adb5; line-height: 1.4; }
+  .stack { position: absolute; left: 84px; bottom: 64px; display: flex; gap: 8px; flex-wrap: nowrap; width: 680px; }
+  .chip {
+    font-family: "JetBrains Mono", monospace; font-size: 17px; font-weight: 700; color: #cfe9fb;
+    padding: 7px 13px; border-radius: 999px; background: rgba(0, 164, 252, 0.10); border: 1px solid rgba(125, 211, 252, 0.35);
+  }
+  .chip.gpl { color: #e6e6e6; background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.2); }
+
+  .cards { position: absolute; right: 78px; top: 92px; width: 460px; }
+  .card {
+    position: relative; width: 460px; padding: 18px 20px 26px; border-radius: 16px;
+    background: #1e1e1e; border: 1px solid #444; box-shadow: 0 22px 50px rgba(0,0,0,0.55);
+  }
+  .card + .card { margin-top: 24px; }
+  .card:nth-child(1) { transform: translateX(-28px) rotate(-2.5deg); }
+  .card:nth-child(2) { transform: translateX(10px); }
+  .card:nth-child(3) { transform: translateX(-14px) rotate(2deg); opacity: 0.55; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .name { font-size: 28px; font-weight: 800; }
+  .btns { display: flex; gap: 6px; }
+  .btn { padding: 5px 10px; border: 1px solid #444; border-radius: 8px; background: #1a1a1a; font-size: 18px; font-weight: 700; color: #e0e0e0; }
+  .btn.on { color: #fbbf24; }
+  .sub2 { margin-top: 10px; display: flex; align-items: center; gap: 10px; font-size: 17px; color: #b0b0b0; white-space: nowrap; }
+  .pill { padding: 3px 11px; border-radius: 999px; font-size: 16px; font-weight: 800; border: 1px solid; }
+  .bar { position: absolute; left: 14px; bottom: 8px; height: 4px; border-radius: 2px; background: #7dd3fc; opacity: 0.9; }
+  .bar.soon { background: #f87171; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="repo">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.5A2.5 2.5 0 0 1 4.5 0h8.75a.75.75 0 0 1 .75.75v12.5a.75.75 0 0 1-.75.75h-2.5a.75.75 0 0 1 0-1.5h1.75v-2h-8a1 1 0 0 0-.714 1.7.75.75 0 1 1-1.072 1.05A2.495 2.495 0 0 1 2 11.5Zm10.5-1h-8a1 1 0 0 0-1 1v6.708A2.486 2.486 0 0 1 4.5 9h8ZM5 12.25a.25.25 0 0 1 .25-.25h3.5a.25.25 0 0 1 .25.25v3.25a.25.25 0 0 1-.4.2l-1.45-1.087a.249.249 0 0 0-.3 0L5.4 15.7a.25.25 0 0 1-.4-.2Z"/></svg>
+      <span>0x9-ca / <b>dailies</b></span>
+    </div>
+    <div class="logo">0<span class="x">x</span>9 dles</div>
+    <div class="tagline">800+ daily games like Wordle,<br>all in one place.</div>
+    <div class="sub">Open-source, community-run directory.<br>Vote, track resets and build your daily rotation.</div>
+  </div>
+  <div class="stack">
+    <span class="chip">Cloudflare Workers</span>
+    <span class="chip">Hono</span>
+    <span class="chip">D1</span>
+    <span class="chip">TypeScript</span>
+    <span class="chip gpl">GPL-3.0</span>
+  </div>
+
+  <div class="cards" id="cards"></div>
+
+  <script>
+    // Same hash as the site's categoryHue(), so the pills match.
+    const hue = (slug) => { let h = 0; for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0; return h % 360; };
+    const cards = [
+      { name: "NYT Connections", up: 37, down: 2, fav: true, cat: ["words", "Words"], meta: "95% liked · Resets in 1h 24m", left: 0.94, soon: true },
+      { name: "Coaldle", up: 50, down: 2, cat: ["trivia", "Trivia"], meta: "96% liked · Resets in 9h 12m", left: 0.62 },
+      { name: "Krillion", up: 55, down: 6, cat: ["trivia", "Trivia"], meta: "90% liked · Resets in 15h 40m", left: 0.35 }
+    ];
+    document.getElementById("cards").innerHTML = cards.map((c) => {
+      const h = hue(c.cat[0]);
+      return `<div class="card">
+        <div class="top"><div class="name">${c.name}</div>
+          <div class="btns"><span class="btn">▲ ${c.up}</span><span class="btn">▼ ${c.down}</span><span class="btn${c.fav ? " on" : ""}">${c.fav ? "★" : "☆"}</span></div></div>
+        <div class="sub2"><span class="pill" style="color:hsl(${h},65%,28%);background:hsl(${h},65%,90%);border-color:hsl(${h},55%,72%)">${c.cat[1]}</span>${c.meta}</div>
+        <div class="bar${c.soon ? " soon" : ""}" style="width:${Math.round((460 - 30) * c.left)}px"></div>
+      </div>`;
+    }).join("");
+  </script>
+</body>
+</html>
