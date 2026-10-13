@@ -1,157 +1,79 @@
-# Daily Game List (Cloudflare Worker)
+# 0x9 dles
 
-Daily game directory and aggregator built on Cloudflare Workers + D1 + KV.
+A community-run directory of 800+ daily games: Wordle, Connections, and the hundreds of "-dle" puzzles that followed. Browse by category, vote, build your own daily rotation, and follow curated lists from editors and Twitch streamers.
 
-**Live site:** [https://dailies.0x9.ca](https://dailies.0x9.ca)  
-**Discord:** [https://discord.gg/uRApjQJ4vh](https://discord.gg/uRApjQJ4vh)
+**[dailies.0x9.ca](https://dailies.0x9.ca)** · [Discord](https://discord.gg/uRApjQJ4vh) · [Changelog](https://dailies.0x9.ca/changelog)
 
 ## Features
 
-- **Public directory** - Browse, search, and sort games by top, new, trending, or reset time
-- **Category filters** - Seeded category taxonomy for easy discovery
-- **Discord authentication** - Secure login with Discord OAuth
-- **Submission workflow** - Submit games with pending approval, voting, and reporting
-- **Anonymous voting** - Track votes by hashed client IP (one vote per game per IP)
-- **Favorites & rotation** - Manual ordering with weekday masks for daily game routines
-- **Rotation sharing** - Generate shareable links to let others view your daily rotation
-- **Rotation export/import** - Export your rotation as JSON and import it on any device (works for both logged-in and anonymous users)
-- **Anonymous favorites** - Browser localStorage with post-login import into account
-- **Game reset tracking** - Local vs server time support (with an IANA time zone for server resets) and reset-soon sorting
-- **Curated lists** - Public/private visibility with admin/editor management and drag-and-drop reordering
-- **Moderation tools** - Editor/admin roles with bulk actions and queue search
-- **Link health checks** - Daily cron job with auto-broken reporting threshold
-- **Account settings** - Display name updates and session revocation
-- **Compact design** - Clean game cards with bold titles and metadata
-- **Paywall indicator** - Editors/admins can mark games as paywall; green `$` badge on cards
-- **Click tracking** - Open-game clicks are tracked and factored into scoring
+- **Browse and discover:** search, filter by category, and sort by popularity, newest, trending or next reset. Each game has its own page with a description, "How to play" text and a share image.
+- **Vote and rank:** anyone can vote, signed in or not. Rankings combine votes, freshness, clicks and list appearances, and vote counts update live.
+- **Daily rotation:** favorite games, order them and pick the weekdays you play them, with or without an account. Share, export or import your rotation.
+- **Reset tracking:** live countdowns in your own time zone. Cards fade once you've played since the last reset and warn when an unplayed game is about to reset.
+- **Curated lists:** editor-made lists, optionally tagged with a Twitch streamer (verified badge, live indicator, streamer editing). Visitors can suggest games and vote on suggestions.
+- **Community moderation:** submissions are reviewed by editors, reports and daily link checks catch broken games, and every change is recorded in a public mod log. New games are announced on Discord.
+- **Sign in with Discord or Twitch:** only the account ID and username are stored, and provider tokens are revoked right after sign-in. Discord server roles grant editor and admin access.
 
 ## Tech stack
 
-- Cloudflare Workers
-- Hono
-- D1 (SQL)
-- KV (short-lived listing cache)
-- Zod validation
+[Cloudflare Workers](https://developers.cloudflare.com/workers/) with [Hono](https://hono.dev/), server-rendered HTML with small inline scripts, D1 (SQLite) for data, KV for caching, a Durable Object for batching Discord announcements, and a daily cron for link checks and score updates. TypeScript and Zod throughout. There is no front-end build step.
 
-## Local setup
+## Getting started
 
-1. Install dependencies:
+Requires Node.js 22 or newer. Local development runs entirely on your machine, with no Cloudflare account needed.
 
 ```bash
 npm install
+npx wrangler d1 migrations apply DB --local --persist-to /tmp/dles-state
+npx wrangler dev --ip 127.0.0.1 --port 8799 --persist-to /tmp/dles-state --var APP_URL:http://127.0.0.1:8799
 ```
 
-2. Create D1 databases + KV namespaces and update `wrangler.jsonc` IDs. Production has its own pair; staging
-   and the default (dev) config share a separate staging pair, so nothing but `--env production` touches production data.
+Open http://127.0.0.1:8799 and sign in instantly at `/auth/mock-login/user`, `/auth/mock-login/editor` or `/auth/mock-login/admin`. This only works in development. Games can be added from the Submit page as admin, where they are approved straight away.
 
-   This repo already has:
-
-   - Production: D1 `daily-game-list` (`9e1124fc-5f00-4c21-a100-b807d8d46925`), KV `59fe208f58e2486884a6f2460f415b7a`
-   - Staging/dev: D1 `daily-game-list-staging` (`460b7077-3ce6-4f2b-b54c-81cd9f07b1b3`), KV `c7bc57c57a0c4279b672ba4622fafa9b`
-
-3. Set secrets:
+Before committing, run:
 
 ```bash
-wrangler secret put SESSION_SECRET --env <staging|production>
-wrangler secret put OAUTH_DISCORD_CLIENT_SECRET --env <staging|production>
-wrangler secret put OAUTH_TWITCH_CLIENT_SECRET --env <staging|production>
-```
-
-4. Set Discord configuration in `wrangler.jsonc` (`vars`).
-
-   - Staging URL: `https://dailies-stg.0x9.ca`
-   - Production URL: `https://dailies.0x9.ca`
-
-   Discord redirect URLs:
-
-   - Dev: `http://192.168.17.2:8787/auth/discord/callback`
-   - Staging: `https://dailies-stg.0x9.ca/auth/discord/callback`
-   - Production: `https://dailies.0x9.ca/auth/discord/callback`
-
-   Discord Configuration:
-   - Set `OAUTH_DISCORD_CLIENT_ID` to your Discord OAuth2 application client ID
-   - Set `DISCORD_GUILD_ID` to your Discord server ID
-   - Set `DISCORD_ROLE_ADMIN` to the role ID for "Dailies Admin"
-   - Set `DISCORD_ROLE_EDITOR` to the role ID for "Dailies Editor"
-   - Put the client secret with: `wrangler secret put OAUTH_DISCORD_CLIENT_SECRET --env production`
-
-   Users who log in with Discord and are members of your server with the "Dailies Admin" or "Dailies Editor" roles will automatically receive the corresponding application role.
-
-5. Fill in local secret notes in `.secrets.env` (ignored by git).
-
-   You can sync OAuth client IDs/APP_URL into `wrangler.jsonc`, generate `.dev.vars` for local `wrangler dev`, and upload secrets for default + staging + production in one step:
-
-```bash
-./scripts/set-secrets.sh
-```
-
-   Or pass a custom secrets file path:
-
-```bash
-./scripts/set-secrets.sh /path/to/secrets.env
-```
-
-6. Apply migrations locally:
-
-```bash
-wrangler d1 migrations apply DB --local
-```
-
-7. Run dev server:
-
-```bash
-npm run dev
-```
-
-8. Validate Wrangler config before deploy:
-
-```bash
+npm run typecheck
 npm run validate:config
 ```
 
-Use mock login during local development:
+## Configuration
 
-- `/auth/mock-login/user`
-- `/auth/mock-login/editor`
-- `/auth/mock-login/admin`
+| Setting | Kind | Purpose |
+|---|---|---|
+| `APP_URL` | var | Public base URL |
+| `OAUTH_DISCORD_CLIENT_ID` / `OAUTH_DISCORD_CLIENT_SECRET` | var / secret | Discord sign-in |
+| `OAUTH_TWITCH_CLIENT_ID` / `OAUTH_TWITCH_CLIENT_SECRET` | var / secret | Twitch sign-in (hidden when unset) |
+| `DISCORD_GUILD_ID`, `DISCORD_ROLE_ADMIN`, `DISCORD_ROLE_EDITOR` | var | Discord server roles that map to admin and editor |
+| `DISCORD_NEW_GAME_WEBHOOK_URL`, `DISCORD_ROLE_DLE_ENJOYER` | secret / var | New-game announcements (off when unset) |
+| `SESSION_SECRET` | secret | Session token hashing |
 
-After adding migrations, apply them locally and remotely, then regenerate `docs/schema.sql` with `npm run schema:dump`.
-Use the `DB` binding name (not the database name) so `--env` always picks that environment's database:
+OAuth redirect URLs are `<APP_URL>/auth/discord/callback` and `<APP_URL>/auth/twitch/callback`. Keep secrets in `.secrets.env` (git-ignored). `./scripts/set-secrets.sh` syncs the vars into `wrangler.jsonc`, writes `.dev.vars` and uploads the secrets to staging and production.
+
+## Deploying
+
+Staging (`dailies-stg.0x9.ca`) and production (`dailies.0x9.ca`) each have their own D1 database and KV namespace. Always pass `--env`, and use the `DB` binding name in D1 commands so the command can't reach the wrong database:
 
 ```bash
-npx wrangler d1 migrations apply DB --local
-npx wrangler d1 migrations apply DB --remote --env staging
-npx wrangler d1 migrations apply DB --remote --env production
+npx wrangler d1 migrations apply DB --env staging --remote
+npm run deploy:staging
+npx wrangler d1 migrations apply DB --env production --remote
+npm run deploy:production
 ```
 
-## Important files
+Migrations are append-only. After adding one, run `npm run schema:dump` to regenerate `docs/schema.sql`.
 
-- `src/index.ts` - app routes, APIs, SSR pages, scheduled job
-- `src/lib/auth.ts` - session middleware and role checks
-- `src/lib/cache.ts` - KV cache helpers
-- `src/env.ts` - Env type definitions
-- `migrations/0001_initial.sql` - schema
-- `migrations/0002_seed_categories.sql` - seed categories + system user
-- `migrations/0005_game_reset_metadata.sql` - reset basis/time metadata
-- `migrations/0015_game_reset_timezone.sql` - time zone for server-time resets
-- `migrations/0006_anonymous_favorites.sql` - anonymous favorites table
-- `migrations/0007_anonymous_votes.sql` - anonymous vote table (IP-hash keyed)
-- `migrations/0008_add_discord_provider.sql` - Discord OAuth provider
-- `migrations/0009_add_rotation_share_token.sql` - rotation sharing tokens
-- `migrations/0010_game_click_count.sql` - click count column for scoring
-- `migrations/0011_game_paywall.sql` - paywall flag for games
+## Documentation
 
-## License and Attribution
+- [`AGENTS.md`](AGENTS.md): product behaviour and architecture in detail
+- [`CLAUDE.md`](CLAUDE.md): working conventions, environments and data safety
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): contributor workflow and manual test checklist
+- [`docs/API.md`](docs/API.md): API endpoints
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): request flows
+- [`docs/schema.sql`](docs/schema.sql): current database schema (generated)
 
-This project is licensed under the **GNU General Public License v3.0** (GPLv3). See the [LICENSE](LICENSE) file for full details.
+## License and attribution
 
-### Attribution
+Licensed under the [GNU General Public License v3.0](LICENSE).
 
-The base list of daily games is sourced from [aukspot/dles](https://github.com/aukspot/dles). We are grateful for their comprehensive collection of daily puzzle games.
-
-## Additional docs
-
-- `CONTRIBUTING.md` - contributor workflow and checks
-- `AGENTS.md` - coding-agent focused architecture and guardrails
-- `docs/API.md` - endpoint inventory
-- `docs/ARCHITECTURE.md` - request flows and sequence diagrams
+The original list of daily games came from [aukspot/dles](https://github.com/aukspot/dles). Many thanks for their collection.
