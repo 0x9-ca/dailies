@@ -194,7 +194,7 @@ CREATE TABLE "oauth_accounts" (
   user_id TEXT NOT NULL,
   provider TEXT NOT NULL CHECK (provider IN ('google', 'github', 'discord', 'twitch')),
   provider_user_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), avatar_url TEXT,
   UNIQUE(provider, provider_user_id),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -239,7 +239,8 @@ CREATE TABLE users (
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'editor', 'admin')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-, rotation_share_token TEXT DEFAULT NULL);
+, rotation_share_token TEXT DEFAULT NULL, profile_handle TEXT, profile_public INTEGER NOT NULL DEFAULT 0, profile_show_rotation INTEGER NOT NULL DEFAULT 0, profile_show_twitch INTEGER NOT NULL DEFAULT 0, profile_avatar_provider TEXT);
+CREATE UNIQUE INDEX idx_users_profile_handle ON users(profile_handle) WHERE profile_handle IS NOT NULL;
 CREATE UNIQUE INDEX idx_users_rotation_share_token ON users(rotation_share_token) WHERE rotation_share_token IS NOT NULL;
 
 CREATE TABLE votes (

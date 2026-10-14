@@ -161,7 +161,8 @@ app.get("/auth/mock-oauth/:provider/:providerUserId", async (c) => {
       provider,
       providerUserId: c.req.param("providerUserId"),
       displayName: `${provider} ${c.req.param("providerUserId")}`,
-      role: provider === "discord" ? (role === "admin" || role === "editor" ? role : "user") : undefined
+      role: provider === "discord" ? (role === "admin" || role === "editor" ? role : "user") : undefined,
+      avatarUrl: c.req.query("avatar") ?? null
     },
     c.req.query("link") === "1"
   );
@@ -195,7 +196,7 @@ app.get("/auth/discord/callback", async (c) => {
   try {
     const authHeaders = { Authorization: `Bearer ${accessToken}` };
     const userRes = await fetch("https://discord.com/api/users/@me", { headers: authHeaders });
-    const discordUser = userRes.ok ? ((await userRes.json()) as { id?: string; username?: string | null; global_name?: string | null }) : null;
+    const discordUser = userRes.ok ? ((await userRes.json()) as { id?: string; username?: string | null; global_name?: string | null; avatar?: string | null }) : null;
     if (!discordUser?.id) {
       return c.text("OAuth profile fetch failed", 400);
     }
@@ -213,7 +214,13 @@ app.get("/auth/discord/callback", async (c) => {
 
     return await completeOAuth(
       c,
-      { provider: "discord", providerUserId: discordUser.id, displayName: discordUser.username || discordUser.global_name || null, role },
+      {
+        provider: "discord",
+        providerUserId: discordUser.id,
+        displayName: discordUser.username || discordUser.global_name || null,
+        role,
+        avatarUrl: discordUser.avatar ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128` : null
+      },
       link
     );
   } finally {
@@ -264,7 +271,7 @@ app.get("/auth/twitch/callback", async (c) => {
       headers: { Authorization: `Bearer ${accessToken}`, "Client-Id": c.env.OAUTH_TWITCH_CLIENT_ID }
     });
     const twitchUser = userRes.ok
-      ? ((await userRes.json()) as { data?: Array<{ id: string; login?: string; display_name?: string }> }).data?.[0]
+      ? ((await userRes.json()) as { data?: Array<{ id: string; login?: string; display_name?: string; profile_image_url?: string }> }).data?.[0]
       : undefined;
     if (!twitchUser?.id) {
       return c.text("OAuth profile fetch failed", 400);
@@ -272,7 +279,7 @@ app.get("/auth/twitch/callback", async (c) => {
 
     return await completeOAuth(
       c,
-      { provider: "twitch", providerUserId: twitchUser.id, displayName: twitchUser.display_name || twitchUser.login || null },
+      { provider: "twitch", providerUserId: twitchUser.id, displayName: twitchUser.display_name || twitchUser.login || null, avatarUrl: twitchUser.profile_image_url ?? null },
       link
     );
   } finally {
@@ -882,11 +889,11 @@ app.get("/games/:slug", async (c) => {
 
   // The game's verified developer is public. The viewer's own claim only exists for signed-in visitors, who never get the cached page.
   const developer = await c.env.DB.prepare(
-    `SELECT game_claims.user_id, users.display_name FROM game_claims JOIN users ON users.id = game_claims.user_id
+    `SELECT game_claims.user_id, users.display_name, users.profile_handle, users.profile_public FROM game_claims JOIN users ON users.id = game_claims.user_id
      WHERE game_claims.game_id = ?1 AND game_claims.status = 'verified'`
   )
     .bind(game.id)
-    .first<{ user_id: string; display_name: string | null }>();
+    .first<{ user_id: string; display_name: string | null; profile_handle: string | null; profile_public: number }>();
   const ownClaim = user ? await getOwnClaim(c.env, game.id, user.id) : null;
 
   // Other well-liked games sharing a category: useful next stops for visitors and internal links for crawlers.
@@ -954,7 +961,7 @@ app.get("/games/:slug", async (c) => {
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
-      ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${escapeHtml(developer.display_name)}` : ""}</p>` : ""}
+      ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
       <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
@@ -1268,6 +1275,171 @@ app.get("/games/:slug", async (c) => {
   `, c.env, { path: `/games/${game.slug}`, description: metaDescription, noindex: game.status !== "approved",
     image: { path: `/og/games/${encodeURIComponent(game.slug)}.png?v=${ogVersion}`, alt: `${game.title}: ${gameKind} on 0x9 dles` },
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
+});
+
+// ---- Public profiles (/u/:handle, opt-in; see migrations/0026) ----
+
+const PROFILE_HANDLE_PATTERN = /^[a-z0-9][a-z0-9_-]{2,29}$/;
+const RESERVED_PROFILE_HANDLES = new Set(["admin", "administrator", "editor", "mod", "moderator", "staff", "system", "support", "0x9", "dailies", "dles", "official"]);
+const AVATAR_HOSTS = new Set(["cdn.discordapp.com", "static-cdn.jtvnw.net"]);
+
+/** Provider avatars are only ever shown from the providers' own image CDNs. */
+function safeAvatarUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && AVATAR_HOSTS.has(url.hostname) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Stores the picture a provider reported at sign-in, refreshed on every login or link. */
+async function saveOAuthAvatar(env: Env, profile: OAuthProfile): Promise<void> {
+  const avatarUrl = safeAvatarUrl(profile.avatarUrl);
+  await env.DB.prepare("UPDATE oauth_accounts SET avatar_url = ?3 WHERE provider = ?1 AND provider_user_id = ?2")
+    .bind(profile.provider, profile.providerUserId, avatarUrl)
+    .run();
+}
+
+/** The current Twitch channel name for a stable Twitch id (followed through renames), cached for a few hours. */
+async function getTwitchLoginById(env: Env, twitchId: string): Promise<string | null> {
+  const cacheKey = `twitch:login:${twitchId}`;
+  const cached = await env.CACHE.get(cacheKey);
+  if (cached) return cached;
+  const token = await getTwitchAppToken(env);
+  if (!token) return null;
+  try {
+    const res = await fetch(`https://api.twitch.tv/helix/users?id=${encodeURIComponent(twitchId)}`, {
+      headers: { Authorization: `Bearer ${token}`, "Client-Id": env.OAUTH_TWITCH_CLIENT_ID! },
+      signal: AbortSignal.timeout(2500)
+    });
+    if (res.status === 401) await env.CACHE.delete("twitch:app_token");
+    if (!res.ok) return null;
+    const login = ((await res.json()) as { data?: Array<{ login: string }> }).data?.[0]?.login ?? null;
+    if (login) await env.CACHE.put(cacheKey, login, { expirationTtl: 6 * 60 * 60 });
+    return login;
+  } catch {
+    return null;
+  }
+}
+
+const publicProfileSchema = z.object({
+  public: z.boolean(),
+  handle: z.preprocess((value) => (typeof value === "string" ? value.trim().toLowerCase() || null : value), z.string().regex(PROFILE_HANDLE_PATTERN).nullable()),
+  showRotation: z.boolean(),
+  showTwitch: z.boolean(),
+  avatarProvider: z.enum(["discord", "twitch"]).nullable()
+});
+
+app.put("/api/me/public-profile", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `public-profile:${auth.id}`, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const parsed = publicProfileSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Handles are 3-30 characters: letters, numbers, - and _" }, 400);
+  }
+  const { public: isPublic, handle, showRotation, showTwitch, avatarProvider } = parsed.data;
+  if (handle && RESERVED_PROFILE_HANDLES.has(handle)) {
+    return c.json({ error: "That handle is reserved" }, 400);
+  }
+  if (isPublic && !handle) {
+    return c.json({ error: "Choose a handle for your profile address first" }, 400);
+  }
+  const linked = new Set((await c.env.DB.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string }>()).results.map((row) => row.provider));
+  if ((showTwitch && !linked.has("twitch")) || (avatarProvider && !linked.has(avatarProvider))) {
+    return c.json({ error: "Link that account first" }, 400);
+  }
+  try {
+    await c.env.DB.prepare(
+      `UPDATE users SET profile_public = ?2, profile_handle = ?3, profile_show_rotation = ?4, profile_show_twitch = ?5,
+              profile_avatar_provider = ?6, updated_at = datetime('now')
+       WHERE id = ?1`
+    )
+      .bind(auth.id, isPublic ? 1 : 0, handle, showRotation ? 1 : 0, showTwitch ? 1 : 0, avatarProvider)
+      .run();
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return c.json({ error: "That handle is taken" }, 409);
+    }
+    throw error;
+  }
+  await writeAudit(c.env, auth.id, "user", auth.id, "update_public_profile", { public: isPublic, handle });
+  return c.json({ ok: true, handle });
+});
+
+app.get("/u/:handle", async (c) => {
+  const user = c.get("user");
+  const owner = await c.env.DB.prepare(
+    `SELECT id, display_name, role, profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider
+     FROM users WHERE profile_handle = ?1`
+  )
+    .bind(c.req.param("handle").toLowerCase())
+    .first<{ id: string; display_name: string | null; role: AppUser["role"]; profile_handle: string; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
+  // A profile that isn't public looks like no profile at all, except to its owner (who gets a preview).
+  const isOwner = !!user && !!owner && user.id === owner.id;
+  if (!owner || (!owner.profile_public && !isOwner)) {
+    return notFoundPage(c);
+  }
+
+  const accounts = await c.env.DB.prepare("SELECT provider, provider_user_id, avatar_url FROM oauth_accounts WHERE user_id = ?1")
+    .bind(owner.id)
+    .all<{ provider: string; provider_user_id: string; avatar_url: string | null }>();
+  const avatarUrl = safeAvatarUrl(accounts.results.find((row) => row.provider === owner.profile_avatar_provider)?.avatar_url);
+  const twitchAccount = owner.profile_show_twitch ? accounts.results.find((row) => row.provider === "twitch") : undefined;
+  const twitchLogin = twitchAccount ? await getTwitchLoginById(c.env, twitchAccount.provider_user_id) : null;
+
+  const developed = await listGames(c.env, { sort: "top", limit: 60, developerUserId: owner.id });
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, developed.map((game) => game.id));
+  const rotation = owner.profile_show_rotation
+    ? (await c.env.DB.prepare(
+        `SELECT games.title, games.slug, games.paywall, games.nsfw
+         FROM favorites JOIN games ON games.id = favorites.game_id
+         WHERE favorites.user_id = ?1 AND games.status = 'approved'
+         ORDER BY favorites.position ASC LIMIT 100`
+      )
+        .bind(owner.id)
+        .all<{ title: string; slug: string; paywall: number; nsfw: number }>()).results
+    : [];
+
+  const name = owner.display_name || owner.profile_handle;
+  const badges = [
+    owner.role === "admin" ? `<span class="profile-badge profile-badge-staff">Admin</span>` : "",
+    owner.role === "editor" ? `<span class="profile-badge profile-badge-staff">Editor</span>` : "",
+    developed.length > 0 ? `<span class="profile-badge profile-badge-dev">${renderCheckBadge("Verified developer")} Verified developer</span>` : ""
+  ].join("");
+  const initial = escapeHtml([...name][0]?.toUpperCase() ?? "?");
+  return c.html(await layout(`${name}`, user, `
+    <main class="narrow">
+      ${!owner.profile_public ? `<p class="panel profile-preview">Only you can see this page. <a href="/me/settings">Make your profile public</a> in Settings to share it.</p>` : ""}
+      <header class="profile-head">
+        ${avatarUrl
+          ? `<img class="profile-avatar" src="${escapeHtml(avatarUrl)}" alt="" width="96" height="96" referrerpolicy="no-referrer" />`
+          : `<span class="profile-avatar profile-avatar-initial" aria-hidden="true">${initial}</span>`}
+        <div>
+          <h1>${escapeHtml(name)}</h1>
+          ${badges ? `<p class="profile-badges">${badges}</p>` : ""}
+          ${twitchLogin ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(twitchLogin)}" target="_blank" rel="noopener noreferrer">${TWITCH_ICON_SVG}<span>${escapeHtml(twitchLogin)} on Twitch</span><span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
+        </div>
+      </header>
+      ${developed.length > 0 ? `<section>
+        <h2>Games by ${escapeHtml(name)}</h2>
+        ${renderCompactGameList(developed, user, userVotes, userFavorites)}
+      </section>` : ""}
+      ${rotation.length > 0 ? `<section>
+        <h2>Daily rotation</h2>
+        <ol class="profile-rotation">${rotation.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a></li>`).join("")}</ol>
+      </section>` : ""}
+      ${developed.length === 0 && rotation.length === 0 ? `<p class="muted">Nothing to show here yet.</p>` : ""}
+    </main>
+    ${developed.length > 0 ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
+  `, c.env, { path: `/u/${owner.profile_handle}`, noindex: true, description: `${name} on 0x9 dles.` }));
 });
 
 app.get("/rotation/:shareToken", async (c) => {
@@ -2033,6 +2205,17 @@ app.get("/me/settings", async (c) => {
     (await c.env.DB.prepare("SELECT provider FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string }>()).results.map((r) => r.provider)
   );
   const providerNames: Record<OAuthProvider, string> = { discord: "Discord", twitch: "Twitch" };
+  const publicProfile = await c.env.DB.prepare(
+    "SELECT profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider FROM users WHERE id = ?1"
+  )
+    .bind(auth.id)
+    .first<{ profile_handle: string | null; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
+  const avatarProviders = new Set(
+    (await c.env.DB.prepare("SELECT provider, avatar_url FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string; avatar_url: string | null }>()).results
+      .filter((row) => safeAvatarUrl(row.avatar_url))
+      .map((row) => row.provider)
+  );
+  const suggestedHandle = slugify(auth.displayName || "").slice(0, 30);
   const linkResult = c.req.query("link");
   const linkProvider = c.req.query("provider") === "twitch" ? "Twitch" : "Discord";
   const linkMessages: Record<string, string> = {
@@ -2067,6 +2250,28 @@ app.get("/me/settings", async (c) => {
           <input id="display-name" name="displayName" maxlength="80" placeholder="Your name" value="${escapeHtml(auth.displayName || "")}" />
           <button type="submit">Save profile</button>
         </form>
+      </section>
+      <section class="panel">
+        <h2>Public profile</h2>
+        <p>A page at <code>/u/your-handle</code> with your name, picture, badges (verified developer, staff, Twitch channel) and the games you've made. It's off until you turn it on, and only shows what you pick below.</p>
+        <form id="public-profile-form" class="stack-form">
+          <label class="check"><input type="checkbox" name="public" ${publicProfile?.profile_public ? "checked" : ""} /> Make my profile public</label>
+          <label>Handle <small>(your profile address: letters, numbers, - and _)</small>
+            <input type="text" name="handle" maxlength="30" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${escapeHtml(suggestedHandle || "your-handle")}" value="${escapeHtml(publicProfile?.profile_handle || "")}" />
+          </label>
+          <label class="check"><input type="checkbox" name="showRotation" ${publicProfile?.profile_show_rotation ? "checked" : ""} /> Show my daily rotation</label>
+          ${linkedProviders.has("twitch") ? `<label class="check"><input type="checkbox" name="showTwitch" ${publicProfile?.profile_show_twitch ? "checked" : ""} /> Show a link to my Twitch channel</label>` : ""}
+          <fieldset>
+            <legend>Picture</legend>
+            <label class="check"><input type="radio" name="avatarProvider" value="" ${!publicProfile?.profile_avatar_provider ? "checked" : ""} /> Initial only</label>
+            ${(["discord", "twitch"] as const)
+              .filter((provider) => linkedProviders.has(provider))
+              .map((provider) => `<label class="check"><input type="radio" name="avatarProvider" value="${provider}" ${publicProfile?.profile_avatar_provider === provider ? "checked" : ""} /> ${providerNames[provider]} picture${avatarProviders.has(provider) ? "" : " (appears after you next sign in with it)"}</label>`)
+              .join("")}
+          </fieldset>
+          <button type="submit">Save public profile</button>
+        </form>
+        ${publicProfile?.profile_handle ? `<p><a href="/u/${encodeURIComponent(publicProfile.profile_handle)}">${publicProfile.profile_public ? "View" : "Preview"} my profile</a></p>` : ""}
       </section>
       <section class="panel">
         <h2>Sign-in accounts</h2>
@@ -2116,6 +2321,34 @@ app.get("/me/settings", async (c) => {
         }
         setStatus("Profile updated.");
         if (window.appToast) window.appToast("Profile updated.", "success");
+      });
+
+      const publicProfileForm = document.getElementById("public-profile-form");
+      publicProfileForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const fd = new FormData(publicProfileForm);
+        setStatus("Saving public profile...");
+        const response = await fetch("/api/me/public-profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            public: fd.has("public"),
+            handle: String(fd.get("handle") || "").trim() || null,
+            showRotation: fd.has("showRotation"),
+            showTwitch: fd.has("showTwitch"),
+            avatarProvider: String(fd.get("avatarProvider") || "") || null
+          })
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const message = body.error || "Could not save public profile.";
+          setStatus(message);
+          if (window.appToast) window.appToast(message, "error");
+          return;
+        }
+        setStatus("Public profile saved.");
+        if (window.appToast) window.appToast("Public profile saved.", "success");
+        window.setTimeout(() => window.location.reload(), 600);
       });
 
       document.querySelectorAll("button[data-unlink]").forEach((button) => {
@@ -5241,7 +5474,9 @@ app.delete("/api/me/accounts/:provider", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM oauth_accounts WHERE user_id = ?1 AND provider = ?2").bind(auth.id, provider),
     // Editor/admin roles come from Discord, so they go with it.
-    ...(provider === "discord" ? [c.env.DB.prepare("UPDATE users SET role = 'user', updated_at = datetime('now') WHERE id = ?1").bind(auth.id)] : [])
+    ...(provider === "discord" ? [c.env.DB.prepare("UPDATE users SET role = 'user', updated_at = datetime('now') WHERE id = ?1").bind(auth.id)] : []),
+    // Anything on the public profile that came from that account goes with it.
+    c.env.DB.prepare("UPDATE users SET profile_avatar_provider = CASE WHEN profile_avatar_provider = ?2 THEN NULL ELSE profile_avatar_provider END, profile_show_twitch = CASE WHEN ?2 = 'twitch' THEN 0 ELSE profile_show_twitch END WHERE id = ?1").bind(auth.id, provider)
   ]);
   await writeAudit(c.env, auth.id, "user", auth.id, "unlink_account", { provider });
   return c.json({ ok: true });
@@ -6699,6 +6934,8 @@ async function listGames(
     offset?: number;
     hidePaywall?: boolean;
     hideNsfw?: boolean;
+    /** Only games this user is the verified developer of. */
+    developerUserId?: string;
   }
 ): Promise<
   Array<{
@@ -6763,6 +7000,10 @@ async function listGames(
   }
   if (opts.hideNsfw) {
     whereSql += " AND games.nsfw = 0";
+  }
+  if (opts.developerUserId) {
+    whereSql += " AND games.id IN (SELECT game_id FROM game_claims WHERE user_id = ? AND status = 'verified')";
+    params.push(opts.developerUserId);
   }
 
   params.push(...sortParams, opts.limit, opts.offset || 0);
@@ -8554,6 +8795,17 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
       button.active { background: var(--accent); color: var(--on-accent); }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
+      .profile-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; }
+      .profile-head h1 { margin: 0; overflow-wrap: anywhere; }
+      .profile-avatar { width: 96px; height: 96px; border-radius: 50%; flex: none; object-fit: cover; background: var(--bg-soft); border: 1px solid var(--border); }
+      .profile-avatar-initial { display: flex; align-items: center; justify-content: center; font-size: 2.6rem; font-weight: 800; color: var(--muted); }
+      .profile-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
+      .profile-badge { display: inline-flex; align-items: center; gap: 0.2rem; padding: 0.15rem 0.6rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.85rem; background: var(--bg-soft); }
+      .profile-badge .verified-badge { margin: 0; }
+      .profile-rotation { padding-left: 1.4rem; }
+      #public-profile-form input[type="text"] { width: 100%; box-sizing: border-box; }
+      .profile-preview { margin-bottom: 1rem; }
+      @media (max-width: 480px) { .profile-head { flex-direction: column; align-items: flex-start; } }
       .developer-line { margin: 0.25rem 0; color: var(--muted); }
       .developer-line .verified-badge { margin-left: 0; margin-right: 0.2rem; }
       .claim-panel pre { overflow-x: auto; margin: 0.4rem 0; padding: 0.5rem 0.7rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; }
@@ -8949,7 +9201,7 @@ function readOAuthCallback(
   return { code, link: intent === "link" };
 }
 
-type OAuthProfile = { provider: OAuthProvider; providerUserId: string; displayName: string | null; role?: AppUser["role"] };
+type OAuthProfile = { provider: OAuthProvider; providerUserId: string; displayName: string | null; role?: AppUser["role"]; avatarUrl?: string | null };
 
 /**
  * Finishes a provider sign-in. A login signs in to (or creates) the account for that provider account. A link
@@ -8958,6 +9210,7 @@ type OAuthProfile = { provider: OAuthProvider; providerUserId: string; displayNa
 async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, profile: OAuthProfile, link: boolean): Promise<Response> {
   if (!link) {
     const userId = await upsertOAuthUser(c.env, profile);
+    await saveOAuthAvatar(c.env, profile);
     await createSession(c, userId);
     return c.redirect("/?importLocal=1");
   }
@@ -8966,6 +9219,7 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
     return c.redirect("/login");
   }
   const result = await linkOAuthAccount(c.env, user.id, profile);
+  if (result !== "conflict") await saveOAuthAvatar(c.env, profile);
   return c.redirect(`/me/settings?link=${result}&provider=${profile.provider}`);
 }
 
