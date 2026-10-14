@@ -44,7 +44,17 @@
 - `DELETE /api/me/sessions/:id`
 - `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
 
+## Developer claims (signed-in user)
+
+- `POST /api/games/:id/claim` (starts a claim and returns `{ claim: { status, token } }`; a listed game, or a pending one the user submitted; 409 if the game already has a verified developer; rejected claims can't be refiled)
+- `POST /api/games/:id/claim/verify` (fetches the game's URL for `<meta name="0x9dles-verify" content="TOKEN">`, then `/.well-known/0x9dles.txt` on its origin. Staging uses `0x9dles-stg-verify` and `0x9dles-stg.txt`, dev `-dev`; 422 token not found, 502 site unreachable)
+- `POST /api/games/:id/claim/evidence` (`{ evidence }`, 10-500 chars: asks an editor to confirm instead; claim becomes `review`)
+- `DELETE /api/games/:id/claim` (withdraw, or release a verified game)
+- `PUT /api/games/:id/developer-update` (verified developer only: title, url, description, reset metadata, paywall, `how_to_play`; never status, NSFW or categories. Changing the URL needs the token on the new address first, else 422)
+
 ## Editor/Admin
+
+- `POST /api/admin/claims/:claimId` (`{ action: "approve" | "reject" | "revoke" }`; approve verifies a manual claim)
 
 - `GET /api/admin/submissions?status=pending|rejected|disabled|approved&q=<query>`
 - `PUT /api/games/:id/admin-update` (title, url, description, status, reset metadata incl. `reset_timezone`, paywall, categories, optional `how_to_play`: omitted keeps the stored text, null or blank clears it)

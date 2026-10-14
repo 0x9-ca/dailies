@@ -4,6 +4,12 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-14",
+    items: [
+      "Made a game? Claim it from its page: add a small tag to your game's page (or a file to your site) and you become its verified developer, with a blue check. If you can't edit the page, an editor can confirm you instead.",
+      "Verified developers can edit their game's title, link, description, how-to-play and reset time themselves. If a game's link changes, its developer has to be verified again at the new address."
+    ]
+  },  {
     date: "2026-10-13",
     items: [
       "The home page explains what a dle is, names some of the best-known ones, and links every category."
