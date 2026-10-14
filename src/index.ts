@@ -10,6 +10,7 @@ import { createSession, destroySession, hashToken, randomToken, requireAuth, req
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
+import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
@@ -514,7 +515,15 @@ app.get("/submit", async (c) => {
           form.reset();
           const result = await response.json().catch(() => ({}));
           const submittedStatus = result.status === "approved" ? "Approved and published." : "Submitted. Editors will review it shortly.";
-          if (status) status.textContent = submittedStatus;
+          if (status) {
+            status.textContent = submittedStatus + " ";
+            if (result.slug && ${user ? "true" : "false"}) {
+              const link = document.createElement("a");
+              link.href = "/games/" + encodeURIComponent(result.slug);
+              link.textContent = "Did you make this game? Verify it.";
+              status.appendChild(link);
+            }
+          }
           if (window.appToast) window.appToast(submittedStatus, "success");
         } else {
           const result = await response.json().catch(() => ({}));
@@ -535,7 +544,9 @@ const MOD_LOG_LABELS: Record<string, string> = {
   nsfw_add: "Marked NSFW",
   nsfw_remove: "NSFW label removed",
   paywall_add: "Marked as paywalled",
-  paywall_remove: "Paywall label removed"
+  paywall_remove: "Paywall label removed",
+  developer_verified: "Developer verified",
+  developer_removed: "Developer verification removed"
 };
 
 app.get("/mod-log", async (c) => {
@@ -573,7 +584,7 @@ app.get("/mod-log", async (c) => {
   return c.html(await layout("Mod Log | 0x9 dles", user, `
     <main class="narrow">
       <h1>Mod Log</h1>
-      <p>A public record of games being approved, denied, hidden, restored, or deleted, and of NSFW and paywall label changes. Newest first.${showActor ? " <em>Editors and admins can also see who made each change.</em>" : ""}</p>
+      <p>A public record of games being approved, denied, hidden, restored, or deleted, and of NSFW and paywall label changes and developer verifications. Newest first.${showActor ? " <em>Editors and admins can also see who made each change.</em>" : ""}</p>
       ${entries.length === 0 ? "<p>Nothing has been logged yet.</p>" : `<ul class="games">
         ${entries
           .map((entry) => {
@@ -817,9 +828,9 @@ app.get("/games/:slug", async (c) => {
     `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw,
             COALESCE(approved_at, created_at) AS listed_at, how_to_play
      FROM games
-     WHERE slug = ?1 ${isAdminOrEditor ? "" : "AND status = 'approved'"}`
+     WHERE slug = ?1 AND (?2 = 1 OR status = 'approved' OR (status = 'pending' AND submitted_by_user_id = ?3))`
   )
-    .bind(slug)
+    .bind(slug, isAdminOrEditor ? 1 : 0, user?.id ?? null)
     .first<{
       id: string;
       title: string;
@@ -868,6 +879,15 @@ app.get("/games/:slug", async (c) => {
   const viewer = await getViewerGameState(c, [game.id]);
   const userVote: -1 | 0 | 1 = viewer.votes.get(game.id) ?? 0;
   const userFavorite = viewer.favorites.has(game.id);
+
+  // The game's verified developer is public. The viewer's own claim only exists for signed-in visitors, who never get the cached page.
+  const developer = await c.env.DB.prepare(
+    `SELECT game_claims.user_id, users.display_name FROM game_claims JOIN users ON users.id = game_claims.user_id
+     WHERE game_claims.game_id = ?1 AND game_claims.status = 'verified'`
+  )
+    .bind(game.id)
+    .first<{ user_id: string; display_name: string | null }>();
+  const ownClaim = user ? await getOwnClaim(c.env, game.id, user.id) : null;
 
   // Other well-liked games sharing a category: useful next stops for visitors and internal links for crawlers.
   const related = await c.env.DB.prepare(
@@ -934,6 +954,7 @@ app.get("/games/:slug", async (c) => {
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
       <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
+      ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
       <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
@@ -967,6 +988,7 @@ app.get("/games/:slug", async (c) => {
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
       </details>
+      ${renderDeveloperSections(game, user, ownClaim, !!developer, c.env.APP_ENV)}
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -1203,6 +1225,8 @@ app.get("/games/:slug", async (c) => {
               });
             }
 
+            ${DEVELOPER_SCRIPT}
+
             const listSelect = document.getElementById("list-select");
             const addToListForm = document.getElementById("add-to-list-form");
             const addToListStatus = document.getElementById("add-to-list-status");
@@ -1241,7 +1265,7 @@ app.get("/games/:slug", async (c) => {
               });
             }
     </script>
-  `, c.env, { path: `/games/${game.slug}`, description: metaDescription,
+  `, c.env, { path: `/games/${game.slug}`, description: metaDescription, noindex: game.status !== "approved",
     image: { path: `/og/games/${encodeURIComponent(game.slug)}.png?v=${ogVersion}`, alt: `${game.title}: ${gameKind} on 0x9 dles` },
     jsonLd: [breadcrumbLd([["Home", "/"], ["Games", "/games"], [game.title, `/games/${game.slug}`]]), gameLd] }));
 });
@@ -3199,6 +3223,7 @@ app.get("/admin", async (c) => {
       <div class="admin-grid">
         <a class="panel" href="/admin/submissions">Moderate submissions</a>
         <a class="panel" href="/admin/reports">Review reports</a>
+        <a class="panel" href="/admin/claims">Developer claims</a>
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
       </div>
@@ -3396,6 +3421,63 @@ app.get("/admin/submissions", async (c) => {
             return;
           }
           setStatus("Reset settings saved.");
+        });
+      });
+    </script>
+  `, c.env));
+});
+
+app.get("/admin/claims", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  // Manual claims waiting for a decision first, then the developers currently verified (so one can be removed).
+  const rows = await c.env.DB.prepare(
+    `SELECT game_claims.id, game_claims.status, game_claims.method, game_claims.evidence, game_claims.created_at,
+            games.title, games.slug, games.url, users.display_name
+     FROM game_claims
+     JOIN games ON games.id = game_claims.game_id
+     JOIN users ON users.id = game_claims.user_id
+     WHERE game_claims.status IN ('review', 'verified')
+     ORDER BY CASE game_claims.status WHEN 'review' THEN 0 ELSE 1 END, game_claims.created_at DESC
+     LIMIT 200`
+  ).all<{ id: string; status: string; method: string | null; evidence: string | null; created_at: string; title: string; slug: string; url: string; display_name: string | null }>();
+  return c.html(await layout("Developer claims", auth, `
+    <main>
+      <h1>Developer claims</h1>
+      <p>People who say they made a game. Tag-based claims verify themselves; the ones below as "review" asked an editor to confirm their evidence.</p>
+      ${rows.results.length === 0 ? "<p>No claims to show.</p>" : `<div class="stack">
+        ${rows.results.map((row) => `<article class="panel" data-claim-id="${escapeHtml(row.id)}">
+          <h2><a href="/games/${escapeHtml(row.slug)}">${escapeHtml(row.title)}</a> <small>(${escapeHtml(row.status)}${row.method ? `, ${escapeHtml(row.method)}` : ""})</small></h2>
+          <p>Claimed by ${escapeHtml(row.display_name || "(no name)")} on ${escapeHtml(row.created_at)} UTC. Game URL: <a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(row.url)}</a></p>
+          ${row.evidence ? `<p><strong>Evidence:</strong> ${escapeHtml(row.evidence)}</p>` : ""}
+          <div class="actions">
+            ${row.status === "review"
+              ? `<button type="button" data-claim-action="approve">Approve</button><button type="button" class="danger" data-claim-action="reject">Reject</button>`
+              : `<button type="button" class="danger" data-claim-action="revoke">Remove verification</button>`}
+          </div>
+        </article>`).join("")}
+      </div>`}
+      <p id="claims-status" class="status" aria-live="polite"></p>
+    </main>
+    <script>
+      document.querySelectorAll("[data-claim-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const card = button.closest("[data-claim-id]");
+          const res = await fetch("/api/admin/claims/" + card.getAttribute("data-claim-id"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: button.getAttribute("data-claim-action") })
+          });
+          if (res.ok) {
+            window.location.reload();
+            return;
+          }
+          const data = await res.json().catch(() => ({}));
+          const message = data.error || "Could not update the claim.";
+          document.getElementById("claims-status").textContent = message;
+          if (window.appToast) window.appToast(message, "error");
         });
       });
     </script>
@@ -4293,7 +4375,7 @@ app.post("/api/games", async (c) => {
   if (bypassModeration) {
     c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, [id]));
   }
-  return c.json({ id, status: bypassModeration ? "approved" : "pending" }, 201);
+  return c.json({ id, slug, status: bypassModeration ? "approved" : "pending" }, 201);
 });
 
 const voteSchema = z.object({ value: z.union([z.literal(1), z.literal(-1)]) });
@@ -4445,9 +4527,9 @@ app.put("/api/games/:id/admin-update", async (c) => {
     return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
   }
 
-  const before = await c.env.DB.prepare("SELECT title, slug, status, paywall, nsfw FROM games WHERE id = ?1")
+  const before = await c.env.DB.prepare("SELECT title, slug, status, paywall, nsfw, canonical_url FROM games WHERE id = ?1")
     .bind(gameId)
-    .first<{ title: string; slug: string; status: string; paywall: number; nsfw: number }>();
+    .first<{ title: string; slug: string; status: string; paywall: number; nsfw: number; canonical_url: string }>();
   let newlyApproved: string[] = [];
   if (before) {
     if (before.status !== parsed.data.status) {
@@ -4517,6 +4599,378 @@ app.put("/api/games/:id/admin-update", async (c) => {
 
   await invalidateGameCaches(c.env);
   c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, newlyApproved));
+  // A new address means the developer's proof has to hold there too.
+  if (before && before.canonical_url !== canonicalUrl) {
+    c.executionCtx.waitUntil(reverifyClaimsForGame(c.env, gameId));
+  }
+  return c.json({ ok: true, slug });
+});
+
+// ---- Developer claims (see src/lib/claims.ts and migrations/0025) ----
+
+const SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000001";
+
+type ClaimStatus = "pending" | "review" | "verified" | "rejected" | "revoked";
+type ClaimRow = {
+  id: string;
+  game_id: string;
+  user_id: string;
+  token: string;
+  status: ClaimStatus;
+  method: "meta" | "file" | "manual" | null;
+  evidence: string | null;
+};
+
+const CLAIM_COLUMNS = "id, game_id, user_id, token, status, method, evidence";
+
+async function getOwnClaim(env: Env, gameId: string, userId: string): Promise<ClaimRow | null> {
+  return env.DB.prepare(`SELECT ${CLAIM_COLUMNS} FROM game_claims WHERE game_id = ?1 AND user_id = ?2`)
+    .bind(gameId, userId)
+    .first<ClaimRow>();
+}
+
+function claimView(claim: ClaimRow): { status: ClaimStatus; token: string; method: string | null } {
+  return { status: claim.status, token: claim.token, method: claim.method };
+}
+
+/** True for a unique-constraint failure, i.e. the game already has a verified developer. */
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE|constraint/i.test(error.message);
+}
+
+app.post("/api/games/:id/claim", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `claim:${auth.id}`, 10, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const gameId = c.req.param("id");
+  const game = await c.env.DB.prepare("SELECT status, submitted_by_user_id FROM games WHERE id = ?1")
+    .bind(gameId)
+    .first<{ status: string; submitted_by_user_id: string | null }>();
+  // Anyone can claim a listed game; a game still awaiting review can only be claimed by whoever submitted it.
+  if (!game || !(game.status === "approved" || (game.status === "pending" && game.submitted_by_user_id === auth.id))) {
+    return c.json({ error: "Game not found" }, 404);
+  }
+  const verified = await c.env.DB.prepare("SELECT user_id FROM game_claims WHERE game_id = ?1 AND status = 'verified'")
+    .bind(gameId)
+    .first<{ user_id: string }>();
+  if (verified && verified.user_id !== auth.id) {
+    return c.json({ error: "This game already has a verified developer" }, 409);
+  }
+
+  const existing = await getOwnClaim(c.env, gameId, auth.id);
+  if (existing?.status === "rejected") {
+    return c.json({ error: "An editor declined your earlier claim on this game" }, 403);
+  }
+  if (existing && existing.status !== "revoked") {
+    return c.json({ claim: claimView(existing) });
+  }
+  const token = newClaimToken();
+  if (existing) {
+    // A revoked claim starts over with a fresh token.
+    await c.env.DB.prepare(
+      "UPDATE game_claims SET status = 'pending', token = ?2, method = NULL, evidence = NULL, verified_url = NULL, verified_at = NULL, fail_count = 0, last_checked_at = NULL WHERE id = ?1"
+    ).bind(existing.id, token).run();
+    return c.json({ claim: { status: "pending", token, method: null } });
+  }
+  await c.env.DB.prepare("INSERT INTO game_claims (id, game_id, user_id, token) VALUES (?1, ?2, ?3, ?4)")
+    .bind(crypto.randomUUID(), gameId, auth.id, token)
+    .run();
+  return c.json({ claim: { status: "pending", token, method: null } }, 201);
+});
+
+/** Marks a claim verified and logs it. Returns false when another user already holds the game's verified claim. */
+async function markClaimVerified(
+  env: Env,
+  claim: ClaimRow,
+  actorUserId: string,
+  method: "meta" | "file" | "manual",
+  gameUrl: string
+): Promise<boolean> {
+  try {
+    await env.DB.prepare(
+      `UPDATE game_claims
+       SET status = 'verified', method = ?2, verified_url = ?3, verified_at = datetime('now'), last_checked_at = datetime('now'), fail_count = 0
+       WHERE id = ?1`
+    ).bind(claim.id, method, gameUrl).run();
+  } catch (error) {
+    if (isUniqueViolation(error)) return false;
+    throw error;
+  }
+  const game = await env.DB.prepare("SELECT title, slug FROM games WHERE id = ?1").bind(claim.game_id).first<{ title: string; slug: string }>();
+  await writeAudit(env, actorUserId, "game", claim.game_id, "developer_verified", { title: game?.title, slug: game?.slug, method });
+  await invalidateGameCaches(env);
+  return true;
+}
+
+app.post("/api/games/:id/claim/verify", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `claim-verify:${auth.id}`, 20, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const gameId = c.req.param("id");
+  const claim = await getOwnClaim(c.env, gameId, auth.id);
+  if (!claim) {
+    return c.json({ error: "Start a claim first" }, 404);
+  }
+  if (claim.status !== "pending" && claim.status !== "review") {
+    return c.json({ error: `This claim is ${claim.status}` }, 409);
+  }
+  const game = await c.env.DB.prepare("SELECT url FROM games WHERE id = ?1").bind(gameId).first<{ url: string }>();
+  if (!game) {
+    return c.json({ error: "Game not found" }, 404);
+  }
+  const check = await checkClaimToken(game.url, claim.token, c.env.APP_ENV);
+  if (check === "unreachable") {
+    return c.json({ error: "We couldn't reach the game's site just now. Try again in a minute." }, 502);
+  }
+  if (check === "absent") {
+    return c.json({ error: `We couldn't find your token on ${game.url} or at ${new URL(game.url).origin}${claimNames(c.env.APP_ENV).filePath}. Check it has been deployed, then try again.` }, 422);
+  }
+  if (!(await markClaimVerified(c.env, claim, auth.id, check, game.url))) {
+    return c.json({ error: "This game already has a verified developer" }, 409);
+  }
+  return c.json({ claim: { status: "verified", token: claim.token, method: check } });
+});
+
+const claimEvidenceSchema = z.object({ evidence: z.preprocess(trimInput, z.string().min(10).max(500)) });
+
+// For sites where the developer can't add a tag (itch.io, Newgrounds, ...): an editor reviews the evidence.
+app.post("/api/games/:id/claim/evidence", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = claimEvidenceSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Tell us how to confirm it (10-500 characters), e.g. a link to your developer profile" }, 400);
+  }
+  const claim = await getOwnClaim(c.env, c.req.param("id"), auth.id);
+  if (!claim) {
+    return c.json({ error: "Start a claim first" }, 404);
+  }
+  if (claim.status !== "pending" && claim.status !== "review") {
+    return c.json({ error: `This claim is ${claim.status}` }, 409);
+  }
+  await c.env.DB.prepare("UPDATE game_claims SET status = 'review', evidence = ?2 WHERE id = ?1").bind(claim.id, parsed.data.evidence).run();
+  return c.json({ claim: { status: "review", token: claim.token, method: null } });
+});
+
+app.delete("/api/games/:id/claim", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const gameId = c.req.param("id");
+  const claim = await getOwnClaim(c.env, gameId, auth.id);
+  if (!claim) {
+    return c.json({ ok: true });
+  }
+  // A declined claim stays so it can't simply be filed again.
+  if (claim.status === "rejected") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  if (claim.status === "verified") {
+    const game = await c.env.DB.prepare("SELECT title, slug FROM games WHERE id = ?1").bind(gameId).first<{ title: string; slug: string }>();
+    await writeAudit(c.env, auth.id, "game", gameId, "developer_removed", { title: game?.title, slug: game?.slug, via: "released" });
+    await invalidateGameCaches(c.env);
+  }
+  await c.env.DB.prepare("DELETE FROM game_claims WHERE id = ?1").bind(claim.id).run();
+  return c.json({ ok: true });
+});
+
+const claimDecisionSchema = z.object({ action: z.enum(["approve", "reject", "revoke"]) });
+
+app.post("/api/admin/claims/:claimId", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = claimDecisionSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const claim = await c.env.DB.prepare(`SELECT ${CLAIM_COLUMNS} FROM game_claims WHERE id = ?1`).bind(c.req.param("claimId")).first<ClaimRow>();
+  if (!claim) {
+    return c.json({ error: "Claim not found" }, 404);
+  }
+  const game = await c.env.DB.prepare("SELECT title, slug, url FROM games WHERE id = ?1").bind(claim.game_id).first<{ title: string; slug: string; url: string }>();
+  if (!game) {
+    return c.json({ error: "Game not found" }, 404);
+  }
+  const open = claim.status === "pending" || claim.status === "review";
+  if (parsed.data.action === "approve" && open) {
+    if (!(await markClaimVerified(c.env, claim, auth.id, "manual", game.url))) {
+      return c.json({ error: "This game already has a verified developer" }, 409);
+    }
+  } else if (parsed.data.action === "reject" && open) {
+    await c.env.DB.prepare("UPDATE game_claims SET status = 'rejected' WHERE id = ?1").bind(claim.id).run();
+  } else if (parsed.data.action === "revoke" && claim.status === "verified") {
+    await c.env.DB.prepare("UPDATE game_claims SET status = 'revoked', verified_at = NULL WHERE id = ?1").bind(claim.id).run();
+    await writeAudit(c.env, auth.id, "game", claim.game_id, "developer_removed", { title: game.title, slug: game.slug, via: "staff" });
+    await invalidateGameCaches(c.env);
+  } else {
+    return c.json({ error: `Can't ${parsed.data.action} a ${claim.status} claim` }, 409);
+  }
+  return c.json({ ok: true });
+});
+
+/**
+ * Re-checks a game's verified claims against its (new) URL. Fired whenever the URL changes: a claim stays
+ * verified only if its token is on the new address; otherwise it drops back to pending and the developer
+ * loses edit access until they prove it again.
+ */
+async function reverifyClaimsForGame(env: Env, gameId: string): Promise<void> {
+  const game = await env.DB.prepare("SELECT title, slug, url FROM games WHERE id = ?1").bind(gameId).first<{ title: string; slug: string; url: string }>();
+  const claims = await env.DB.prepare(`SELECT ${CLAIM_COLUMNS} FROM game_claims WHERE game_id = ?1 AND status = 'verified'`).bind(gameId).all<ClaimRow>();
+  if (!game) return;
+  for (const claim of claims.results) {
+    const check = await checkClaimToken(game.url, claim.token, env.APP_ENV);
+    if (check === "meta" || check === "file") {
+      await env.DB.prepare(
+        "UPDATE game_claims SET method = ?2, verified_url = ?3, last_checked_at = datetime('now'), fail_count = 0 WHERE id = ?1"
+      ).bind(claim.id, check, game.url).run();
+      continue;
+    }
+    await env.DB.prepare("UPDATE game_claims SET status = 'pending', method = NULL, verified_at = NULL, verified_url = NULL, last_checked_at = datetime('now') WHERE id = ?1").bind(claim.id).run();
+    await writeAudit(env, SYSTEM_USER_ID, "game", gameId, "developer_removed", { title: game.title, slug: game.slug, via: "url_change" });
+  }
+  await invalidateGameCaches(env);
+}
+
+// Daily: a verified claim whose token has vanished from the site is revoked after three definite misses in a row.
+// Unreachable sites don't count against it. Manual claims have no token to look for.
+const CLAIM_RECHECK_BATCH_SIZE = 40;
+async function runClaimRechecks(env: Env): Promise<void> {
+  const rows = await env.DB.prepare(
+    `SELECT game_claims.id, game_claims.game_id, game_claims.token, game_claims.fail_count, games.url, games.title, games.slug
+     FROM game_claims JOIN games ON games.id = game_claims.game_id
+     WHERE game_claims.status = 'verified' AND game_claims.method IN ('meta', 'file')
+     ORDER BY COALESCE(game_claims.last_checked_at, '1970-01-01') ASC
+     LIMIT ?1`
+  ).bind(CLAIM_RECHECK_BATCH_SIZE).all<{ id: string; game_id: string; token: string; fail_count: number; url: string; title: string; slug: string }>();
+  let revoked = false;
+  for (const row of rows.results) {
+    const check = await checkClaimToken(row.url, row.token, env.APP_ENV);
+    if (check === "meta" || check === "file") {
+      await env.DB.prepare("UPDATE game_claims SET method = ?2, fail_count = 0, last_checked_at = datetime('now') WHERE id = ?1").bind(row.id, check).run();
+    } else if (check === "unreachable") {
+      await env.DB.prepare("UPDATE game_claims SET last_checked_at = datetime('now') WHERE id = ?1").bind(row.id).run();
+    } else if (row.fail_count + 1 >= 3) {
+      await env.DB.prepare("UPDATE game_claims SET status = 'revoked', verified_at = NULL, fail_count = 0, last_checked_at = datetime('now') WHERE id = ?1").bind(row.id).run();
+      await writeAudit(env, SYSTEM_USER_ID, "game", row.game_id, "developer_removed", { title: row.title, slug: row.slug, via: "token_missing" });
+      revoked = true;
+    } else {
+      await env.DB.prepare("UPDATE game_claims SET fail_count = fail_count + 1, last_checked_at = datetime('now') WHERE id = ?1").bind(row.id).run();
+    }
+  }
+  if (revoked) await invalidateGameCaches(env);
+}
+
+// What a verified developer may change. Status, NSFW label and categories stay with the editors.
+const developerGameUpdateSchema = adminGameUpdateSchema.pick({
+  title: true,
+  url: true,
+  description: true,
+  reset_basis: true,
+  reset_time_minutes: true,
+  reset_timezone: true,
+  paywall: true,
+  how_to_play: true
+});
+
+app.put("/api/games/:id/developer-update", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const gameId = c.req.param("id");
+  const claim = await getOwnClaim(c.env, gameId, auth.id);
+  if (!claim || claim.status !== "verified") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  const parsed = developerGameUpdateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
+  }
+  const before = await c.env.DB.prepare("SELECT title, slug, status, canonical_url, paywall, reset_timezone FROM games WHERE id = ?1")
+    .bind(gameId)
+    .first<{ title: string; slug: string; status: string; canonical_url: string; paywall: number; reset_timezone: string | null }>();
+  if (!before || (before.status !== "approved" && before.status !== "pending")) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+  let canonicalUrl: string;
+  try {
+    canonicalUrl = canonicalizeUrl(parsed.data.url);
+  } catch {
+    return c.json({ error: "Invalid URL" }, 400);
+  }
+  const resetTimezone = normalizeResetTimeZone(parsed.data.reset_basis, parsed.data.reset_timezone === undefined ? before.reset_timezone : parsed.data.reset_timezone);
+  if (!resetTimezone.ok) {
+    return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
+  }
+
+  // Moving the game to a new address: it has to carry the same token, so the claim carries over instead of lapsing.
+  let moved: "meta" | "file" | null = null;
+  if (canonicalUrl !== before.canonical_url) {
+    const duplicate = await c.env.DB.prepare("SELECT id FROM games WHERE canonical_url = ?1 AND id != ?2").bind(canonicalUrl, gameId).first();
+    if (duplicate) {
+      return c.json({ error: "Game URL already submitted" }, 409);
+    }
+    const check = await checkClaimToken(parsed.data.url, claim.token, c.env.APP_ENV);
+    if (check === "unreachable") {
+      return c.json({ error: "We couldn't reach the new URL just now. Try again in a minute." }, 502);
+    }
+    if (check === "absent") {
+      return c.json({ error: `Put your verification token on the new URL first (the <meta> tag on the page, or ${claimNames(c.env.APP_ENV).filePath}), then save again. Otherwise the change would end your verification.` }, 422);
+    }
+    moved = check;
+  }
+
+  await c.env.DB.prepare(
+    `UPDATE games
+     SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, reset_basis = ?5, reset_time_minutes = ?6,
+         reset_timezone = ?7, paywall = ?8, how_to_play = CASE WHEN ?9 = 1 THEN ?10 ELSE how_to_play END, updated_at = datetime('now')
+     WHERE id = ?11`
+  )
+    .bind(
+      parsed.data.title,
+      parsed.data.url,
+      canonicalUrl,
+      parsed.data.description,
+      parsed.data.reset_basis,
+      parsed.data.reset_time_minutes,
+      resetTimezone.value,
+      parsed.data.paywall ? 1 : 0,
+      parsed.data.how_to_play === undefined ? 0 : 1,
+      parsed.data.how_to_play ?? null,
+      gameId
+    )
+    .run();
+  if (moved) {
+    await c.env.DB.prepare("UPDATE game_claims SET method = ?2, verified_url = ?3, last_checked_at = datetime('now'), fail_count = 0 WHERE id = ?1")
+      .bind(claim.id, moved, parsed.data.url)
+      .run();
+  }
+  if (!!before.paywall !== parsed.data.paywall) {
+    await writeAudit(c.env, auth.id, "game", gameId, parsed.data.paywall ? "paywall_add" : "paywall_remove", { title: parsed.data.title, slug: before.slug, via: "developer" });
+  }
+
+  let slug = before.slug;
+  const newSlug = uniqueSlug(parsed.data.title, gameId);
+  if (newSlug !== before.slug) {
+    await c.env.DB.prepare("UPDATE games SET slug = ?1 WHERE id = ?2").bind(newSlug, gameId).run();
+    slug = newSlug;
+  }
+  await invalidateGameCaches(c.env);
   return c.json({ ok: true, slug });
 });
 
@@ -5867,6 +6321,7 @@ export default {
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runLinkChecks(env));
     ctx.waitUntil(recalculateAllScores(env));
+    ctx.waitUntil(runClaimRechecks(env));
     // Backstop: anything the announcement alarm somehow left in the queue goes out with the daily run.
     ctx.waitUntil(flushAnnouncementQueue(env));
   }
@@ -6148,10 +6603,7 @@ function listMetaDescription(list: { title: string; description: string | null; 
 }
 
 function renderVerifiedBadge(twitchLogin: string | null | undefined): string {
-  if (!twitchLogin) {
-    return "";
-  }
-  return `<span class="verified-badge" title="Verified: curated by Twitch user ${escapeHtml(twitchLogin)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+  return twitchLogin ? renderCheckBadge(`Verified: curated by Twitch user ${twitchLogin}`) : "";
 }
 
 async function enforceRateLimit(
@@ -7008,6 +7460,226 @@ function renderTimeZoneField(inputName: string, value: string | null | undefined
     <input type="text" name="${inputName}" list="tz-list" data-tz-input placeholder="e.g. America/New_York" maxlength="64" value="${escapeHtml(value || "")}" ${extraAttrs} />
   </label>`;
 }
+
+/** The blue check used for verified Twitch curators and verified developers. */
+function renderCheckBadge(title: string): string {
+  return `<span class="verified-badge" title="${escapeHtml(title)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+}
+
+/**
+ * Game page sections for developer claims: the claim flow for a signed-in visitor, or the edit form for the
+ * game's verified developer. Staff can claim too, but edit through the admin form, so a verified staff
+ * developer only gets a release button.
+ */
+function renderDeveloperSections(
+  game: { id: string; title: string; url: string; description: string | null; how_to_play: string | null; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number },
+  user: AppUser | null,
+  claim: ClaimRow | null,
+  hasDeveloper: boolean,
+  appEnv: string
+): string {
+  const isStaff = !!user && (user.role === "admin" || user.role === "editor");
+  if (isStaff && claim?.status === "verified") {
+    return `<section class="panel">
+      <p class="game-actions-note">You're the verified developer of this game. Edit it with the admin form below.</p>
+      <p><button type="button" class="secondary" data-claim-cancel data-claim-confirm="Stop being the verified developer of this game?">Release this game</button></p>
+      <p data-claim-status class="status" aria-live="polite"></p>
+    </section>`;
+  }
+  if (!user) {
+    return hasDeveloper ? "" : `<p class="game-actions-note">Made this game? <a href="/login">Sign in</a> to claim it.</p>`;
+  }
+  if (claim?.status === "verified") {
+    return `<section class="panel">
+      <h2>Edit your game</h2>
+      <p class="game-actions-note">You're the verified developer. Keep the verification tag on the game's page (or the file on its site): if it goes missing, your verification is removed. Moving the game to a new URL needs the tag on the new address first.</p>
+      <form id="developer-edit-form" class="stack-form">
+        <label>Title
+          <input type="text" name="title" value="${escapeHtml(game.title)}" required />
+        </label>
+        <label>URL
+          <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="url" value="${escapeHtml(game.url)}" required />
+        </label>
+        <label>Description
+          <textarea name="description" rows="3" maxlength="1000">${escapeHtml(game.description || "")}</textarea>
+        </label>
+        <label>How to play <small>(optional; blank line between paragraphs)</small>
+          <textarea name="how_to_play" rows="5" maxlength="2000">${escapeHtml(game.how_to_play || "")}</textarea>
+        </label>
+        <div data-reset-group>
+          <label>Reset Basis
+            <select name="reset_basis" data-basis-select>
+              <option value="" ${!game.reset_basis ? "selected" : ""}>None</option>
+              <option value="local" ${game.reset_basis === "local" ? "selected" : ""}>Local</option>
+              <option value="server" ${game.reset_basis === "server" ? "selected" : ""}>Server</option>
+            </select>
+          </label>
+          <label>Reset Time (in the zone below for Server, otherwise the viewer's local time)
+            <input type="time" name="reset_time" value="${game.reset_time_minutes === null ? "" : escapeHtml(formatResetTime(game.reset_time_minutes))}" />
+          </label>
+          ${renderTimeZoneField("reset_timezone", game.reset_timezone)}
+        </div>
+        ${renderTimeZoneDatalist()}
+        <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
+        <button type="submit">Save changes</button>
+      </form>
+      <p id="developer-edit-status" class="status" aria-live="polite"></p>
+      <p><button type="button" class="secondary" data-claim-cancel data-claim-confirm="Stop being the verified developer of this game?">Release this game</button></p>
+      <p data-claim-status class="status" aria-live="polite"></p>
+    </section>`;
+  }
+  if (hasDeveloper || claim?.status === "rejected") {
+    return claim?.status === "rejected" ? `<p class="game-actions-note">An editor declined your claim on this game.</p>` : "";
+  }
+
+  const origin = (() => {
+    try {
+      return new URL(game.url).origin;
+    } catch {
+      return game.url;
+    }
+  })();
+  let body: string;
+  if (!claim || claim.status === "revoked") {
+    body = `<p>Verify that you made this game to get a verified-developer mark and edit its details yourself.</p>
+      <button type="button" data-claim-start>Claim this game</button>`;
+  } else if (claim.status === "review") {
+    body = `<p>Your evidence is with the editors. Once they confirm it, you'll be able to edit this game.</p>
+      <button type="button" class="secondary" data-claim-cancel>Withdraw claim</button>`;
+  } else {
+    body = `<p>Do <strong>one</strong> of these, then press Verify. We check the game's address as it is listed here: <code>${escapeHtml(game.url)}</code></p>
+      <ol>
+        <li>Add this tag inside the <code>&lt;head&gt;</code> of that page:
+          <pre><code>${escapeHtml(claimMetaSnippet(claim.token, appEnv))}</code></pre>
+          <button type="button" class="secondary" data-copy="${escapeHtml(claimMetaSnippet(claim.token, appEnv))}">Copy tag</button></li>
+        <li>Or serve a plain text file at <code>${escapeHtml(origin + claimNames(appEnv).filePath)}</code> containing just:
+          <pre><code>${escapeHtml(claim.token)}</code></pre>
+          <button type="button" class="secondary" data-copy="${escapeHtml(claim.token)}">Copy file contents</button></li>
+      </ol>
+      <p><button type="button" data-claim-verify>Verify now</button> <button type="button" class="secondary" data-claim-cancel>Cancel</button></p>
+      <details>
+        <summary>Can't change the page? (itch.io, Newgrounds, and similar sites)</summary>
+        <p>Tell the editors how to confirm it, e.g. a link to your developer profile that lists this game. They'll review it.</p>
+        <textarea data-claim-evidence-text rows="3" maxlength="500" placeholder="https://yourname.itch.io/ ..."></textarea>
+        <p><button type="button" data-claim-evidence>Send for review</button></p>
+      </details>`;
+  }
+  return `<details class="panel claim-panel" ${claim ? "open" : ""}>
+    <summary>Are you the developer?</summary>
+    ${body}
+    <p data-claim-status class="status" aria-live="polite"></p>
+  </details>`;
+}
+
+const DEVELOPER_SCRIPT = `
+  const claimStatusNode = document.querySelector("[data-claim-status]");
+  const claimSay = (text, level) => {
+    if (claimStatusNode) claimStatusNode.textContent = text;
+    if (window.appToast) window.appToast(text, level);
+  };
+  const claimCall = async (method, path, body) => {
+    const res = await fetch("/api/games/" + gameId + path, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return { ok: res.ok, data: await res.json().catch(() => ({})) };
+  };
+  document.querySelectorAll("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const text = button.getAttribute("data-copy") || "";
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        // Clipboard API unavailable (insecure context or denied): fall back to selecting a hidden textarea.
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        try { copied = document.execCommand("copy"); } catch { copied = false; }
+        area.remove();
+      }
+      const label = button.dataset.label || button.textContent;
+      button.dataset.label = label;
+      button.textContent = copied ? "Copied!" : "Select and copy manually";
+      setTimeout(() => { button.textContent = label; }, 2000);
+    });
+  });
+  document.querySelector("[data-claim-start]")?.addEventListener("click", async () => {
+    const r = await claimCall("POST", "/claim");
+    if (r.ok) window.location.reload();
+    else claimSay(r.data.error || "Could not start the claim.", "error");
+  });
+  document.querySelector("[data-claim-verify]")?.addEventListener("click", async () => {
+    claimSay("Checking...", "info");
+    const r = await claimCall("POST", "/claim/verify");
+    if (r.ok) {
+      claimSay("Verified!", "success");
+      setTimeout(() => window.location.reload(), 800);
+    } else {
+      claimSay(r.data.error || "Could not verify.", "error");
+    }
+  });
+  document.querySelector("[data-claim-evidence]")?.addEventListener("click", async () => {
+    const field = document.querySelector("[data-claim-evidence-text]");
+    const r = await claimCall("POST", "/claim/evidence", { evidence: field ? field.value : "" });
+    if (r.ok) window.location.reload();
+    else claimSay(r.data.error || "Could not send it.", "error");
+  });
+  document.querySelector("[data-claim-cancel]")?.addEventListener("click", async (event) => {
+    const confirmText = event.currentTarget.getAttribute("data-claim-confirm");
+    if (confirmText && !window.confirm(confirmText)) return;
+    const r = await claimCall("DELETE", "/claim");
+    if (r.ok) window.location.reload();
+    else claimSay(r.data.error || "Could not cancel.", "error");
+  });
+
+  const developerForm = document.getElementById("developer-edit-form");
+  if (developerForm) {
+    ${RESET_TIMEZONE_TOGGLE_SCRIPT}
+    const developerStatus = document.getElementById("developer-edit-status");
+    const setDeveloperStatus = (text) => {
+      if (developerStatus) developerStatus.textContent = text;
+    };
+    developerForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(developerForm);
+      const resetBasis = formData.get("reset_basis");
+      const resetTimeParts = /^(\\d{1,2}):(\\d{2})/.exec(String(formData.get("reset_time") || "").trim());
+      const resetTimezone = String(formData.get("reset_timezone") || "").trim();
+      const payload = {
+        title: String(formData.get("title") || ""),
+        url: String(formData.get("url") || ""),
+        description: String(formData.get("description") || "").trim() || null,
+        reset_basis: resetBasis ? String(resetBasis) : null,
+        reset_time_minutes: resetTimeParts ? Number(resetTimeParts[1]) * 60 + Number(resetTimeParts[2]) : null,
+        reset_timezone: resetBasis === "server" && resetTimezone ? resetTimezone : null,
+        paywall: formData.has("paywall"),
+        how_to_play: String(formData.get("how_to_play") || "")
+      };
+      setDeveloperStatus("Saving changes...");
+      const response = await fetch("/api/games/" + gameId + "/developer-update", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) {
+        setDeveloperStatus("Changes saved.");
+        if (window.appToast) window.appToast("Game updated.", "success");
+        setTimeout(() => { window.location.href = "/games/" + (result.slug || ""); }, 800);
+      } else {
+        const message = result.error || "Could not save changes.";
+        setDeveloperStatus(message);
+        if (window.appToast) window.appToast(message, "error");
+      }
+    });
+  }
+`;
 
 type ResetSortData = { kind: "utc" | "local"; min: number };
 
@@ -7882,6 +8554,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
       button.active { background: var(--accent); color: var(--on-accent); }
       .tag { display:inline-block; margin-right:0.35rem; margin-bottom:0.35rem; padding:0.2rem 0.45rem; border-radius:999px; border:1px solid var(--border); background:var(--bg-soft); font-size: 0.85rem; color:var(--muted); }
+      .developer-line { margin: 0.25rem 0; color: var(--muted); }
+      .developer-line .verified-badge { margin-left: 0; margin-right: 0.2rem; }
+      .claim-panel pre { overflow-x: auto; margin: 0.4rem 0; padding: 0.5rem 0.7rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 8px; }
+      .claim-panel textarea { width: 100%; }
       .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
       .paywall-badge { color: var(--badge-paywall); font-weight:700; margin-left:0.3rem; font-size:1em; }
       .nsfw-badge { color: var(--badge-nsfw); font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
@@ -7902,6 +8578,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         vertical-align: middle;
       }
       .moderation-badge-submissions { background: #16a34a; }
+      button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--border); }
       button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
@@ -8377,6 +9054,8 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     env.DB.prepare("DELETE FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1").bind(fromId),
     reassign("list_suggestions", "suggested_by_user_id"),
     reassign("list_blocked_games", "blocked_by_user_id"),
+    // A claim the target account already has for the same game stays; the other is dropped with the user row.
+    env.DB.prepare("UPDATE OR IGNORE game_claims SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
     // Keep a shared-rotation link if only the merged-away account had one (cleared first: the token is unique).
     env.DB.prepare("UPDATE users SET rotation_share_token = NULL WHERE id = ?1").bind(fromId),
     env.DB.prepare("UPDATE users SET rotation_share_token = ?2 WHERE id = ?1 AND rotation_share_token IS NULL").bind(intoId, fromShareToken),

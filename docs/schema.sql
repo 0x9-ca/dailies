@@ -105,6 +105,25 @@ CREATE TABLE game_categories (
 );
 CREATE INDEX idx_game_categories_category ON game_categories(category_id, game_id);
 
+CREATE TABLE game_claims (
+  id TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'review', 'verified', 'rejected', 'revoked')),
+  method TEXT CHECK (method IN ('meta', 'file', 'manual')),
+  evidence TEXT,
+  verified_url TEXT,
+  fail_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  verified_at TEXT,
+  last_checked_at TEXT,
+  UNIQUE (game_id, user_id)
+);
+CREATE UNIQUE INDEX idx_game_claims_one_verified ON game_claims(game_id) WHERE status = 'verified';
+CREATE INDEX idx_game_claims_status ON game_claims(status, last_checked_at);
+CREATE INDEX idx_game_claims_user ON game_claims(user_id);
+
 CREATE TABLE games (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
