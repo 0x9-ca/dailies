@@ -44,6 +44,10 @@
 - `DELETE /api/me/sessions/:id`
 - `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
 
+## Public profile (signed-in user)
+
+- `PUT /api/me/public-profile` (`{ public, handle, showRotation, showTwitch, avatarProvider }`; the profile page `GET /u/:handle` is a 404 unless `public` is on, except for its owner. 409 handle taken, 400 invalid or reserved handle, or Twitch/avatar provider not linked)
+
 ## Developer claims (signed-in user)
 
 - `POST /api/games/:id/claim` (starts a claim and returns `{ claim: { status, token } }`; a listed game, or a pending one the user submitted; 409 if the game already has a verified developer; rejected claims can't be refiled)
