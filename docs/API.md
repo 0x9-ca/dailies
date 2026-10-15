@@ -58,6 +58,7 @@
 
 ## Editor/Admin
 
+- `POST /api/admin/users/:id/creator` (`{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)
 - `POST /api/admin/claims/:claimId` (`{ action: "approve" | "reject" | "revoke" }`; approve verifies a manual claim)
 
 - `GET /api/admin/submissions?status=pending|rejected|disabled|approved&q=<query>`
@@ -78,7 +79,7 @@
 - `DELETE /api/admin/categories/:id`
 - `POST /api/lists`
 - `PATCH /api/lists/:id` (`title`, `description`, `slug` (staff only), `suggestionsEnabled`)
-- `PATCH /api/lists/:id/visibility`
+- `PATCH /api/lists/:id/visibility` (staff, or the owner of their own creator list)
 - `DELETE /api/lists/:id`
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`

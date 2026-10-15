@@ -74,11 +74,12 @@ CREATE TABLE curated_lists (
   created_by_user_id TEXT NOT NULL,
   updated_by_user_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'curated' CHECK (kind IN ('curated', 'creator')),
   FOREIGN KEY (owner_user_id) REFERENCES users(id),
   FOREIGN KEY (created_by_user_id) REFERENCES users(id),
   FOREIGN KEY (updated_by_user_id) REFERENCES users(id)
 );
+CREATE UNIQUE INDEX idx_curated_lists_one_creator ON curated_lists(owner_user_id) WHERE kind = 'creator';
 
 CREATE TABLE favorites (
   user_id TEXT NOT NULL,
@@ -239,7 +240,7 @@ CREATE TABLE users (
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'editor', 'admin')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-, rotation_share_token TEXT DEFAULT NULL, profile_handle TEXT, profile_public INTEGER NOT NULL DEFAULT 0, profile_show_rotation INTEGER NOT NULL DEFAULT 0, profile_show_twitch INTEGER NOT NULL DEFAULT 0, profile_avatar_provider TEXT);
+, rotation_share_token TEXT DEFAULT NULL, profile_handle TEXT, profile_public INTEGER NOT NULL DEFAULT 0, profile_show_rotation INTEGER NOT NULL DEFAULT 0, profile_show_twitch INTEGER NOT NULL DEFAULT 0, profile_avatar_provider TEXT, creator_type TEXT);
 CREATE UNIQUE INDEX idx_users_profile_handle ON users(profile_handle) WHERE profile_handle IS NOT NULL;
 CREATE UNIQUE INDEX idx_users_rotation_share_token ON users(rotation_share_token) WHERE rotation_share_token IS NOT NULL;
 
