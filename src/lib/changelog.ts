@@ -9,6 +9,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "Verified developers who have joined our Discord server now get the Dle Developer role automatically: as soon as you verify a game, when you join afterwards, or the next time you sign in with Discord.",
       "Game pages no longer run off the edge of a phone screen.",
       "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
+      "Submitting a game now asks if you made it. Say yes (and sign in, if you aren't) to start becoming its verified developer, and your answers are kept while you sign in. Once verified, you're offered a link to the game's page on 0x9 dles to share from your game and your socials.",
       "Twitch affiliates and partners are now verified creators when they sign in. They get a verified check and a public list of their own, open to suggestions from viewers, which they can edit or make private any time. If an editor already had a list for their channel, its games are copied over.",
       "A person can have at most 20 open suggestions on a list.",
       "Game cards keep their category pills to two lines. Extra categories fold into a +N chip you can tap to see them all; a verified developer is always shown.",

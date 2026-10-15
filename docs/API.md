@@ -50,6 +50,7 @@
 
 ## Developer claims (signed-in user)
 
+- `POST /api/games` also takes `isDeveloper: true` (signed-in submitters: starts a developer claim on the new game, response `claim: true`); a duplicate URL returns 409 with `code: "duplicate"` and the listed game's `slug`
 - `POST /api/games/:id/claim` (starts a claim and returns `{ claim: { status, token } }`; a listed game, or a pending one the user submitted; 409 if the game already has a verified developer; rejected claims can't be refiled)
 - `POST /api/games/:id/claim/verify` (fetches the game's URL for `<meta name="0x9dles-verify" content="TOKEN">`, then `/.well-known/0x9dles.txt` on its origin. Staging uses `0x9dles-stg-verify` and `0x9dles-stg.txt`, dev `-dev`; 422 token not found, 502 site unreachable)
 - `POST /api/games/:id/claim/evidence` (`{ evidence }`, 10-500 chars: asks an editor to confirm instead; claim becomes `review`)

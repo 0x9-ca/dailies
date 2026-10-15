@@ -169,7 +169,8 @@ app.get("/auth/mock-oauth/:provider/:providerUserId", async (c) => {
       twitchLogin: provider === "twitch" ? c.req.query("login") ?? `mock${c.req.param("providerUserId")}` : null,
       creatorType: provider === "twitch" ? (c.req.query("creator") === "partner" ? "partner" : c.req.query("creator") === "affiliate" ? "affiliate" : null) : null
     },
-    c.req.query("link") === "1"
+    c.req.query("link") === "1",
+    c.req.query("next")
   );
 });
 
@@ -508,6 +509,21 @@ app.get("/submit", async (c) => {
           </fieldset>
           <label class="check"><input type="checkbox" name="paywall" value="1" /> This game is paywalled</label>
           <label class="check"><input type="checkbox" name="nsfw" value="1" /> This game is NSFW</label>
+          <fieldset>
+            <legend>Did you make this game?</legend>
+            <label class="check"><input type="radio" name="isDeveloper" value="no" /> No</label>
+            <label class="check"><input type="radio" name="isDeveloper" value="yes" /> Yes, I'm the developer</label>
+            <div id="dev-yes-note" hidden>
+              ${user
+                ? `<p>You'll get a verified developer badge once you prove it. After you submit, you add a small tag to your game's page, or ask an editor to confirm it another way. You can then edit the game's details yourself.</p>`
+                : `<p>Sign in to get the verified developer badge for this game. We'll bring you back here with your answers saved.</p>
+                   <div class="actions">
+                     <a class="btn btn-discord" href="/auth/discord?next=/submit" data-save-draft>${DISCORD_ICON_SVG} Sign in with Discord</a>
+                     ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn btn-twitch" href="/auth/twitch?next=/submit" data-save-draft>${TWITCH_ICON_SVG} Sign in with Twitch</a>` : ""}
+                   </div>
+                   <p>Or submit without signing in. The game will be listed, but not verified.</p>`}
+            </div>
+          </fieldset>
           <button type="submit" class="btn">Submit for review</button>
         </form>
         <p id="submission-status" class="status" aria-live="polite"></p>
@@ -517,6 +533,41 @@ app.get("/submit", async (c) => {
       ${RESET_TIMEZONE_TOGGLE_SCRIPT}
       const form = document.getElementById("submission-form");
       const status = document.getElementById("submission-status");
+      const signedIn = ${user ? "true" : "false"};
+      const devNote = document.getElementById("dev-yes-note");
+      const developerAnswer = () => (form && form.querySelector("input[name=isDeveloper]:checked") ? form.querySelector("input[name=isDeveloper]:checked").value : "");
+      form?.querySelectorAll("input[name=isDeveloper]").forEach((radio) => radio.addEventListener("change", () => { if (devNote) devNote.hidden = developerAnswer() !== "yes"; }));
+
+      // Signing in leaves this page, so the answers wait in this browser (for an hour) and come back with the visitor.
+      const DRAFT_KEY = "dgl_submit_draft";
+      const saveDraft = () => {
+        if (!(form instanceof HTMLFormElement)) return;
+        const data = new FormData(form);
+        const draft = { savedAt: Date.now(), fields: {}, checked: {} };
+        for (const [key, value] of data.entries()) {
+          if (form.elements[key] && form.elements[key].type === "checkbox") continue;
+          draft.fields[key] = String(value);
+        }
+        form.querySelectorAll("input[type=checkbox]").forEach((box) => { draft.checked[box.name + "=" + box.value] = box.checked; });
+        try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)); } catch {}
+      };
+      const restoreDraft = () => {
+        let draft = null;
+        try { draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); } catch {}
+        if (!draft || Date.now() - draft.savedAt > 3600000 || !(form instanceof HTMLFormElement)) return;
+        for (const [key, value] of Object.entries(draft.fields || {})) {
+          const control = form.elements[key];
+          if (!control) continue;
+          if (control instanceof RadioNodeList) { control.forEach((radio) => { radio.checked = radio.value === value; }); }
+          else if (control.type !== "file") control.value = value;
+        }
+        form.querySelectorAll("input[type=checkbox]").forEach((box) => { const saved = draft.checked && draft.checked[box.name + "=" + box.value]; if (saved !== undefined) box.checked = saved; });
+        form.querySelectorAll("[data-basis-select]").forEach((select) => select.dispatchEvent(new Event("change")));
+        if (devNote) devNote.hidden = developerAnswer() !== "yes";
+      };
+      const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch {} };
+      document.querySelectorAll("[data-save-draft]").forEach((link) => link.addEventListener("click", saveDraft));
+      restoreDraft();
       form?.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!(form instanceof HTMLFormElement)) return;
@@ -533,7 +584,8 @@ app.get("/submit", async (c) => {
           resetTime: resetTime || undefined,
           resetTimezone: resetBasis === "server" && resetTimezone ? resetTimezone : undefined,
           paywall: formData.has("paywall"),
-          nsfw: formData.has("nsfw")
+          nsfw: formData.has("nsfw"),
+          isDeveloper: signedIn && developerAnswer() === "yes"
         };
         if (status) status.textContent = "Submitting...";
         const response = await fetch("/api/games", {
@@ -543,7 +595,14 @@ app.get("/submit", async (c) => {
         });
         if (response.ok) {
           form.reset();
+          clearDraft();
           const result = await response.json().catch(() => ({}));
+          if (result.claim && result.slug) {
+            // Their claim is started: finish proving it on the game's page.
+            if (window.appToast) window.appToast("Submitted. Now verify you're the developer.", "success");
+            window.location.href = "/games/" + encodeURIComponent(result.slug);
+            return;
+          }
           const submittedStatus = result.status === "approved" ? "Approved and published." : "Submitted. Editors will review it shortly.";
           if (status) {
             status.textContent = submittedStatus + " ";
@@ -557,8 +616,17 @@ app.get("/submit", async (c) => {
           if (window.appToast) window.appToast(submittedStatus, "success");
         } else {
           const result = await response.json().catch(() => ({}));
-          if (status) status.textContent = result.error || "Submission failed.";
-          if (window.appToast) window.appToast((status && status.textContent) || "Submission failed.", "error");
+          if (status) {
+            status.textContent = (result.error || "Submission failed.") + " ";
+            if (result.code === "duplicate" && result.slug) {
+              // Already listed: if it's theirs, the game's page is where they claim it.
+              const link = document.createElement("a");
+              link.href = "/games/" + encodeURIComponent(result.slug);
+              link.textContent = "It's already listed. If you made it, open its page to claim it.";
+              status.appendChild(link);
+            }
+          }
+          if (window.appToast) window.appToast(result.error || "Submission failed.", "error");
         }
       });
     </script>
@@ -1018,7 +1086,7 @@ app.get("/games/:slug", async (c) => {
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
       </details>
-      ${renderDeveloperSections(game, user, ownClaim, !!developer, c.env.APP_ENV)}
+      ${renderDeveloperSections(game, user, ownClaim, !!developer, c.env.APP_ENV, c.env.APP_URL)}
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -4630,7 +4698,9 @@ const submissionSchema = z.object({
   resetTime: z.preprocess(normalizeTimeInput, z.string().regex(/^\d{2}:\d{2}$/).optional()),
   resetTimezone: z.string().max(64).optional(),
   paywall: z.boolean().optional().default(false),
-  nsfw: z.boolean().optional().default(false)
+  nsfw: z.boolean().optional().default(false),
+  // "I made this game": for a signed-in submitter, starts a developer claim on the new game.
+  isDeveloper: z.boolean().optional().default(false)
 });
 
 app.get("/api/games", async (c) => {
@@ -4822,9 +4892,10 @@ app.post("/api/games", async (c) => {
     return c.json({ error: "Invalid URL" }, 400);
   }
 
-  const duplicate = await c.env.DB.prepare("SELECT id FROM games WHERE canonical_url = ?1").bind(canonicalUrl).first();
+  const duplicate = await c.env.DB.prepare("SELECT id, slug, status FROM games WHERE canonical_url = ?1").bind(canonicalUrl).first<{ id: string; slug: string; status: string }>();
   if (duplicate) {
-    return c.json({ error: "Game URL already submitted" }, 409);
+    // A listed game's page is where its developer can claim it.
+    return c.json({ error: "Game URL already submitted", code: "duplicate", ...(duplicate.status === "approved" ? { slug: duplicate.slug } : {}) }, 409);
   }
 
   const resetBasis = parsed.data.resetBasis || null;
@@ -4879,6 +4950,15 @@ app.post("/api/games", async (c) => {
     await updateGameScore(c.env, id);
   }
 
+  // The submitter says they made it: start their claim, which they finish (tag on the page, or evidence) on the game's page.
+  let claimStarted = false;
+  if (parsed.data.isDeveloper && user) {
+    await c.env.DB.prepare("INSERT INTO game_claims (id, game_id, user_id, token) VALUES (?1, ?2, ?3, ?4)")
+      .bind(crypto.randomUUID(), id, user.id, newClaimToken())
+      .run();
+    claimStarted = true;
+  }
+
   await invalidateGameCaches(c.env);
   c.executionCtx.waitUntil(
     notifyNewSubmission(c.env, {
@@ -4893,7 +4973,7 @@ app.post("/api/games", async (c) => {
   if (bypassModeration) {
     c.executionCtx.waitUntil(queueNewGameAnnouncements(c.env, [id]));
   }
-  return c.json({ id, slug, status: bypassModeration ? "approved" : "pending" }, 201);
+  return c.json({ id, slug, status: bypassModeration ? "approved" : "pending", claim: claimStarted }, 201);
 });
 
 const voteSchema = z.object({ value: z.union([z.literal(1), z.literal(-1)]) });
@@ -8080,11 +8160,12 @@ function renderCheckBadge(title: string): string {
  * developer only gets a release button.
  */
 function renderDeveloperSections(
-  game: { id: string; title: string; url: string; description: string | null; how_to_play: string | null; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number },
+  game: { id: string; title: string; slug: string; url: string; description: string | null; how_to_play: string | null; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number },
   user: AppUser | null,
   claim: ClaimRow | null,
   hasDeveloper: boolean,
-  appEnv: string
+  appEnv: string,
+  appUrl: string
 ): string {
   const isStaff = !!user && (user.role === "admin" || user.role === "editor");
   if (isStaff && claim?.status === "verified") {
@@ -8098,7 +8179,15 @@ function renderDeveloperSections(
     return hasDeveloper ? "" : `<p class="game-actions-note">Made this game? <a href="/login">Sign in</a> to claim it.</p>`;
   }
   if (claim?.status === "verified") {
-    return `<section class="panel">
+    const gamePageUrl = `${appUrl.replace(/\/$/, "")}/games/${encodeURIComponent(game.slug)}`;
+    const linkSnippet = `<a href="${gamePageUrl}">${game.title} on 0x9 dles</a>`;
+    return `<section class="panel" id="linkback">
+      <h2>Help players find ${escapeHtml(game.title)}</h2>
+      <p>If you like, link to this page from your game and from your social accounts. It's entirely optional, but links from the places people already find you help players, and search engines, discover the game.</p>
+      <p><code>${escapeHtml(gamePageUrl)}</code></p>
+      <p><button type="button" class="secondary" data-copy="${escapeHtml(gamePageUrl)}">Copy link</button> <button type="button" class="secondary" data-copy="${escapeHtml(linkSnippet)}">Copy HTML link</button></p>
+    </section>
+    <section class="panel">
       <h2>Edit your game</h2>
       <p class="game-actions-note">You're the verified developer. Keep the verification tag on the game's page (or the file on its site): if it goes missing, your verification is removed. Moving the game to a new URL needs the tag on the new address first.</p>
       <form id="developer-edit-form" class="stack-form">
@@ -8226,8 +8315,8 @@ const DEVELOPER_SCRIPT = `
     claimSay("Checking...", "info");
     const r = await claimCall("POST", "/claim/verify");
     if (r.ok) {
-      claimSay("Verified!", "success");
-      setTimeout(() => window.location.reload(), 800);
+      claimSay("Verified! You're now the game's verified developer.", "success");
+      setTimeout(() => { window.location.href = window.location.pathname + "#linkback"; window.location.reload(); }, 900);
     } else {
       claimSay(r.data.error || "Could not verify.", "error");
     }
@@ -9704,6 +9793,11 @@ function oauthClientId(env: Env, provider: OAuthProvider): string | undefined {
   return provider === "discord" ? env.OAUTH_DISCORD_CLIENT_ID : env.OAUTH_TWITCH_CLIENT_ID;
 }
 
+/** A same-site path to return to after signing in (never an absolute or protocol-relative URL). */
+function safeNextPath(value: string | undefined | null): string | null {
+  return value && value.length <= 200 && /^\/[^/\\]/.test(value) && !/[\r\n]/.test(value) ? value : null;
+}
+
 function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider, intent: "login" | "link"): Response {
   // The state cookie ties the callback to this browser, so nobody can log someone else into an attacker's account.
   // It also carries the intent (login, or link to the signed-in account), which the callback trusts only via this cookie.
@@ -9715,6 +9809,10 @@ function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
     secure: wantsSecureCookies(c.env),
     maxAge: 600
   });
+  const next = intent === "login" ? safeNextPath(c.req.query("next")) : null;
+  if (next) {
+    setCookie(c, "login_next", next, { path: "/", httpOnly: true, sameSite: "Lax", secure: wantsSecureCookies(c.env), maxAge: 600 });
+  }
   const url = new URL(OAUTH_AUTHORIZE[provider].url);
   url.searchParams.set("client_id", oauthClientId(c.env, provider) ?? "");
   url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, provider));
@@ -9758,7 +9856,7 @@ type OAuthProfile = {
  * Finishes a provider sign-in. A login signs in to (or creates) the account for that provider account. A link
  * (started from Settings) attaches it to the signed-in user instead, merging its existing account if it has one.
  */
-async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, profile: OAuthProfile, link: boolean): Promise<Response> {
+async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, profile: OAuthProfile, link: boolean, nextOverride?: string): Promise<Response> {
   if (!link) {
     const userId = await upsertOAuthUser(c.env, profile);
     await saveOAuthAvatar(c.env, profile);
@@ -9766,7 +9864,9 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
     // Someone who has just joined the server and signed in gets the Dle Developer role at once, not at the next check.
     await queueDeveloperRole(c.env, userId);
     await createSession(c, userId);
-    return c.redirect("/?importLocal=1");
+    const next = safeNextPath(nextOverride) ?? safeNextPath(getCookie(c, "login_next"));
+    deleteCookie(c, "login_next", { path: "/" });
+    return c.redirect(next ?? "/?importLocal=1");
   }
   const user = c.get("user");
   if (!user) {
