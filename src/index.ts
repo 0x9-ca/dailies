@@ -162,7 +162,10 @@ app.get("/auth/mock-oauth/:provider/:providerUserId", async (c) => {
       providerUserId: c.req.param("providerUserId"),
       displayName: `${provider} ${c.req.param("providerUserId")}`,
       role: provider === "discord" ? (role === "admin" || role === "editor" ? role : "user") : undefined,
-      avatarUrl: c.req.query("avatar") ?? null
+      avatarUrl: c.req.query("avatar") ?? null,
+      // Development only: ?creator=affiliate|partner and ?login=<channel> stand in for Twitch's profile fields.
+      twitchLogin: provider === "twitch" ? c.req.query("login") ?? `mock${c.req.param("providerUserId")}` : null,
+      creatorType: provider === "twitch" ? (c.req.query("creator") === "partner" ? "partner" : c.req.query("creator") === "affiliate" ? "affiliate" : null) : null
     },
     c.req.query("link") === "1"
   );
@@ -271,7 +274,7 @@ app.get("/auth/twitch/callback", async (c) => {
       headers: { Authorization: `Bearer ${accessToken}`, "Client-Id": c.env.OAUTH_TWITCH_CLIENT_ID }
     });
     const twitchUser = userRes.ok
-      ? ((await userRes.json()) as { data?: Array<{ id: string; login?: string; display_name?: string; profile_image_url?: string }> }).data?.[0]
+      ? ((await userRes.json()) as { data?: Array<{ id: string; login?: string; display_name?: string; profile_image_url?: string; broadcaster_type?: string }> }).data?.[0]
       : undefined;
     if (!twitchUser?.id) {
       return c.text("OAuth profile fetch failed", 400);
@@ -279,7 +282,14 @@ app.get("/auth/twitch/callback", async (c) => {
 
     return await completeOAuth(
       c,
-      { provider: "twitch", providerUserId: twitchUser.id, displayName: twitchUser.display_name || twitchUser.login || null, avatarUrl: twitchUser.profile_image_url ?? null },
+      {
+        provider: "twitch",
+        providerUserId: twitchUser.id,
+        displayName: twitchUser.display_name || twitchUser.login || null,
+        avatarUrl: twitchUser.profile_image_url ?? null,
+        twitchLogin: twitchUser.login ?? null,
+        creatorType: twitchUser.broadcaster_type === "partner" ? "partner" : twitchUser.broadcaster_type === "affiliate" ? "affiliate" : null
+      },
       link
     );
   } finally {
@@ -1305,6 +1315,90 @@ function safeAvatarUrl(value: string | null | undefined): string | null {
   }
 }
 
+/**
+ * Verified content creators: Twitch affiliates and partners (read from Twitch at every Twitch sign-in) plus anyone
+ * an editor or admin grants ("manual"). A creator has one public list of their own, created the first time they
+ * qualify; it is theirs from then on, so losing the status later never makes it private or removes it.
+ */
+async function syncCreatorStatus(env: Env, userId: string, profile: OAuthProfile): Promise<void> {
+  if (profile.provider !== "twitch") return;
+  const row = await env.DB.prepare("SELECT creator_type FROM users WHERE id = ?1").bind(userId).first<{ creator_type: string | null }>();
+  if (!row) return;
+  let next = row.creator_type;
+  if (profile.creatorType) {
+    next = profile.creatorType;
+  } else if (row.creator_type === "affiliate" || row.creator_type === "partner") {
+    next = null;
+  }
+  if (next !== row.creator_type) {
+    await env.DB.prepare("UPDATE users SET creator_type = ?2, updated_at = datetime('now') WHERE id = ?1").bind(userId, next).run();
+    await writeAudit(env, userId, "user", userId, "creator_status", { from: row.creator_type, to: next });
+  }
+  if (next) {
+    await ensureCreatorList(env, userId, { twitchId: profile.providerUserId, twitchLogin: profile.twitchLogin ?? null });
+  }
+}
+
+/**
+ * Gives a creator their public list if they don't have one. Games from any editor-tagged list for the same Twitch
+ * channel are copied into it (in that list's order, without duplicates); the originals stay as they are. Public,
+ * with suggestions open, by default. Returns the list id.
+ */
+async function ensureCreatorList(env: Env, userId: string, twitch?: { twitchId: string; twitchLogin: string | null }): Promise<string | null> {
+  const existing = await env.DB.prepare("SELECT id, twitch_user_id FROM curated_lists WHERE owner_user_id = ?1 AND kind = 'creator'")
+    .bind(userId)
+    .first<{ id: string; twitch_user_id: string | null }>();
+  if (existing) {
+    // Keep the channel name fresh (renames), and attach a Twitch channel the list didn't have yet.
+    if (twitch) {
+      await env.DB.prepare("UPDATE curated_lists SET twitch_user_id = ?2, twitch_login = COALESCE(?3, twitch_login) WHERE id = ?1")
+        .bind(existing.id, twitch.twitchId, twitch.twitchLogin)
+        .run();
+    }
+    return existing.id;
+  }
+  const user = await env.DB.prepare("SELECT display_name FROM users WHERE id = ?1").bind(userId).first<{ display_name: string | null }>();
+  const name = (user?.display_name || twitch?.twitchLogin || "Creator").trim().slice(0, 60);
+  const id = crypto.randomUUID();
+  let slug = slugify(name) || "creator";
+  // A taken slug (an editor's list for the same streamer, say) falls back to "-dailies", then to a short id.
+  for (const candidate of [`${slug}-dailies`, `${slug}-${userId.slice(0, 6)}`]) {
+    if (!(await env.DB.prepare("SELECT 1 FROM curated_lists WHERE slug = ?1").bind(slug).first())) break;
+    slug = candidate;
+  }
+  const description = twitch ? `Daily games played by ${name} on Twitch.` : `Daily games picked by ${name}.`;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO curated_lists (id, slug, title, description, visibility, owner_user_id, created_by_user_id, updated_by_user_id, twitch_login, twitch_user_id, suggestions_enabled, kind)
+         VALUES (?1, ?2, ?3, ?4, 'public', ?5, ?5, ?5, ?6, ?7, 1, 'creator')`
+      ).bind(id, slug, `${name}'s Dailies`, description, userId, twitch?.twitchLogin ?? null, twitch?.twitchId ?? null),
+      // Copy from editor-tagged lists for the same channel: oldest list first, each game once, positions 1..n.
+      env.DB.prepare(
+        `INSERT INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id)
+         SELECT ?1, game_id, ROW_NUMBER() OVER (ORDER BY ord), ?2
+         FROM (
+           SELECT i.game_id AS game_id, MIN(l.created_at || '|' || printf('%06d', i.position)) AS ord
+           FROM curated_list_items i
+           JOIN curated_lists l ON l.id = i.curated_list_id
+           WHERE ?3 IS NOT NULL AND l.twitch_user_id = ?3 AND l.kind = 'curated'
+           GROUP BY i.game_id
+         )`
+      ).bind(id, userId, twitch?.twitchId ?? null)
+    ]);
+  } catch (error) {
+    // A concurrent sign-in created it first.
+    if (isUniqueViolation(error)) {
+      return (await env.DB.prepare("SELECT id FROM curated_lists WHERE owner_user_id = ?1 AND kind = 'creator'").bind(userId).first<{ id: string }>())?.id ?? null;
+    }
+    throw error;
+  }
+  const copied = await env.DB.prepare("SELECT COUNT(*) AS n FROM curated_list_items WHERE curated_list_id = ?1").bind(id).first<{ n: number }>();
+  await writeAudit(env, userId, "list", id, "create_creator_list", { slug, copiedGames: copied?.n ?? 0 });
+  await invalidateGameCaches(env);
+  return id;
+}
+
 /** Stores the picture a provider reported at sign-in, refreshed on every login or link. */
 async function saveOAuthAvatar(env: Env, profile: OAuthProfile): Promise<void> {
   const avatarUrl = safeAvatarUrl(profile.avatarUrl);
@@ -1388,11 +1482,11 @@ app.put("/api/me/public-profile", async (c) => {
 app.get("/u/:handle", async (c) => {
   const user = c.get("user");
   const owner = await c.env.DB.prepare(
-    `SELECT id, display_name, role, profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider
+    `SELECT id, display_name, role, creator_type, profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider
      FROM users WHERE profile_handle = ?1`
   )
     .bind(c.req.param("handle").toLowerCase())
-    .first<{ id: string; display_name: string | null; role: AppUser["role"]; profile_handle: string; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
+    .first<{ id: string; display_name: string | null; role: AppUser["role"]; creator_type: string | null; profile_handle: string; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
   // A profile that isn't public looks like no profile at all, except to its owner (who gets a preview).
   const isOwner = !!user && !!owner && user.id === owner.id;
   if (!owner || (!owner.profile_public && !isOwner)) {
@@ -1419,8 +1513,18 @@ app.get("/u/:handle", async (c) => {
         .all<{ title: string; slug: string; paywall: number; nsfw: number }>()).results
     : [];
 
+  const creatorList = owner.creator_type
+    ? await c.env.DB.prepare(
+        `SELECT slug, title FROM curated_lists
+         WHERE owner_user_id = ?1 AND kind = 'creator' AND (visibility = 'public' OR owner_user_id = ?2)
+           AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id)`
+      )
+        .bind(owner.id, user?.id ?? null)
+        .first<{ slug: string; title: string }>()
+    : null;
   const name = owner.display_name || owner.profile_handle;
   const badges = [
+    owner.creator_type ? `<span class="profile-badge profile-badge-dev">${renderCheckBadge("Verified content creator")} ${owner.creator_type === "partner" ? "Twitch Partner" : owner.creator_type === "affiliate" ? "Twitch Affiliate" : "Verified creator"}</span>` : "",
     owner.role === "admin" ? `<span class="profile-badge profile-badge-staff">Admin</span>` : "",
     owner.role === "editor" ? `<span class="profile-badge profile-badge-staff">Editor</span>` : "",
     developed.length > 0 ? `<span class="profile-badge profile-badge-dev">${renderCheckBadge("Verified developer")} Verified developer</span>` : ""
@@ -1439,6 +1543,7 @@ app.get("/u/:handle", async (c) => {
           ${twitchLogin ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(twitchLogin)}" target="_blank" rel="noopener noreferrer">${TWITCH_ICON_SVG}<span>${escapeHtml(twitchLogin)} on Twitch</span><span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
         </div>
       </header>
+      ${creatorList ? `<p><a class="btn" href="/lists/${encodeURIComponent(creatorList.slug)}">${escapeHtml(creatorList.title)}</a></p>` : ""}
       ${developed.length > 0 ? `<section>
         <h2>Games by ${escapeHtml(name)}</h2>
         ${renderCompactGameList(developed.map((game) => ({ ...game, developer: null })), user, userVotes, userFavorites)}
@@ -1447,7 +1552,7 @@ app.get("/u/:handle", async (c) => {
         <h2>Daily rotation</h2>
         <ol class="profile-rotation">${rotation.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a></li>`).join("")}</ol>
       </section>` : ""}
-      ${developed.length === 0 && rotation.length === 0 ? `<p class="muted">Nothing to show here yet.</p>` : ""}
+      ${developed.length === 0 && rotation.length === 0 && !creatorList ? `<p class="muted">Nothing to show here yet.</p>` : ""}
     </main>
     ${developed.length > 0 ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
   `, c.env, { path: `/u/${owner.profile_handle}`, noindex: true, description: `${name} on 0x9 dles.` }));
@@ -2238,6 +2343,14 @@ app.get("/me/settings", async (c) => {
       .map((row) => row.provider)
   );
   const suggestedHandle = slugify(auth.displayName || "").slice(0, 30);
+  const creator = await c.env.DB.prepare(
+    `SELECT users.creator_type, curated_lists.slug, curated_lists.visibility, curated_lists.suggestions_enabled
+     FROM users LEFT JOIN curated_lists ON curated_lists.owner_user_id = users.id AND curated_lists.kind = 'creator'
+     WHERE users.id = ?1`
+  )
+    .bind(auth.id)
+    .first<{ creator_type: string | null; slug: string | null; visibility: string | null; suggestions_enabled: number | null }>();
+  const creatorLabel = creator?.creator_type === "partner" ? "Twitch Partner" : creator?.creator_type === "affiliate" ? "Twitch Affiliate" : "verified creator";
   const linkResult = c.req.query("link");
   const linkProvider = c.req.query("provider") === "twitch" ? "Twitch" : "Discord";
   const linkMessages: Record<string, string> = {
@@ -2273,6 +2386,11 @@ app.get("/me/settings", async (c) => {
           <button type="submit">Save profile</button>
         </form>
       </section>
+      ${creator?.creator_type && creator.slug ? `<section class="panel">
+        <h2>Creator list</h2>
+        <p>You're a ${escapeHtml(creatorLabel)}, so you get a verified check and a list of your own. It's <strong>${escapeHtml(creator.visibility || "public")}</strong> and suggestions from viewers are <strong>${creator.suggestions_enabled === 1 ? "open" : "off"}</strong>. Anyone can suggest games to a public list; you decide what gets added.</p>
+        <p><a class="btn" href="/lists/${encodeURIComponent(creator.slug)}">View your list</a> <a href="/lists/${encodeURIComponent(creator.slug)}?edit=1">Edit it, or make it private</a></p>
+      </section>` : ""}
       <section class="panel">
         <h2>Public profile</h2>
         <p>A page at <code>/u/your-handle</code> with your name, picture, badges (verified developer, staff, Twitch channel) and the games you've made. It's off until you turn it on, and only shows what you pick below.</p>
@@ -2411,11 +2529,15 @@ app.get("/lists", async (c) => {
   const user = c.get("user");
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   const lists = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id,
+    `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
+            curated_lists.twitch_login, curated_lists.twitch_user_id,
+            CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list,
             (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
      FROM curated_lists
-     ORDER BY updated_at DESC`
+     LEFT JOIN users ON users.id = curated_lists.owner_user_id
+     ORDER BY curated_lists.updated_at DESC`
   ).all<{
+    is_creator_list: number;
     game_count: number;
     id: string;
     slug: string;
@@ -2428,7 +2550,12 @@ app.get("/lists", async (c) => {
   }>();
 
   const userTwitchId = await getUserTwitchId(c.env, user);
-  const visible = lists.results.filter((row) => canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }));
+  // A creator's list starts out empty; it joins the index once it has games (its owner and staff always see it).
+  const visible = lists.results.filter(
+    (row) =>
+      canViewList(row.visibility, row.owner_user_id, user, { listTwitchUserId: row.twitch_user_id, userTwitchId }) &&
+      (row.game_count > 0 || isAdminEditor || (!!user && row.owner_user_id === user.id))
+  );
   return c.html(await layout("Curated Lists of Daily Games", user, `
     <main class="narrow">
       <h1>Curated Lists</h1>
@@ -2450,7 +2577,7 @@ app.get("/lists", async (c) => {
       ${visible.length > 0 ? `
         <ul class="list-index">
           ${visible
-            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${renderVerifiedBadge(row.twitch_login)}${row.visibility === "private" ? " <small>(private)</small>" : ""}
+            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}${row.visibility === "private" ? " <small>(private)</small>" : ""}
               <br /><small class="muted">${row.game_count} game${row.game_count === 1 ? "" : "s"}${row.twitch_login ? ` · picked by ${escapeHtml(row.twitch_login)} on Twitch` : ""}${row.description ? ` · ${escapeHtml(row.description)}` : ""}</small></li>`)
             .join("")}
         </ul>
@@ -2494,19 +2621,25 @@ app.get("/lists/:slug", async (c) => {
   const user = c.get("user");
   const isStaff = !!user && (user.role === "editor" || user.role === "admin");
   const list = await c.env.DB.prepare(
-    `SELECT id, slug, title, description, visibility, owner_user_id, twitch_login, twitch_user_id, suggestions_enabled
+    `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
+            curated_lists.twitch_login, curated_lists.twitch_user_id, curated_lists.suggestions_enabled,
+            CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list
      FROM curated_lists
-     WHERE slug = ?1`
+     LEFT JOIN users ON users.id = curated_lists.owner_user_id
+     WHERE curated_lists.slug = ?1`
   )
     .bind(slug)
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; suggestions_enabled: number }>();
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; suggestions_enabled: number }>();
   const userTwitchId = await getUserTwitchId(c.env, user);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return notFoundPage(c);
   }
   // The list's tagged Twitch user can edit its games, title and description; staff can edit everything.
   const isTwitchOwner = !!list.twitch_user_id && list.twitch_user_id === userTwitchId;
-  const canEdit = isStaff || isTwitchOwner;
+  // A verified creator owns their own creator list, with or without a Twitch channel.
+  const isCreatorOwner = !!list.is_creator_list && !!user && list.owner_user_id === user.id;
+  const canEdit = isStaff || isTwitchOwner || isCreatorOwner;
+  const canSetVisibility = isStaff || isCreatorOwner;
   // Everyone who can edit views the list normally and opts in to edit mode with ?edit=1.
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const items = await c.env.DB.prepare(
@@ -2545,10 +2678,11 @@ app.get("/lists/:slug", async (c) => {
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${suggestionsOn ? " list-page" : ""}">
       <div class="list-head">
-      <h1>${escapeHtml(list.title)}${renderVerifiedBadge(list.twitch_login)}</h1>
+      <h1>${escapeHtml(list.title)}${list.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       </div>
       <p>${escapeHtml(list.description || "")}</p>
+      ${isCreatorOwner ? `<p class="panel creator-note">This is your creator list. It's <strong>${list.visibility}</strong>${list.visibility === "public" ? " and anyone can see it" : ""}, and suggestions are <strong>${list.suggestions_enabled === 1 ? "open" : "off"}</strong>. Use Edit list to change either. <a href="/me/settings">Creator settings</a></p>` : ""}
       ${canEdit ? `<p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>` : ""}
       ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
       ${isAdminEditor ? `
@@ -2561,8 +2695,8 @@ app.get("/lists/:slug", async (c) => {
             <label class="check"><input type="checkbox" id="list-suggestions-toggle"${list.suggestions_enabled === 1 ? " checked" : ""} /> Allow suggestions <small class="muted">(turning this off hides the panel; existing suggestions are kept)</small></label>
             <div class="actions">
               <button type="submit">Save details</button>
-              ${isStaff ? `<button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>
-              <button type="button" id="list-delete-btn">Delete list</button>` : ""}
+              ${canSetVisibility ? `<button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>` : ""}
+              ${isStaff ? `<button type="button" id="list-delete-btn">Delete list</button>` : ""}
             </div>
           </form>
           <p id="list-edit-status" class="status" aria-live="polite"></p>
@@ -3266,7 +3400,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env, { path: `/lists/${list.slug}`, description: listMetaDescription(list, items.results), noindex: isAdminEditor || list.visibility !== "public", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]]), gameItemListLd(items.results)] }));
+  `, c.env, { path: `/lists/${list.slug}`, description: listMetaDescription(list, items.results), noindex: isAdminEditor || list.visibility !== "public" || items.results.length === 0, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]]), gameItemListLd(items.results)] }));
 });
 
 // Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
@@ -3283,7 +3417,7 @@ app.get("/sitemap.xml", async (c) => {
     "SELECT slug, updated_at FROM games WHERE status = 'approved' ORDER BY updated_at DESC"
   ).all<{ slug: string; updated_at: string }>();
   const lists = await c.env.DB.prepare(
-    "SELECT slug, updated_at FROM curated_lists WHERE visibility = 'public' ORDER BY updated_at DESC"
+    "SELECT slug, updated_at FROM curated_lists WHERE visibility = 'public' AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id) ORDER BY updated_at DESC"
   ).all<{ slug: string; updated_at: string }>();
 
   const categoriesWithGames = await c.env.DB.prepare(
@@ -3420,7 +3554,7 @@ app.get("/llms.txt", async (c) => {
   ).all<{ slug: string; name: string; description: string | null; game_count: number }>();
   const lists = await c.env.DB.prepare(
     `SELECT slug, title, description, twitch_login, (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
-     FROM curated_lists WHERE visibility = 'public' ORDER BY title ASC`
+     FROM curated_lists WHERE visibility = 'public' AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id) ORDER BY title ASC`
   ).all<{ slug: string; title: string; description: string | null; twitch_login: string | null; game_count: number }>();
   const topGames = await listGames(c.env, { sort: "top", hideNsfw: true, limit: 30 });
   const total = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
@@ -3494,6 +3628,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/submissions">Moderate submissions</a>
         <a class="panel" href="/admin/reports">Review reports</a>
         <a class="panel" href="/admin/claims">Developer claims</a>
+        <a class="panel" href="/admin/creators">Verified creators</a>
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
       </div>
@@ -3752,6 +3887,104 @@ app.get("/admin/claims", async (c) => {
       });
     </script>
   `, c.env));
+});
+
+app.get("/admin/creators", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const q = (c.req.query("q") || "").trim().slice(0, 60);
+  const creators = await c.env.DB.prepare(
+    `SELECT users.id, users.display_name, users.creator_type, curated_lists.slug
+     FROM users LEFT JOIN curated_lists ON curated_lists.owner_user_id = users.id AND curated_lists.kind = 'creator'
+     WHERE users.creator_type IS NOT NULL
+     ORDER BY users.creator_type, users.display_name LIMIT 200`
+  ).all<{ id: string; display_name: string | null; creator_type: string; slug: string | null }>();
+  const matches = q
+    ? await c.env.DB.prepare(
+        `SELECT id, display_name, created_at FROM users WHERE creator_type IS NULL AND display_name LIKE ?1 ORDER BY display_name LIMIT 20`
+      )
+        .bind(`%${q}%`)
+        .all<{ id: string; display_name: string | null; created_at: string }>()
+    : null;
+  const typeLabel: Record<string, string> = { affiliate: "Twitch Affiliate", partner: "Twitch Partner", manual: "Granted by staff" };
+  return c.html(await layout("Verified creators", auth, `
+    <main>
+      <h1>Verified creators</h1>
+      <p>Twitch affiliates and partners become verified creators automatically when they sign in with Twitch. Use this page for anyone else, for example a YouTube creator.</p>
+      <section class="panel">
+        <h2>Grant creator status</h2>
+        <form method="GET" action="/admin/creators" class="filter-form">
+          <input name="q" value="${escapeHtml(q)}" placeholder="Search accounts by display name" aria-label="Search accounts" />
+          <button type="submit">Search</button>
+        </form>
+        ${matches ? (matches.results.length === 0 ? "<p>No matching accounts without creator status.</p>" : `<ul class="stack">${matches.results
+          .map((row) => `<li class="panel" data-user-id="${escapeHtml(row.id)}"><strong>${escapeHtml(row.display_name || "(no name)")}</strong> <small class="muted">joined ${escapeHtml(row.created_at)} UTC · id ${escapeHtml(row.id.slice(0, 8))}</small>
+            <div class="actions"><button type="button" data-creator-action="grant">Make verified creator</button></div></li>`)
+          .join("")}</ul>`) : ""}
+      </section>
+      <section>
+        <h2>Current creators (${creators.results.length})</h2>
+        ${creators.results.length === 0 ? "<p>None yet.</p>" : `<ul class="stack">${creators.results
+          .map((row) => `<li class="panel" data-user-id="${escapeHtml(row.id)}"><strong>${escapeHtml(row.display_name || "(no name)")}</strong> · ${escapeHtml(typeLabel[row.creator_type] || row.creator_type)}${row.slug ? ` · <a href="/lists/${encodeURIComponent(row.slug)}">their list</a>` : ""}
+            ${row.creator_type === "manual" ? `<div class="actions"><button type="button" class="danger" data-creator-action="revoke">Remove status</button></div>` : ""}</li>`)
+          .join("")}</ul>`}
+      </section>
+      <p id="creators-status" class="status" aria-live="polite"></p>
+    </main>
+    <script>
+      document.querySelectorAll("[data-creator-action]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const card = button.closest("[data-user-id]");
+          const res = await fetch("/api/admin/users/" + card.getAttribute("data-user-id") + "/creator", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ grant: button.getAttribute("data-creator-action") === "grant" })
+          });
+          if (res.ok) {
+            window.location.href = "/admin/creators";
+            return;
+          }
+          const data = await res.json().catch(() => ({}));
+          const message = data.error || "Could not update.";
+          document.getElementById("creators-status").textContent = message;
+          if (window.appToast) window.appToast(message, "error");
+        });
+      });
+    </script>
+  `, c.env));
+});
+
+app.post("/api/admin/users/:id/creator", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ grant: z.boolean() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const userId = c.req.param("id");
+  const target = await c.env.DB.prepare("SELECT creator_type FROM users WHERE id = ?1").bind(userId).first<{ creator_type: string | null }>();
+  if (!target) {
+    return c.json({ error: "User not found" }, 404);
+  }
+  if (parsed.data.grant) {
+    if (!target.creator_type) {
+      await c.env.DB.prepare("UPDATE users SET creator_type = 'manual', updated_at = datetime('now') WHERE id = ?1").bind(userId).run();
+    }
+    const twitchId = await c.env.DB.prepare("SELECT provider_user_id FROM oauth_accounts WHERE user_id = ?1 AND provider = 'twitch'").bind(userId).first<{ provider_user_id: string }>();
+    await ensureCreatorList(c.env, userId, twitchId ? { twitchId: twitchId.provider_user_id, twitchLogin: await getTwitchLoginById(c.env, twitchId.provider_user_id) } : undefined);
+  } else {
+    if (target.creator_type !== "manual") {
+      return c.json({ error: "Only a status granted by staff can be removed. Twitch affiliates and partners follow their Twitch status." }, 409);
+    }
+    await c.env.DB.prepare("UPDATE users SET creator_type = NULL, updated_at = datetime('now') WHERE id = ?1").bind(userId).run();
+  }
+  await writeAudit(c.env, auth.id, "user", userId, parsed.data.grant ? "grant_creator" : "revoke_creator", {});
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
 });
 
 app.get("/admin/reports", async (c) => {
@@ -5520,6 +5753,13 @@ app.delete("/api/me/accounts/:provider", async (c) => {
     c.env.DB.prepare("DELETE FROM oauth_accounts WHERE user_id = ?1 AND provider = ?2").bind(auth.id, provider),
     // Editor/admin roles come from Discord, so they go with it.
     ...(provider === "discord" ? [c.env.DB.prepare("UPDATE users SET role = 'user', updated_at = datetime('now') WHERE id = ?1").bind(auth.id)] : []),
+    // A Twitch-derived creator status goes with the Twitch account (a manual grant stays), and so does the channel tag on the list.
+    ...(provider === "twitch"
+      ? [
+          c.env.DB.prepare("UPDATE users SET creator_type = NULL WHERE id = ?1 AND creator_type IN ('affiliate', 'partner')").bind(auth.id),
+          c.env.DB.prepare("UPDATE curated_lists SET twitch_login = NULL, twitch_user_id = NULL WHERE owner_user_id = ?1 AND kind = 'creator'").bind(auth.id)
+        ]
+      : []),
     // Anything on the public profile that came from that account goes with it.
     c.env.DB.prepare("UPDATE users SET profile_avatar_provider = CASE WHEN profile_avatar_provider = ?2 THEN NULL ELSE profile_avatar_provider END, profile_show_twitch = CASE WHEN ?2 = 'twitch' THEN 0 ELSE profile_show_twitch END WHERE id = ?1").bind(auth.id, provider)
   ]);
@@ -5707,9 +5947,12 @@ app.post("/api/lists", async (c) => {
 });
 
 app.patch("/api/lists/:id/visibility", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = requireAuth(c);
   if (auth instanceof Response) {
     return auth;
+  }
+  if (auth.role !== "editor" && auth.role !== "admin" && !(await isCreatorListOwner(c.env, c.req.param("id"), auth.id))) {
+    return c.json({ error: "Forbidden" }, 403);
   }
   const visibility = z.enum(["public", "private"]).safeParse((await c.req.json()).visibility);
   if (!visibility.success) {
@@ -6010,6 +6253,9 @@ app.get("/api/lists/:id/suggestions", async (c) => {
   return c.json({ enabled: true, suggestions: await getListSuggestions(c.env, list.id, await getSuggestionVoterKey(c)) }, 200, { "Cache-Control": "no-store" });
 });
 
+/** Open suggestions one person (account or anonymous visitor) may have on a single list. */
+const MAX_OPEN_SUGGESTIONS_PER_PERSON = 20;
+
 app.post("/api/lists/:id/suggestions", async (c) => {
   const user = c.get("user");
   const voterKey = await getSuggestionVoterKey(c);
@@ -6046,6 +6292,18 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   }
   if (state.blocked) {
     return c.json({ error: `${state.title} was removed from this list and can't be suggested again`, code: "blocked" }, 409);
+  }
+  // One person can't fill a list with suggestions: a limited number of open ones per list (agreeing with others' is unlimited).
+  if (!state.suggested) {
+    const open = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM list_suggestions
+       WHERE curated_list_id = ?1 AND ((?2 IS NOT NULL AND suggested_by_user_id = ?2) OR (?3 IS NOT NULL AND suggested_by_anon_hash = ?3))`
+    )
+      .bind(list.id, user?.id ?? null, user ? null : voterKey.slice("anon:".length))
+      .first<{ n: number }>();
+    if ((open?.n ?? 0) >= MAX_OPEN_SUGGESTIONS_PER_PERSON) {
+      return c.json({ error: `You already have ${MAX_OPEN_SUGGESTIONS_PER_PERSON} open suggestions on this list. Wait until some are added or dismissed.`, code: "limit" }, 429);
+    }
   }
   // Suggesting a game that's already suggested counts as agreeing with it.
   const statements = [
@@ -6785,10 +7043,21 @@ async function requireListEditor(
   )
     .bind(listId, auth.id)
     .first();
-  if (owns) {
+  if (owns || (await isCreatorListOwner(c.env, listId, auth.id))) {
     return auth;
   }
   return c.json({ error: "Forbidden" }, 403);
+}
+
+/** True when the list is this user's own creator list and they still qualify as a creator. */
+async function isCreatorListOwner(env: Env, listId: string, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT 1 AS ok FROM curated_lists JOIN users ON users.id = curated_lists.owner_user_id
+     WHERE curated_lists.id = ?1 AND curated_lists.kind = 'creator' AND curated_lists.owner_user_id = ?2 AND users.creator_type IS NOT NULL`
+  )
+    .bind(listId, userId)
+    .first();
+  return !!row;
 }
 
 /** App access token for Twitch's Helix API (client credentials), cached in KV until shortly before expiry. */
@@ -9455,7 +9724,16 @@ function readOAuthCallback(
   return { code, link: intent === "link" };
 }
 
-type OAuthProfile = { provider: OAuthProvider; providerUserId: string; displayName: string | null; role?: AppUser["role"]; avatarUrl?: string | null };
+type OAuthProfile = {
+  provider: OAuthProvider;
+  providerUserId: string;
+  displayName: string | null;
+  role?: AppUser["role"];
+  avatarUrl?: string | null;
+  /** Twitch only: the channel name and Twitch's broadcaster_type ("affiliate" / "partner", or null for neither). */
+  twitchLogin?: string | null;
+  creatorType?: "affiliate" | "partner" | null;
+};
 
 /**
  * Finishes a provider sign-in. A login signs in to (or creates) the account for that provider account. A link
@@ -9465,6 +9743,7 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
   if (!link) {
     const userId = await upsertOAuthUser(c.env, profile);
     await saveOAuthAvatar(c.env, profile);
+    await syncCreatorStatus(c.env, userId, profile);
     await createSession(c, userId);
     return c.redirect("/?importLocal=1");
   }
@@ -9473,7 +9752,10 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
     return c.redirect("/login");
   }
   const result = await linkOAuthAccount(c.env, user.id, profile);
-  if (result !== "conflict") await saveOAuthAvatar(c.env, profile);
+  if (result !== "conflict") {
+    await saveOAuthAvatar(c.env, profile);
+    await syncCreatorStatus(c.env, user.id, profile);
+  }
   return c.redirect(`/me/settings?link=${result}&provider=${profile.provider}`);
 }
 
@@ -9551,6 +9833,12 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     reassign("games", "approved_by_user_id"),
     reassign("categories", "created_by_user_id"),
     reassign("game_categories", "assigned_by_user_id"),
+    // Only one creator list per owner: if both accounts have one, the merged-away one becomes a plain list.
+    env.DB.prepare(
+      `UPDATE curated_lists SET kind = 'curated'
+       WHERE owner_user_id = ?1 AND kind = 'creator' AND EXISTS (SELECT 1 FROM curated_lists WHERE owner_user_id = ?2 AND kind = 'creator')`
+    ).bind(fromId, intoId),
+    env.DB.prepare("UPDATE users SET creator_type = COALESCE(creator_type, (SELECT creator_type FROM users WHERE id = ?1)) WHERE id = ?2").bind(fromId, intoId),
     reassign("curated_lists", "owner_user_id"),
     reassign("curated_lists", "created_by_user_id"),
     reassign("curated_lists", "updated_by_user_id"),
