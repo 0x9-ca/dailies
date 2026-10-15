@@ -58,6 +58,7 @@ npx wrangler dev --ip 127.0.0.1 --port 8799 --persist-to $P --var APP_URL:http:/
 ```
 
 - Log in instantly with `/auth/mock-login/user|editor|admin` (development only). To exercise the real sign-in, link and merge code without Discord/Twitch, use `/auth/mock-oauth/<discord|twitch>/<made-up id>` (add `?link=1` to link to the signed-in user, `&role=editor|admin` for Discord). Seed games as admin through `POST /api/games` (send the `x-csrf-token` header equal to the `csrf_token` cookie); admin submissions are auto-approved.
+- To exercise the Dle Developer role without a real bot, run a small fake of Discord's member and role endpoints and start `wrangler dev` with `--var DISCORD_BOT_TOKEN:<any> --var DISCORD_API_BASE:http://127.0.0.1:<port>/v10 --var DEVELOPER_ROLE_RECHECK_SECONDS:4`. Verify a game as a mock-oauth Discord user (claim, send evidence, approve as admin) and watch the fake receive the `GET`/`PUT`. Use a port other than 8799 if another dev server is running.
 - The edge cache is off in development. To exercise it, add `--var APP_ENV:staging` (mock login is then disabled) and watch the `X-Page-Cache: HIT|MISS` header.
 - Check UI changes in a real browser at phone (≈375–390px) and desktop widths: no horizontal overflow, no page errors, and both themes (`localStorage.dgl_theme = "light"`). Real Discord/Twitch login can only be tested on staging or production.
 

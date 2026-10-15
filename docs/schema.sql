@@ -81,6 +81,16 @@ CREATE TABLE curated_lists (
 );
 CREATE UNIQUE INDEX idx_curated_lists_one_creator ON curated_lists(owner_user_id) WHERE kind = 'creator';
 
+CREATE TABLE discord_role_grants (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  discord_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  granted_at TEXT,
+  checked_at TEXT,
+  next_check_at TEXT
+);
+CREATE INDEX idx_discord_role_grants_pending ON discord_role_grants(granted_at, next_check_at);
+
 CREATE TABLE favorites (
   user_id TEXT NOT NULL,
   game_id TEXT NOT NULL,

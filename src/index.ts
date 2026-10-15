@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { queueDeveloperRole, runDeveloperRoleMaintenance } from "./lib/developer-role";
+export { DeveloperRoleSync } from "./lib/developer-role";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -5215,6 +5217,8 @@ async function markClaimVerified(
   const game = await env.DB.prepare("SELECT title, slug FROM games WHERE id = ?1").bind(claim.game_id).first<{ title: string; slug: string }>();
   await writeAudit(env, actorUserId, "game", claim.game_id, "developer_verified", { title: game?.title, slug: game?.slug, method });
   await invalidateGameCaches(env);
+  // Gives them the Dle Developer role in our Discord server if they are in it (and keeps checking if not yet).
+  await queueDeveloperRole(env, claim.user_id);
   return true;
 }
 
@@ -6863,6 +6867,7 @@ export default {
     ctx.waitUntil(runLinkChecks(env));
     ctx.waitUntil(recalculateAllScores(env));
     ctx.waitUntil(runClaimRechecks(env));
+    ctx.waitUntil(runDeveloperRoleMaintenance(env));
     // Backstop: anything the announcement alarm somehow left in the queue goes out with the daily run.
     ctx.waitUntil(flushAnnouncementQueue(env));
   }
@@ -9744,6 +9749,8 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
     const userId = await upsertOAuthUser(c.env, profile);
     await saveOAuthAvatar(c.env, profile);
     await syncCreatorStatus(c.env, userId, profile);
+    // Someone who has just joined the server and signed in gets the Dle Developer role at once, not at the next check.
+    await queueDeveloperRole(c.env, userId);
     await createSession(c, userId);
     return c.redirect("/?importLocal=1");
   }
@@ -9755,6 +9762,7 @@ async function completeOAuth(c: Context<{ Bindings: Bindings; Variables: AppVari
   if (result !== "conflict") {
     await saveOAuthAvatar(c.env, profile);
     await syncCreatorStatus(c.env, user.id, profile);
+    await queueDeveloperRole(c.env, user.id);
   }
   return c.redirect(`/me/settings?link=${result}&provider=${profile.provider}`);
 }
