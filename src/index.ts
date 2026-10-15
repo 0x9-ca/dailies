@@ -8061,6 +8061,90 @@ function renderResetSpan(
 // Rewrites reset labels for the viewer as a countdown ("Resets in 3h 12m"; data-reset-format="long" gives
 // "Resets daily at 4:00 AM · next in 3h 12m"), refreshed every minute. "utc" minutes are a UTC time of day,
 // "local" ones are already in the viewer's own clock. The server-rendered text is the no-JS fallback.
+/**
+ * Keeps each group of category pills to two lines. When a group would take more, the trailing category pills are
+ * hidden behind a "+N" chip that expands them (and a "Show less" chip folds them again). The verified-developer pill
+ * is never hidden. Groups are refitted when their width changes (resize, an opened panel) and when pills are added
+ * by other scripts (the signed-out rotation, list suggestions).
+ */
+const PILL_FIT_SCRIPT = `
+  (() => {
+    const MAX_ROWS = 2;
+    const rowsOf = (box) => new Set([...box.children].filter((el) => !el.hidden).map((el) => el.offsetTop)).size;
+    const makeChip = (text, label, expanded) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "tag pill-more";
+      chip.textContent = text;
+      chip.setAttribute("aria-label", label);
+      chip.setAttribute("aria-expanded", expanded ? "true" : "false");
+      return chip;
+    };
+    const fit = (box) => {
+      box.querySelectorAll(".pill-more").forEach((el) => el.remove());
+      const cats = [...box.querySelectorAll(".category-pill:not(.dev-pill)")];
+      cats.forEach((el) => { el.hidden = false; });
+      if (!box.offsetWidth || cats.length < 2) return;
+      const dev = box.querySelector(".dev-pill");
+      if (box.dataset.expanded === "1") {
+        box.insertBefore(makeChip("Show less", "Show fewer categories", true), dev);
+        return;
+      }
+      if (rowsOf(box) <= MAX_ROWS) return;
+      const more = makeChip("+1", "Show 1 more category", false);
+      box.insertBefore(more, dev);
+      let hidden = 0;
+      for (let i = cats.length - 1; i >= 1; i--) {
+        cats[i].hidden = true;
+        hidden++;
+        more.textContent = "+" + hidden;
+        more.setAttribute("aria-label", "Show " + hidden + " more categor" + (hidden === 1 ? "y" : "ies"));
+        if (rowsOf(box) <= MAX_ROWS) break;
+      }
+    };
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const box = entry.target;
+        // Only a change of width matters; hiding pills changes the height.
+        if (box.__pillWidth !== entry.contentRect.width) {
+          box.__pillWidth = entry.contentRect.width;
+          fit(box);
+        }
+      }
+    });
+    const watch = (box) => {
+      if (box.__pillWatched) return;
+      box.__pillWatched = true;
+      resizeObserver.observe(box);
+    };
+    const pending = new Set();
+    const schedule = (box) => {
+      pending.add(box);
+      if (pending.size === 1) requestAnimationFrame(() => { const boxes = [...pending]; pending.clear(); boxes.forEach((b) => { watch(b); fit(b); }); });
+    };
+    document.querySelectorAll(".category-pills").forEach(watch);
+    new MutationObserver((records) => {
+      for (const record of records) {
+        record.addedNodes.forEach((node) => {
+          if (node.nodeType !== 1 || node.matches(".pill-more")) return;
+          const own = node.closest(".category-pills");
+          if (own) schedule(own);
+          node.querySelectorAll?.(".category-pills").forEach(schedule);
+        });
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+    document.addEventListener("click", (event) => {
+      const chip = event.target.closest?.(".pill-more");
+      if (!chip) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const box = chip.closest(".category-pills");
+      box.dataset.expanded = box.dataset.expanded === "1" ? "0" : "1";
+      fit(box);
+    });
+  })();
+`;
+
 const RESET_LOCALIZE_SCRIPT = `
   window.dglResetCountdown = (kind, min) => {
     const m = Number(min);
@@ -8727,6 +8811,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
       .about-categories .tag { margin: 0; }
       /* Verified developer: an outlined blue pill after the category pills, so it doesn't read as another category. */
+      .category-pills [hidden] { display: none !important; }
+      button.tag.pill-more { cursor: pointer; font-family: inherit; line-height: inherit; font-weight: 700; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+      button.tag.pill-more:hover { color: var(--ink); }
       .tag.dev-pill { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--brand-blue); background: transparent; border-color: var(--brand-blue); font-weight: 700; text-decoration: none; }
       .tag.dev-pill svg { width: 0.95em; height: 0.95em; flex: none; }
       .tag.dev-pill .dev-pill-name { display: block; max-width: 11ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -9169,8 +9256,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
         .check { min-height: 44px; }
         /* Category pills: slightly taller, plus an invisible margin like the buttons in cards. */
-        .category-pill, .game-sub .tag.category-pill { position: relative; padding-top: 0.25rem; padding-bottom: 0.25rem; }
-        .category-pill::after { content: ""; position: absolute; inset: -11px -2px; }
+        .category-pill, .game-sub .tag.category-pill, button.tag.pill-more { position: relative; padding-top: 0.25rem; padding-bottom: 0.25rem; }
+        .category-pill::after, .pill-more::after { content: ""; position: absolute; inset: -11px -2px; }
         /* "Similar daily games" links on game pages. */
         .related-games li { margin-bottom: 0; }
         .related-games li a { display: inline-block; padding: 0.85rem 0; }
@@ -9294,6 +9381,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     </script>
     <script>${RESET_LOCALIZE_SCRIPT}</script>
     <script>${APP_UPDATE_SCRIPT}</script>
+    <script>${PILL_FIT_SCRIPT}</script>
   </body>
 </html>`;
 }
