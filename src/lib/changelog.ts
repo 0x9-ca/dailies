@@ -8,6 +8,7 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "Game pages no longer run off the edge of a phone screen.",
       "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
+      "On phones, a game with several category pills no longer pushes its buttons onto a separate line: the pills wrap beside them.",
       "Games with a verified developer who has a public profile show a blue chip with their name on every game card and list row. Tap it to open their profile.",
       "On the home page, the category list now uses the same coloured pills as the game cards, with the number of games in each.",
       "On wide screens, game cards keep their buttons on one row. The page you're on is underlined in the header, and keyboard users get a skip-to-content link.",
