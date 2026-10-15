@@ -40,7 +40,8 @@
     "DISCORD_GUILD_ID": "1544140186915700859",
     "DISCORD_ROLE_ADMIN": "1544140573491863662",
     "DISCORD_ROLE_EDITOR": "1544140999671156908",
-    "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
+    "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735",
+    "DISCORD_ROLE_DLE_DEVELOPER": "1560145955653820508"
   },
   "triggers": {
     "crons": [
@@ -82,13 +83,18 @@
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908",
-        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
+        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735",
+        "DISCORD_ROLE_DLE_DEVELOPER": "1560145955653820508"
       },
       "durable_objects": {
         "bindings": [
           {
             "name": "ANNOUNCER",
             "class_name": "AnnouncementScheduler"
+          },
+          {
+            "name": "ROLE_SYNC",
+            "class_name": "DeveloperRoleSync"
           }
         ]
       },
@@ -97,6 +103,12 @@
           "tag": "v1",
           "new_sqlite_classes": [
             "AnnouncementScheduler"
+          ]
+        },
+        {
+          "tag": "v2",
+          "new_sqlite_classes": [
+            "DeveloperRoleSync"
           ]
         }
       ],
@@ -138,13 +150,18 @@
         "DISCORD_GUILD_ID": "1544140186915700859",
         "DISCORD_ROLE_ADMIN": "1544140573491863662",
         "DISCORD_ROLE_EDITOR": "1544140999671156908",
-        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735"
+        "DISCORD_ROLE_DLE_ENJOYER": "1557480992262856735",
+        "DISCORD_ROLE_DLE_DEVELOPER": "1560145955653820508"
       },
       "durable_objects": {
         "bindings": [
           {
             "name": "ANNOUNCER",
             "class_name": "AnnouncementScheduler"
+          },
+          {
+            "name": "ROLE_SYNC",
+            "class_name": "DeveloperRoleSync"
           }
         ]
       },
@@ -153,6 +170,12 @@
           "tag": "v1",
           "new_sqlite_classes": [
             "AnnouncementScheduler"
+          ]
+        },
+        {
+          "tag": "v2",
+          "new_sqlite_classes": [
+            "DeveloperRoleSync"
           ]
         }
       ],
@@ -166,6 +189,10 @@
       {
         "name": "ANNOUNCER",
         "class_name": "AnnouncementScheduler"
+      },
+      {
+        "name": "ROLE_SYNC",
+        "class_name": "DeveloperRoleSync"
       }
     ]
   },
@@ -174,6 +201,12 @@
       "tag": "v1",
       "new_sqlite_classes": [
         "AnnouncementScheduler"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "DeveloperRoleSync"
       ]
     }
   ],

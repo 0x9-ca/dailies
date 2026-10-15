@@ -81,6 +81,8 @@ const discordRoleEditorProduction = fallback(envVar("DISCORD_ROLE_EDITOR_PRODUCT
 const discordRoleDleEnjoyer = envVar("DISCORD_ROLE_DLE_ENJOYER");
 const discordRoleDleEnjoyerStaging = fallback(envVar("DISCORD_ROLE_DLE_ENJOYER_STAGING"), discordRoleDleEnjoyer);
 const discordRoleDleEnjoyerProduction = fallback(envVar("DISCORD_ROLE_DLE_ENJOYER_PRODUCTION"), discordRoleDleEnjoyer);
+// Role given to verified developers. It lives in wrangler.jsonc; the secrets file may override it per environment.
+const roleDeveloper = (target, name) => fallback(envVar(name), target?.vars?.DISCORD_ROLE_DLE_DEVELOPER || "");
 
 const sessionCookieName = fallback(envVar("SESSION_COOKIE_NAME"), "dgl_session");
 // Production has its own D1/KV. Staging and the default (dev) config share a separate staging D1/KV, so nothing
@@ -98,6 +100,7 @@ config.vars.DISCORD_GUILD_ID = discordGuildId;
 config.vars.DISCORD_ROLE_ADMIN = discordRoleAdmin;
 config.vars.DISCORD_ROLE_EDITOR = discordRoleEditor;
 config.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyer;
+config.vars.DISCORD_ROLE_DLE_DEVELOPER = roleDeveloper(config, "DISCORD_ROLE_DLE_DEVELOPER");
 
 config.env ||= {};
 config.env.staging ||= {};
@@ -109,6 +112,7 @@ config.env.staging.vars.DISCORD_GUILD_ID = discordGuildIdStaging;
 config.env.staging.vars.DISCORD_ROLE_ADMIN = discordRoleAdminStaging;
 config.env.staging.vars.DISCORD_ROLE_EDITOR = discordRoleEditorStaging;
 config.env.staging.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyerStaging;
+config.env.staging.vars.DISCORD_ROLE_DLE_DEVELOPER = fallback(envVar("DISCORD_ROLE_DLE_DEVELOPER_STAGING"), roleDeveloper(config.env.staging, "DISCORD_ROLE_DLE_DEVELOPER"));
 
 config.env.production ||= {};
 config.env.production.vars ||= {};
@@ -119,6 +123,7 @@ config.env.production.vars.DISCORD_GUILD_ID = discordGuildIdProduction;
 config.env.production.vars.DISCORD_ROLE_ADMIN = discordRoleAdminProduction;
 config.env.production.vars.DISCORD_ROLE_EDITOR = discordRoleEditorProduction;
 config.env.production.vars.DISCORD_ROLE_DLE_ENJOYER = discordRoleDleEnjoyerProduction;
+config.env.production.vars.DISCORD_ROLE_DLE_DEVELOPER = fallback(envVar("DISCORD_ROLE_DLE_DEVELOPER_PRODUCTION"), roleDeveloper(config.env.production, "DISCORD_ROLE_DLE_DEVELOPER"));
 
 const setBindingIds = (target, d1Id, kvId) => {
   if (!target.d1_databases || target.d1_databases.length === 0) {
@@ -176,5 +181,11 @@ put_secret "OAUTH_TWITCH_CLIENT_SECRET" "${OAUTH_TWITCH_CLIENT_SECRET_PRODUCTION
 # webhook (e.g. a test channel), so testing approvals there never pings the real server.
 put_secret "DISCORD_NEW_GAME_WEBHOOK_URL" "${DISCORD_NEW_GAME_WEBHOOK_URL_STAGING:-}" "staging"
 put_secret "DISCORD_NEW_GAME_WEBHOOK_URL" "${DISCORD_NEW_GAME_WEBHOOK_URL_PRODUCTION:-${DISCORD_NEW_GAME_WEBHOOK_URL:-}}" "production"
+
+# Bot that gives verified developers the Dle Developer role (needs Manage Roles, with its own role above Dle Developer).
+# Same rule as the webhook: no shared fallback. Staging uses the same Discord server as production, so it only gets a
+# token if you set DISCORD_BOT_TOKEN_STAGING (a bot in a test server, with matching DISCORD_GUILD_ID_STAGING).
+put_secret "DISCORD_BOT_TOKEN" "${DISCORD_BOT_TOKEN_STAGING:-}" "staging"
+put_secret "DISCORD_BOT_TOKEN" "${DISCORD_BOT_TOKEN_PRODUCTION:-${DISCORD_BOT_TOKEN:-}}" "production"
 
 echo "Secrets uploaded for staging and production environments."

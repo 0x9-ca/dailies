@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-15",
     items: [
+      "Verified developers who have joined our Discord server now get the Dle Developer role automatically: as soon as you verify a game, when you join afterwards, or the next time you sign in with Discord.",
       "Game pages no longer run off the edge of a phone screen.",
       "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
       "Twitch affiliates and partners are now verified creators when they sign in. They get a verified check and a public list of their own, open to suggestions from viewers, which they can edit or make private any time. If an editor already had a list for their channel, its games are copied over.",
