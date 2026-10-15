@@ -308,6 +308,8 @@ app.get("/login", async (c) => {
     </style>
     <main>
       <div style="display:flex;flex-direction:column;gap:0.75rem;align-items:stretch;">
+          <h1 style="margin:0;font-size:1.5rem;text-align:center;">Log in</h1>
+          <p style="max-width:22rem;margin:0 0 0.25rem;text-align:center;">Sign in to keep your rotation on every device, submit games and claim ones you made.</p>
           <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
             ${DISCORD_ICON_SVG}
             Login using Discord
@@ -452,6 +454,7 @@ app.get("/submit", async (c) => {
   return c.html(await layout("Submit a Daily Game", user, `
     <main class="narrow">
       <h1>Submit a Daily Game</h1>
+      <p>${user && (user.role === "editor" || user.role === "admin") ? "As an editor, your submission is published straight away." : "An editor reviews every submission before it appears. Signed in? You can still see your pending game and claim it if you made it."}</p>
       <section class="panel">
         <form id="submission-form" class="stack-form">
           <label>Game title
@@ -465,16 +468,18 @@ app.get("/submit", async (c) => {
           </label>
           <fieldset>
             <legend>Suggested categories</legend>
+            <div class="check-grid">
             ${categories.results
               .map(
                 (cat) =>
                   `<label class="check"><input type="checkbox" name="categories" value="${escapeHtml(cat.slug)}" /> ${escapeHtml(cat.name)}</label>`
               )
               .join("")}
+            </div>
           </fieldset>
           <fieldset>
             <legend>Reset timing (optional)</legend>
-            <div data-reset-group>
+            <div data-reset-group class="reset-grid">
             <label>Time basis
               <select name="resetBasis" data-basis-select>
                 <option value="">Unknown</option>
@@ -1874,9 +1879,9 @@ app.get("/me/rotation", async (c) => {
 
   return c.html(await layout("My Rotation", user, `
     <main class="narrow">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-        <h1 style="margin: 0;">My Daily Rotation</h1>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
+      <div class="page-head">
+        <h1>My Daily Rotation</h1>
+        <div class="actions">
           ${shareUrl ? `
             <button type="button" id="copy-share-btn" style="white-space: nowrap;">Copy Share Link</button>
             <button type="button" id="disable-share-btn" style="white-space: nowrap;">Disable</button>
@@ -3501,7 +3506,7 @@ app.get("/admin/submissions", async (c) => {
   return c.html(await layout("Admin Submissions", auth, `
     <main>
       <h1>Moderate Submissions</h1>
-      <form method="GET" action="/admin/submissions">
+      <form method="GET" action="/admin/submissions" class="filter-form">
         <select name="status" aria-label="Status">
           ${["pending", "rejected", "disabled", "approved"]
             .map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${option}</option>`)
@@ -3758,7 +3763,7 @@ app.get("/admin/reports", async (c) => {
   return c.html(await layout("Admin Reports", auth, `
     <main>
       <h1>Review Reports</h1>
-      <form method="GET" action="/admin/reports">
+      <form method="GET" action="/admin/reports" class="filter-form">
         <select name="status" aria-label="Status">
           ${["open", "resolved", "dismissed"]
             .map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${option}</option>`)
@@ -4040,6 +4045,8 @@ app.get("/admin/lists", async (c) => {
               <h2>${escapeHtml(list.title)}</h2>
               <p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>
               <p>${escapeHtml(list.description || "")}</p>
+              <details class="admin-fold">
+              <summary>Edit this list and its ${existingItems.length} game${existingItems.length === 1 ? "" : "s"}</summary>
               <form class="stack-form" data-list-edit="${list.id}">
                 <label>Edit list metadata</label>
                 <input type="text" name="title" value="${escapeHtml(list.title)}" aria-label="List title" required />
@@ -4085,6 +4092,7 @@ app.get("/admin/lists", async (c) => {
                   ? `<div class="actions"><button type="button" data-save-list-order="${list.id}">Save item order</button></div>`
                   : ""
               }
+              </details>
             </article>`;
           })
           .join("")}
@@ -8463,14 +8471,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
   }
   const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
+  // Marks the header link for the page being viewed (screen readers announce it; CSS underlines it).
+  const current = (prefix: string) => (pagePath === prefix || pagePath.startsWith(`${prefix}/`) ? ` aria-current="page"` : "");
   const fullTitle = title.includes("0x9 dles") ? title : `${title} | 0x9 dles`;
   const image = opts?.image ?? { path: "/og.png?v=2", alt: "0x9 dles: the best daily games, all in one place" };
   // Links that fit in the header on desktop but move into the ☰ menu on phones.
   const secondaryLinks = [
-    hasLists || isAdminEditor ? `<a href="/lists">Lists</a>` : "",
-    user ? `<a href="/me/settings">Settings</a>` : "",
+    hasLists || isAdminEditor ? `<a href="/lists"${current("/lists")}>Lists</a>` : "",
+    user ? `<a href="/me/settings"${current("/me/settings")}>Settings</a>` : "",
     isAdminEditor
-      ? `<a href="/admin">Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>`
+      ? `<a href="/admin"${current("/admin")}>Admin${openReportCount > 0 ? `<span class="moderation-badge moderation-badge-reports" title="Open reports">${openReportCount}</span>` : ""}${pendingSubmissionCount > 0 ? `<span class="moderation-badge moderation-badge-submissions" title="Pending submissions">${pendingSubmissionCount}</span>` : ""}</a>`
       : "",
     user ? "" : `<a href="/login">Login</a>`
   ].join("");
@@ -8608,6 +8618,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* Mirrors the logo: "0x9" with the x in the logo's blue. */
       .brand { font-weight: 800; font-size: 1.45rem; letter-spacing: 0.01em; color: var(--ink); text-decoration: none; white-space: nowrap; margin-right: 0.5rem; }
       .brand-x { color: var(--brand-blue); }
+      .skip-link { position: absolute; left: 0.75rem; top: -4rem; z-index: 50; display: inline-flex; align-items: center; min-height: 44px; padding: 0 0.9rem; background: var(--primary); color: var(--on-primary); border-radius: 8px; font-weight: 700; text-decoration: none; }
+      .skip-link:focus { top: 0.75rem; }
+      main:focus { outline: none; }
+      .site-nav a[aria-current="page"], .nav-menu-panel a[aria-current="page"] { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.45rem; text-decoration-color: var(--brand-blue); }
       .site-nav { display: flex; align-items: center; gap: 1rem; min-width: 0; }
       .nav-extra { display: contents; }
       .site-nav a, .nav-menu-panel a { color: var(--ink); text-decoration: none; font-weight: 600; white-space: nowrap; }
@@ -8727,7 +8741,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .card-click:hover { border-color: var(--accent); }
       .list-sort { display: inline-flex; align-items: center; gap: 0.5rem; margin: 0.5rem 0; }
       .rotation-list.sorted-by-reset .drag, .rotation-list.sorted-by-reset .reorder-controls { display: none; }
-      .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.8rem; }
+      .game-row .meta, .rotation-list .item-main .meta { color: var(--muted); font-size: 0.85rem; }
+      .status:empty { margin: 0; }
+      /* Vote counts: equal-width digits and a minimum width, so the buttons line up from row to row. */
+      .compact-actions button, .game-actions button { font-variant-numeric: tabular-nums; }
+      .compact-actions button[data-list-vote] { min-width: 3.3rem; }
+      /* With a mouse the card is the cue, so the title underline only shows on hover. Touch keeps it. */
+      @media (hover: hover) {
+        .card-click .game-title { text-decoration-color: transparent; }
+        .card-click:hover .game-title, .card-click .game-title:focus-visible { text-decoration-color: currentColor; }
+      }
       .meta > :not([hidden]) ~ :not([hidden])::before { content: "·"; margin: 0 0.4em; }
       /* "83% liked" and "Resets in 3h 12m" never break mid-phrase; a part that doesn't fit moves to the next line. */
       .meta > * { white-space: nowrap; }
@@ -8956,6 +8979,23 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .card-click .card-link:focus-visible { outline: none; }
       .card-click:has(.card-link:focus-visible) { outline: 2px solid var(--brand-blue); outline-offset: 2px; border-radius: 12px; }
       .intro { color: var(--ink); font-size: 1.05rem; line-height: 1.5; margin: 0.25rem 0 1rem; }
+      @media (min-width: 701px) { .intro { max-width: 62ch; margin-left: auto; margin-right: auto; text-align: center; } }
+      .page-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.5rem 1rem; margin-bottom: 0.75rem; }
+      .page-head h1 { margin: 0; }
+      .page-head .actions { margin: 0; }
+      /* Fixed column counts: an auto-fill grid inside a fieldset in a column flex form makes the fieldset twice as tall as its content. */
+      .check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 0.5rem; }
+      @media (min-width: 520px) { .check-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+      .check input[type="checkbox"], .check input[type="radio"] { flex: none; }
+      .check-grid .check { margin-right: 0; min-width: 0; overflow-wrap: anywhere; }
+      /* A label wrapping a field: the name above the field, not squeezed beside it. */
+      .stack-form > label:has(> input:not([type="checkbox"]):not([type="radio"]), > textarea, > select) { display: flex; flex-direction: column; gap: 0.25rem; }
+      .reset-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.6rem 0.75rem; }
+      .reset-grid label { display: flex; flex-direction: column; gap: 0.25rem; }
+      .reset-grid label[hidden] { display: none; }
+      form.filter-form { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.5rem; max-width: 40rem; }
+      .admin-fold > summary { cursor: pointer; font-weight: 700; padding: 0.4rem 0; }
+      .admin-fold[open] > summary { margin-bottom: 0.75rem; }
       .btn-play { font-size: 1.1rem; padding: 0.8rem 1.4rem; }
       /* Game page: votes and favorite in one row under the Play button, score and reset time beneath. */
       .game-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.25rem 0 0.5rem; }
@@ -9024,16 +9064,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .list-index li { margin-bottom: 0.7rem; }
       .list-index .muted { color: var(--muted); }
       .game-count strong { color: var(--brand-blue); font-size: 1.6rem; font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 0.2rem; }
-      /* Big screens: larger cards and text, with the buttons in a 2x2 grid (votes left, favorite top right, details bottom right). */
+      /* Big screens: larger cards and text, with the name and the buttons on one row and the details beneath. */
       @media (min-width: 1200px) {
-        ul.games { grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr)); gap: 1rem; }
+        ul.games { grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr)); gap: 1rem; }
         ul.games.compact li { padding: 0.95rem 1.05rem; border-radius: 14px; }
         ul.games.compact li.reset-bar { padding-bottom: calc(0.95rem + 6px); }
-        .game-row { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto 1fr; grid-template-areas: "name actions" "sub actions"; column-gap: 0.9rem; row-gap: 0.45rem; align-items: start; }
+        .game-row { display: grid; grid-template-columns: 1fr auto; grid-template-rows: auto 1fr; grid-template-areas: "name actions" "sub sub"; column-gap: 0.9rem; row-gap: 0.45rem; align-items: start; }
         .game-top { display: contents; }
         .game-name { grid-area: name; padding-top: 0; }
         .game-sub { grid-area: sub; }
-        .game-row .compact-actions { grid-area: actions; display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; grid-auto-flow: column; gap: 0.35rem; }
+        .game-row .compact-actions { grid-area: actions; display: flex; flex-wrap: nowrap; gap: 0.35rem; }
         .game-row .compact-actions > * { display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; height: 2.15rem; min-width: 3.4rem; font-size: 0.95rem; padding: 0 0.6rem; }
         ul.games .game-title { font-size: 1.3rem; }
         .game-sub .tag { font-size: 0.85rem; padding: 0.15rem 0.5rem; }
@@ -9050,7 +9090,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         /* Fields: 44px tall, and 16px text so iOS doesn't zoom the page on focus. */
         input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { min-height: 44px; font-size: 16px; }
         textarea { min-height: 5.5rem; }
-        .stack-form button[type="submit"], .search-row button, form.game-filters button, .actions button { min-height: 44px; }
+        .stack-form button[type="submit"], .search-row button, form.game-filters button, form.filter-form button, .actions button { min-height: 44px; }
         /* Checkboxes and radios: a bigger box, and the whole label row is the tap target. */
         input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
         .check { min-height: 44px; }
@@ -9070,12 +9110,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     </style>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <header class="site-header">
       <a class="brand" href="/">0<span class="brand-x">x</span>9 dles</a>
       <nav class="site-nav" aria-label="Main">
-        <a href="/games">Games</a>
-        <a href="/me/rotation"><span class="label-long">My </span>Rotation</a>
-        <a href="/submit">Submit</a>
+        <a href="/games"${current("/games")}>Games</a>
+        <a href="/me/rotation"${current("/me/rotation")}><span class="label-long">My </span>Rotation</a>
+        <a href="/submit"${current("/submit")}>Submit</a>
         <span class="nav-extra">${secondaryLinks}</span>
       </nav>
       <div class="header-tools">
@@ -9092,7 +9133,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         </details>
       </div>
     </header>
-    ${body}
+    ${body.replace(/<main(?![^>]*\sid=)/, '<main id="main" tabindex="-1"')}
     <footer style="text-align: center; padding: 2rem 1rem; margin-top: 4rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.9rem;">
       <p>
         <a href="https://github.com/0x9-ca/dailies" target="_blank" rel="noopener noreferrer">github</a>

@@ -8,6 +8,8 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "Game pages no longer run off the edge of a phone screen.",
       "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
+      "On wide screens, game cards keep their buttons on one row. The page you're on is underlined in the header, and keyboard users get a skip-to-content link.",
+      "The submit form is easier to fill in on a phone, and it says up front that an editor reviews new games.",
       "Links, buttons and form fields are bigger to tap on phones, and the form text no longer makes iPhones zoom in.",
       "Keyboard focus is highlighted clearly, and the submit form has proper labels."
     ]
