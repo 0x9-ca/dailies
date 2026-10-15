@@ -1441,7 +1441,7 @@ app.get("/u/:handle", async (c) => {
       </header>
       ${developed.length > 0 ? `<section>
         <h2>Games by ${escapeHtml(name)}</h2>
-        ${renderCompactGameList(developed, user, userVotes, userFavorites)}
+        ${renderCompactGameList(developed.map((game) => ({ ...game, developer: null })), user, userVotes, userFavorites)}
       </section>` : ""}
       ${rotation.length > 0 ? `<section>
         <h2>Daily rotation</h2>
@@ -1479,6 +1479,7 @@ app.get("/rotation/:shareToken", async (c) => {
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
+  const developersByGameId = await getDevelopersForGames(c.env, favorites.results.map((item) => item.id));
   const ownerName = owner.display_name || "Someone";
 
   return c.html(await layout(`${ownerName}'s Rotation`, user, `
@@ -1495,7 +1496,7 @@ app.get("/rotation/:shareToken", async (c) => {
                 return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
                 <div class="item-main">
                   <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
-                  ${renderCategoryPills(categoriesByGameId.get(item.id))}
+                  ${renderCategoryPills(categoriesByGameId.get(item.id), developersByGameId.get(item.id))}
                   ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
                 </div>
                 <div class="card-actions">
@@ -1769,16 +1770,25 @@ app.get("/me/rotation", async (c) => {
           return hash % 360;
         };
 
+        const DEV_CHECK_SVG = ${scriptJson(CHECK_SVG)};
+        const escapeText = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
         const loadCategoryPills = async (gameIds) => {
           if (!list || gameIds.length === 0) return;
           try {
-            const response = await fetch("/api/games/categories?ids=" + gameIds.map(encodeURIComponent).join(","));
+            const response = await fetch("/api/games/categories?withDevelopers=1&ids=" + gameIds.map(encodeURIComponent).join(","));
             if (!response.ok) return;
-            const categoriesByGameId = await response.json();
+            const payload = await response.json();
+            const categoriesByGameId = payload.categories || {};
+            const developersByGameId = payload.developers || {};
             Object.keys(categoriesByGameId).forEach((gameId) => {
               const container = list.querySelector('[data-category-pills="' + CSS.escape(gameId) + '"]');
               if (!container) return;
               const categories = categoriesByGameId[gameId] || [];
+              const developer = developersByGameId[gameId];
+              const developerChip = developer
+                ? '<a href="/u/' + encodeURIComponent(developer.handle) + '" class="tag category-pill dev-pill" title="Verified developer: ' + escapeText(developer.name) + '" aria-label="Verified developer: ' + escapeText(developer.name) + '">' + DEV_CHECK_SVG + '<span class="dev-pill-name">' + escapeText(developer.name) + '</span></a>'
+                : "";
               container.innerHTML = categories
                 .map((cat) => {
                   const hue = categoryHue(cat.slug);
@@ -1786,7 +1796,7 @@ app.get("/me/rotation", async (c) => {
                   const name = cat.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
                   return '<a href="/games?category=' + encodeURIComponent(cat.slug) + '" class="tag category-pill" style="' + style + '">' + name + '</a>';
                 })
-                .join("");
+                .join("") + developerChip;
             });
           } catch {
             // Category pills are a non-critical enhancement; ignore failures.
@@ -1867,6 +1877,7 @@ app.get("/me/rotation", async (c) => {
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
+  const developersByGameId = await getDevelopersForGames(c.env, favorites.results.map((item) => item.id));
 
   const userWithToken = await c.env.DB.prepare(
     "SELECT rotation_share_token FROM users WHERE id = ?1"
@@ -1917,7 +1928,7 @@ app.get("/me/rotation", async (c) => {
               <span class="drag">::</span>
               <div class="item-main">
                 <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
-                ${renderCategoryPills(categoriesByGameId.get(item.id))}
+                ${renderCategoryPills(categoriesByGameId.get(item.id), developersByGameId.get(item.id))}
                 ${reset.span ? `<div class="meta">${reset.span}</div>` : ""}
               </div>
               <div class="card-actions">
@@ -2510,6 +2521,7 @@ app.get("/lists/:slug", async (c) => {
     .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
+  const developersByGameId = await getDevelopersForGames(c.env, items.results.map((item) => item.id));
 
   // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
   const { votes: userVotes, favorites: userFavorites } = isAdminEditor
@@ -2603,7 +2615,7 @@ app.get("/lists/:slug", async (c) => {
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
-            ${renderCategoryPills(categoriesByGameId.get(item.id))}
+            ${renderCategoryPills(categoriesByGameId.get(item.id), developersByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
               : renderGameMeta(item.vote_up_count, item.vote_down_count, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))}
@@ -2652,6 +2664,7 @@ app.get("/lists/:slug", async (c) => {
         syncOpen();
         panel.querySelector("summary")?.addEventListener("click", (event) => { if (wide.matches) event.preventDefault(); });
 
+        const DEV_CHECK_SVG = ${scriptJson(CHECK_SVG)};
         const render = () => {
           countEl.textContent = suggestions.length > 0 ? "(" + suggestions.length + ")" : "";
           emptyEl.hidden = suggestions.length > 0;
@@ -2685,7 +2698,7 @@ app.get("/lists/:slug", async (c) => {
               link.appendChild(badge);
             }
             main.appendChild(link);
-            if (item.categories.length > 0) {
+            if (item.categories.length > 0 || item.developer) {
               const pills = document.createElement("div");
               pills.className = "category-pills";
               item.categories.forEach((cat) => {
@@ -2698,6 +2711,19 @@ app.get("/lists/:slug", async (c) => {
                 pill.style.borderColor = "hsl(" + cat.hue + ", 55%, 72%)";
                 pills.appendChild(pill);
               });
+              if (item.developer) {
+                const chip = document.createElement("a");
+                chip.className = "tag category-pill dev-pill";
+                chip.href = "/u/" + encodeURIComponent(item.developer.handle);
+                chip.title = "Verified developer: " + item.developer.name;
+                chip.setAttribute("aria-label", "Verified developer: " + item.developer.name);
+                chip.insertAdjacentHTML("afterbegin", DEV_CHECK_SVG);
+                const chipName = document.createElement("span");
+                chipName.className = "dev-pill-name";
+                chipName.textContent = item.developer.name;
+                chip.appendChild(chipName);
+                pills.appendChild(chip);
+              }
               main.appendChild(pills);
             }
             const vote = document.createElement("button");
@@ -4406,6 +4432,11 @@ app.get("/api/games/categories", async (c) => {
   for (const id of ids) {
     result[id] = categoriesByGameId.get(id) ?? [];
   }
+  // The logged-out rotation page also wants each game's public verified developer (the default shape stays a plain map).
+  if (c.req.query("withDevelopers") === "1") {
+    const developers = await getDevelopersForGames(c.env, ids);
+    return c.json({ categories: result, developers: Object.fromEntries(developers) });
+  }
   return c.json(result);
 });
 
@@ -5882,6 +5913,7 @@ type ListSuggestion = {
   paywall: boolean;
   nsfw: boolean;
   categories: Array<{ slug: string; name: string; hue: number }>;
+  developer: GameDeveloper | null;
   votes: number;
   voted: boolean;
 };
@@ -5900,6 +5932,7 @@ async function getListSuggestions(env: Env, listId: string, voterKey: string | n
     .bind(listId, voterKey ?? "")
     .all<{ game_id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; votes: number; voted: number }>();
   const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.game_id));
+  const developersByGameId = await getDevelopersForGames(env, rows.results.map((row) => row.game_id));
   return rows.results.map((row) => ({
     gameId: row.game_id,
     slug: row.slug,
@@ -5908,6 +5941,7 @@ async function getListSuggestions(env: Env, listId: string, voterKey: string | n
     paywall: row.paywall === 1,
     nsfw: row.nsfw === 1,
     categories: (categoriesByGameId.get(row.game_id) ?? []).map((cat) => ({ ...cat, hue: categoryHue(cat.slug) })),
+    developer: developersByGameId.get(row.game_id) ?? null,
     votes: row.votes,
     voted: row.voted === 1
   }));
@@ -6925,11 +6959,38 @@ async function getCategoriesForGames(
 }
 
 
-function renderCategoryPills(categories: Array<{ slug: string; name: string }> | undefined): string {
-  if (!categories || categories.length === 0) {
+function renderCategoryPills(categories: Array<{ slug: string; name: string }> | undefined, developer?: GameDeveloper | null): string {
+  if ((!categories || categories.length === 0) && !developer) {
     return "";
   }
-  return `<div class="category-pills">${categories.map((cat) => renderCategoryPill(cat)).join("")}</div>`;
+  return `<div class="category-pills">${(categories ?? []).map((cat) => renderCategoryPill(cat)).join("")}${developer ? renderDeveloperChip(developer) : ""}</div>`;
+}
+
+/** A game's verified developer, when their profile is public. */
+type GameDeveloper = { handle: string; name: string };
+
+/** Verified developers with a public profile, for a page's worth of games (at most one per game). */
+async function getDevelopersForGames(env: Env, gameIds: string[]): Promise<Map<string, GameDeveloper>> {
+  const result = new Map<string, GameDeveloper>();
+  const ids = [...new Set(gameIds)];
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const rows = await env.DB.prepare(
+      `SELECT game_claims.game_id, users.profile_handle AS handle, COALESCE(users.display_name, users.profile_handle) AS name
+       FROM game_claims JOIN users ON users.id = game_claims.user_id
+       WHERE game_claims.status = 'verified' AND users.profile_public = 1 AND users.profile_handle IS NOT NULL
+         AND game_claims.game_id IN (${chunk.map((_, index) => `?${index + 1}`).join(",")})`
+    )
+      .bind(...chunk)
+      .all<{ game_id: string; handle: string; name: string }>();
+    for (const row of rows.results) result.set(row.game_id, { handle: row.handle, name: row.name });
+  }
+  return result;
+}
+
+/** A pill linking to the developer's profile, shown after a game's category pills. */
+function renderDeveloperChip(dev: GameDeveloper): string {
+  return `<a href="/u/${encodeURIComponent(dev.handle)}" class="tag category-pill dev-pill" title="Verified developer: ${escapeHtml(dev.name)}" aria-label="Verified developer: ${escapeHtml(dev.name)}">${CHECK_SVG}<span class="dev-pill-name">${escapeHtml(dev.name)}</span></a>`;
 }
 
 /** One coloured category pill linking to that category; the hue comes from the slug. A count, when given, follows the name. */
@@ -6968,6 +7029,7 @@ async function listGames(
     paywall: boolean;
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
+    developer: GameDeveloper | null;
   }>
 > {
   // Server-time resets are stored in their own time zone; convert to UTC using each zone's current offset.
@@ -7055,6 +7117,7 @@ async function listGames(
     }>();
 
   const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.id));
+  const developersByGameId = await getDevelopersForGames(env, rows.results.map((row) => row.id));
 
   return rows.results.map((row) => ({
     id: row.id,
@@ -7070,7 +7133,8 @@ async function listGames(
     resetTimezone: row.reset_timezone,
     paywall: !!row.paywall,
     nsfw: !!row.nsfw,
-    categories: categoriesByGameId.get(row.id) ?? []
+    categories: categoriesByGameId.get(row.id) ?? [],
+    developer: developersByGameId.get(row.id) ?? null
   }));
 }
 
@@ -7423,6 +7487,7 @@ function renderCompactGameList(
     paywall: boolean;
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
+    developer?: GameDeveloper | null;
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
@@ -7457,7 +7522,7 @@ function renderCompactGameList(
               </div>
             </div>
             <div class="game-sub">
-              ${renderCategoryPills(game.categories)}
+              ${renderCategoryPills(game.categories, game.developer)}
               ${renderGameMeta(game.voteUpCount, game.voteDownCount, renderResetSpan(game.resetBasis, game.resetTimeMinutes, game.resetTimezone))}
             </div>
           </div>
@@ -7717,9 +7782,11 @@ function renderTimeZoneField(inputName: string, value: string | null | undefined
   </label>`;
 }
 
-/** The blue check used for verified Twitch curators and verified developers. */
+/** The blue check used for verified Twitch curators and verified developers (static markup, safe to inject). */
+const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
 function renderCheckBadge(title: string): string {
-  return `<span class="verified-badge" title="${escapeHtml(title)}" aria-label="Verified"><svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+  return `<span class="verified-badge" title="${escapeHtml(title)}" aria-label="Verified">${CHECK_SVG}</span>`;
 }
 
 /**
@@ -8659,6 +8726,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .about p { color: var(--muted); max-width: 70ch; line-height: 1.6; }
       .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
       .about-categories .tag { margin: 0; }
+      /* Verified developer: an outlined blue pill after the category pills, so it doesn't read as another category. */
+      .tag.dev-pill { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--brand-blue); background: transparent; border-color: var(--brand-blue); font-weight: 700; text-decoration: none; }
+      .tag.dev-pill svg { width: 0.95em; height: 0.95em; flex: none; }
+      .tag.dev-pill .dev-pill-name { display: block; max-width: 11ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pill-count { font-weight: 600; opacity: 0.75; font-variant-numeric: tabular-nums; margin-left: 0.15rem; }
       /* Shared by links and <button>s, so both get the same font, height and text position. */
       .btn {
