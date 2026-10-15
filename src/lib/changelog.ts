@@ -4,6 +4,14 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-15",
+    items: [
+      "Game pages no longer run off the edge of a phone screen.",
+      "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
+      "Links, buttons and form fields are bigger to tap on phones, and the form text no longer makes iPhones zoom in.",
+      "Keyboard focus is highlighted clearly, and the submit form has proper labels."
+    ]
+  },  {
     date: "2026-10-14",
     items: [
       "Public profiles. Turn one on in Settings to get a page with your name, picture and badges (verified developer, editor or admin, Twitch channel), the games you've made and, if you like, your daily rotation. Profiles are off until you switch them on.",

@@ -454,9 +454,15 @@ app.get("/submit", async (c) => {
       <h1>Submit a Daily Game</h1>
       <section class="panel">
         <form id="submission-form" class="stack-form">
-          <input type="text" name="title" placeholder="Game title" required />
-          <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="url" placeholder="example.com/game" required />
-          <textarea name="description" placeholder="Why it is good (optional)" rows="3"></textarea>
+          <label>Game title
+            <input type="text" name="title" placeholder="e.g. Wordle" required />
+          </label>
+          <label>Game URL
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="url" placeholder="example.com/game" required />
+          </label>
+          <label>Why it is good <small>(optional)</small>
+            <textarea name="description" placeholder="A sentence on what makes it worth playing" rows="3"></textarea>
+          </label>
           <fieldset>
             <legend>Suggested categories</legend>
             ${categories.results
@@ -485,7 +491,7 @@ app.get("/submit", async (c) => {
           </fieldset>
           <label class="check"><input type="checkbox" name="paywall" value="1" /> This game is paywalled</label>
           <label class="check"><input type="checkbox" name="nsfw" value="1" /> This game is NSFW</label>
-          <button type="submit">Submit for review</button>
+          <button type="submit" class="btn">Submit for review</button>
         </form>
         <p id="submission-status" class="status" aria-live="polite"></p>
       </section>
@@ -990,7 +996,7 @@ app.get("/games/:slug", async (c) => {
               <option value="other">Other</option>
             </select>
           </label>
-          <textarea name="note" rows="3" placeholder="Optional notes"></textarea>
+          <textarea name="note" rows="3" placeholder="Optional notes" aria-label="Notes (optional)"></textarea>
           <button type="submit">Send report</button>
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
@@ -1057,7 +1063,7 @@ app.get("/games/:slug", async (c) => {
           ? `<section class="panel" id="add-to-list-section">
                <h2>Add to curated list</h2>
                <form id="add-to-list-form" class="stack-form">
-                 <select name="listId" id="list-select" required>
+                 <select name="listId" id="list-select" aria-label="Curated list" required>
                    <option value="">Select a list...</option>
                  </select>
                  <button type="submit">Add game</button>
@@ -2414,9 +2420,9 @@ app.get("/lists", async (c) => {
         <section class="panel">
           <h2>Create list</h2>
           <form id="create-list-form" class="stack-form">
-            <input name="title" placeholder="List title" required />
-            <textarea name="description" rows="2" placeholder="Description"></textarea>
-            <select name="visibility">
+            <input name="title" placeholder="List title" aria-label="List title" required />
+            <textarea name="description" rows="2" placeholder="Description" aria-label="Description"></textarea>
+            <select name="visibility" aria-label="Visibility">
               <option value="private">private</option>
               <option value="public">public</option>
             </select>
@@ -2534,7 +2540,7 @@ app.get("/lists/:slug", async (c) => {
           <form id="list-edit-form" class="stack-form">
             <input type="text" name="title" value="${escapeHtml(list.title)}" required />
             ${isStaff ? `<input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />` : ""}
-            <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
+            <textarea name="description" rows="2" placeholder="Description" aria-label="Description">${escapeHtml(list.description || "")}</textarea>
             <label class="check"><input type="checkbox" id="list-suggestions-toggle"${list.suggestions_enabled === 1 ? " checked" : ""} /> Allow suggestions <small class="muted">(turning this off hides the panel; existing suggestions are kept)</small></label>
             <div class="actions">
               <button type="submit">Save details</button>
@@ -3496,12 +3502,12 @@ app.get("/admin/submissions", async (c) => {
     <main>
       <h1>Moderate Submissions</h1>
       <form method="GET" action="/admin/submissions">
-        <select name="status">
+        <select name="status" aria-label="Status">
           ${["pending", "rejected", "disabled", "approved"]
             .map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${option}</option>`)
             .join("")}
         </select>
-        <input name="q" value="${escapeHtml(q)}" placeholder="Search title, URL, description" />
+        <input name="q" value="${escapeHtml(q)}" placeholder="Search title, URL, description" aria-label="Search" />
         <button type="submit">Filter</button>
       </form>
       <div class="actions">
@@ -3753,12 +3759,12 @@ app.get("/admin/reports", async (c) => {
     <main>
       <h1>Review Reports</h1>
       <form method="GET" action="/admin/reports">
-        <select name="status">
+        <select name="status" aria-label="Status">
           ${["open", "resolved", "dismissed"]
             .map((option) => `<option value="${option}" ${option === status ? "selected" : ""}>${option}</option>`)
             .join("")}
         </select>
-        <input name="q" value="${escapeHtml(q)}" placeholder="Search title, reason, note" />
+        <input name="q" value="${escapeHtml(q)}" placeholder="Search title, reason, note" aria-label="Search" />
         <button type="submit">Filter</button>
       </form>
       <div class="actions">
@@ -3884,9 +3890,9 @@ app.get("/admin/categories", async (c) => {
       <section class="panel">
         <h2>Create category</h2>
         <form id="create-category-form" class="stack-form">
-          <input name="slug" placeholder="slug" required />
-          <input name="name" placeholder="Name" required />
-          <textarea name="description" rows="2" placeholder="Description"></textarea>
+          <input name="slug" placeholder="slug" aria-label="Slug" required />
+          <input name="name" placeholder="Name" aria-label="Name" required />
+          <textarea name="description" rows="2" placeholder="Description" aria-label="Description"></textarea>
           <label class="check"><input type="checkbox" name="isActive" checked /> Active</label>
           <button type="submit">Create category</button>
         </form>
@@ -4014,9 +4020,9 @@ app.get("/admin/lists", async (c) => {
       <section class="panel">
         <h2>Create list</h2>
         <form id="create-list-form" class="stack-form">
-          <input name="title" placeholder="List title" required />
-          <textarea name="description" rows="2" placeholder="Description"></textarea>
-          <select name="visibility">
+          <input name="title" placeholder="List title" aria-label="List title" required />
+          <textarea name="description" rows="2" placeholder="Description" aria-label="Description"></textarea>
+          <select name="visibility" aria-label="Visibility">
             <option value="private">private</option>
             <option value="public">public</option>
           </select>
@@ -4036,9 +4042,9 @@ app.get("/admin/lists", async (c) => {
               <p>${escapeHtml(list.description || "")}</p>
               <form class="stack-form" data-list-edit="${list.id}">
                 <label>Edit list metadata</label>
-                <input type="text" name="title" value="${escapeHtml(list.title)}" required />
+                <input type="text" name="title" value="${escapeHtml(list.title)}" aria-label="List title" required />
                 <input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />
-                <textarea name="description" rows="2" placeholder="Description">${escapeHtml(list.description || "")}</textarea>
+                <textarea name="description" rows="2" placeholder="Description" aria-label="Description">${escapeHtml(list.description || "")}</textarea>
                 <button type="submit">Save list details</button>
               </form>
               <div class="actions">
@@ -4049,8 +4055,8 @@ app.get("/admin/lists", async (c) => {
               </div>
               <form class="stack-form" data-list-add-item="${list.id}">
                 <label>Add game to list</label>
-                <select name="gameId">${itemOptions}</select>
-                <input type="number" name="position" min="1" value="1" required />
+                <select name="gameId" aria-label="Game">${itemOptions}</select>
+                <input type="number" name="position" min="1" value="1" aria-label="Position in list" required />
                 <button type="submit">Add item</button>
               </form>
               <div class="list-items" data-list-items="${list.id}">
@@ -7783,7 +7789,7 @@ function renderDeveloperSections(
   let body: string;
   if (!claim || claim.status === "revoked") {
     body = `<p>Verify that you made this game to get a verified-developer mark and edit its details yourself.</p>
-      <button type="button" data-claim-start>Claim this game</button>`;
+      <button type="button" class="btn" data-claim-start>Claim this game</button>`;
   } else if (claim.status === "review") {
     body = `<p>Your evidence is with the editors. Once they confirm it, you'll be able to edit this game.</p>
       <button type="button" class="secondary" data-claim-cancel>Withdraw claim</button>`;
@@ -7797,7 +7803,7 @@ function renderDeveloperSections(
           <pre><code>${escapeHtml(claim.token)}</code></pre>
           <button type="button" class="secondary" data-copy="${escapeHtml(claim.token)}">Copy file contents</button></li>
       </ol>
-      <p><button type="button" data-claim-verify>Verify now</button> <button type="button" class="secondary" data-claim-cancel>Cancel</button></p>
+      <p><button type="button" class="btn" data-claim-verify>Verify now</button> <button type="button" class="secondary" data-claim-cancel>Cancel</button></p>
       <details>
         <summary>Can't change the page? (itch.io, Newgrounds, and similar sites)</summary>
         <p>Tell the editors how to confirm it, e.g. a link to your developer profile that lists this game. They'll review it.</p>
@@ -8542,6 +8548,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --header-bg: rgba(18, 18, 18, 0.85);
         --on-accent: #121212;
         --brand-blue: #00a4fc;
+        --primary: #00a4fc;
+        --primary-strong: #35b8ff;
+        --on-primary: #04121c;
         --vote-up-flash: #4ade80;
         --vote-down-flash: #f87171;
         --badge-paywall: #4ade80;
@@ -8563,7 +8572,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --shadow: 0 10px 24px rgba(0, 0, 0, 0.08);
         --header-bg: rgba(245, 245, 247, 0.85);
         --on-accent: #ffffff;
-        --brand-blue: #0077c2;
+        --brand-blue: #006db3;
+        --primary: #006db3;
+        --primary-strong: #005a94;
+        --on-primary: #ffffff;
         --vote-up-flash: #15803d;
         --vote-down-flash: #b91c1c;
         --badge-paywall: #166534;
@@ -8640,8 +8652,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         padding: 0.55rem 0.9rem;
         border: 1px solid transparent;
         border-radius: 9px;
-        background: var(--accent);
-        color: var(--on-accent);
+        background: var(--primary);
+        color: var(--on-primary);
         font: inherit;
         font-weight: 700;
         line-height: 1.25;
@@ -8667,8 +8679,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .list-head h1 { margin: 0; }
         .list-head .twitch-watch { margin: 0; }
       }
+      .btn:hover { background: var(--primary-strong); }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
       .btn-discord { gap: 0.5rem; background: #5865F2; border-color: #5865F2; color: #fff; }
+      .btn-twitch:hover { background: #9146FF; filter: brightness(1.1); }
+      .btn-discord:hover { background: #5865F2; filter: brightness(1.1); }
       .linked-accounts { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.6rem; }
       .linked-accounts li { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: 10px; }
       .linked-account-name { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 700; color: var(--ink); flex: 1; }
@@ -8787,6 +8802,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .admin-grid { display:grid; gap:0.8rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
       .stack { display:flex; flex-direction:column; gap:0.8rem; }
       .stack-form { display:flex; flex-direction:column; gap:0.6rem; }
+      /* A select with a very long option would otherwise stretch the form (and the page) past a phone screen. */
+      .stack-form label, .stack-form select, .stack-form input, .stack-form textarea { min-width: 0; max-width: 100%; }
       textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
       .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
@@ -8934,12 +8951,18 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       }
       a { color: var(--accent); }
       p { color: var(--muted); }
+      /* Keyboard focus: a clear ring everywhere. Tappable cards ring the whole card, since their link is stretched over it. */
+      :focus-visible { outline: 2px solid var(--brand-blue); outline-offset: 2px; }
+      .card-click .card-link:focus-visible { outline: none; }
+      .card-click:has(.card-link:focus-visible) { outline: 2px solid var(--brand-blue); outline-offset: 2px; border-radius: 12px; }
       .intro { color: var(--ink); font-size: 1.05rem; line-height: 1.5; margin: 0.25rem 0 1rem; }
       .btn-play { font-size: 1.1rem; padding: 0.8rem 1.4rem; }
       /* Game page: votes and favorite in one row under the Play button, score and reset time beneath. */
       .game-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.25rem 0 0.5rem; }
       .game-actions button { min-height: 44px; min-width: 4.2rem; font-size: 1rem; }
       .game-meta { color: var(--muted); font-size: 0.95rem; margin: 0.25rem 0; }
+      /* The long "Resets daily at 4:00 PM · next in 15h 54m" must be able to wrap, or it pushes the page wider than a phone. */
+      .game-meta > * { white-space: normal; }
       .game-actions-note { color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0 0; }
       #game-action-status:empty { margin: 0; }
       .report-panel > summary { cursor: pointer; font-weight: 700; }
@@ -9015,6 +9038,34 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         ul.games .game-title { font-size: 1.3rem; }
         .game-sub .tag { font-size: 0.85rem; padding: 0.15rem 0.5rem; }
         .game-row .meta { font-size: 0.9rem; }
+      }
+      /* Phone tap targets, last so it wins over the rules above: everything tappable reaches 44px. */
+      @media (max-width: 700px) {
+        /* Header, menu and footer links: the same look, but the tappable box reaches 44px. */
+        .brand, .site-nav a { display: inline-flex; align-items: center; min-height: 44px; }
+        .nav-menu > summary { min-height: 44px; }
+        .nav-menu-panel > a, .nav-menu-panel button { min-height: 44px; display: flex; align-items: center; }
+        footer a { position: relative; }
+        footer a::after { content: ""; position: absolute; inset: -1.15rem -0.5rem; }
+        /* Fields: 44px tall, and 16px text so iOS doesn't zoom the page on focus. */
+        input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { min-height: 44px; font-size: 16px; }
+        textarea { min-height: 5.5rem; }
+        .stack-form button[type="submit"], .search-row button, form.game-filters button, .actions button { min-height: 44px; }
+        /* Checkboxes and radios: a bigger box, and the whole label row is the tap target. */
+        input[type="checkbox"], input[type="radio"] { width: 20px; height: 20px; }
+        .check { min-height: 44px; }
+        /* Category pills: slightly taller, plus an invisible margin like the buttons in cards. */
+        .category-pill, .game-sub .tag.category-pill { position: relative; padding-top: 0.25rem; padding-bottom: 0.25rem; }
+        .category-pill::after { content: ""; position: absolute; inset: -11px -2px; }
+        /* "Similar daily games" links on game pages. */
+        .related-games li { margin-bottom: 0; }
+        .related-games li a { display: inline-block; padding: 0.85rem 0; }
+        .game-facts summary, .report-panel > summary { min-height: 44px; display: flex; align-items: center; }
+        /* Also: the Filters toggle, pagination, big buttons, and the pills in list and rotation rows. */
+        .filters > summary { min-height: 44px; display: flex; align-items: center; }
+        .pagination a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 0.5rem; }
+        .btn { min-height: 44px; }
+        .rotation-list .item-main .category-pill, .suggest-main .category-pill { padding-top: 0.25rem; padding-bottom: 0.25rem; }
       }
     </style>
   </head>
