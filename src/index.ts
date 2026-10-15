@@ -479,6 +479,9 @@ app.get("/submit", async (c) => {
           <label>Why it is good <small>(optional)</small>
             <textarea name="description" placeholder="A sentence on what makes it worth playing" rows="3"></textarea>
           </label>
+          <label>How to play <small>(optional)</small>
+            <textarea name="howToPlay" rows="4" maxlength="2000" placeholder="A few lines on the rules, e.g. You get six guesses. Tiles show which letters are right."></textarea>
+          </label>
           <fieldset>
             <legend>Suggested categories</legend>
             <div class="check-grid">
@@ -579,6 +582,7 @@ app.get("/submit", async (c) => {
           title: String(formData.get("title") || ""),
           url: String(formData.get("url") || ""),
           description: String(formData.get("description") || "").trim() || undefined,
+          howToPlay: String(formData.get("howToPlay") || "").trim() || undefined,
           categories: formData.getAll("categories").map((v) => String(v)),
           resetBasis: resetBasis || undefined,
           resetTime: resetTime || undefined,
@@ -3720,7 +3724,7 @@ app.get("/admin/submissions", async (c) => {
   const q = (c.req.query("q") || "").trim();
   const rows = q
     ? await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
+        `SELECT id, title, slug, url, description, status, moderation_note, how_to_play, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
          FROM games
          WHERE status = ?1
            AND (title LIKE ?2 OR url LIKE ?2 OR description LIKE ?2)
@@ -3728,16 +3732,16 @@ app.get("/admin/submissions", async (c) => {
          LIMIT 200`
       )
         .bind(status, `%${q}%`)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>()
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; how_to_play: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>()
     : await c.env.DB.prepare(
-        `SELECT id, title, slug, url, description, status, moderation_note, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
+        `SELECT id, title, slug, url, description, status, moderation_note, how_to_play, created_at, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw
          FROM games
          WHERE status = ?1
          ORDER BY created_at DESC
          LIMIT 200`
       )
         .bind(status)
-        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>();
+        .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; how_to_play: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>();
 
   return c.html(await layout("Admin Submissions", auth, `
     <main>
@@ -3764,6 +3768,7 @@ app.get("/admin/submissions", async (c) => {
             (row) => `<article class="panel">
               <h2>${escapeHtml(row.title)}${row.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${row.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h2>
               <p>${escapeHtml(row.description || "")}</p>
+              ${row.how_to_play ? `<details><summary>How to play</summary><p style="white-space:pre-wrap">${escapeHtml(row.how_to_play)}</p></details>` : ""}
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
               ${(() => {
@@ -4697,6 +4702,8 @@ const submissionSchema = z.object({
   resetBasis: z.enum(["local", "server"]).optional(),
   resetTime: z.preprocess(normalizeTimeInput, z.string().regex(/^\d{2}:\d{2}$/).optional()),
   resetTimezone: z.string().max(64).optional(),
+  // Plain text, blank line = new paragraph (shown on the game's page once approved).
+  howToPlay: z.preprocess(trimToUndefined, z.string().max(2000).optional()),
   paywall: z.boolean().optional().default(false),
   nsfw: z.boolean().optional().default(false),
   // "I made this game": for a signed-in submitter, starts a developer claim on the new game.
@@ -4872,6 +4879,8 @@ app.post("/api/games", async (c) => {
           return issue.code === "too_big"
             ? `Select at most ${MAX_SUBMISSION_CATEGORIES} categories`
             : "Categories must be a list of category names";
+        case "howToPlay":
+          return "How to play must be 2000 characters or fewer";
         case "resetTime":
           return "Reset time must be HH:MM";
         case "resetBasis":
@@ -4916,19 +4925,19 @@ app.post("/api/games", async (c) => {
   if (bypassModeration) {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11, ?12, ?13, ?14)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, approved_at, approved_by_user_id, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone, how_to_play)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'approved', ?8, ?9, ?8, ?8, ?10, ?11, ?12, ?13, ?14, ?15)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user!.id, now, user!.id, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value, parsed.data.howToPlay || null)
       .run();
     await writeAudit(c.env, user!.id, "game", id, "approve", { title: parsed.data.title, slug, via: "submission" });
   } else {
     await c.env.DB.prepare(
       `INSERT INTO games
-        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10, ?11, ?12, ?13)`
+        (id, title, slug, url, canonical_url, description, submitted_by_user_id, status, created_at, updated_at, reset_basis, reset_time_minutes, paywall, nsfw, reset_timezone, how_to_play)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8, ?8, ?9, ?10, ?11, ?12, ?13, ?14)`
     )
-      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value)
+      .bind(id, parsed.data.title, slug, parsed.data.url, canonicalUrl, parsed.data.description || null, user?.id || null, now, resetBasis, resetTimeMinutes, parsed.data.paywall ? 1 : 0, parsed.data.nsfw ? 1 : 0, resetTimezone.value, parsed.data.howToPlay || null)
       .run();
   }
 
