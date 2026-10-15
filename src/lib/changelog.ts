@@ -13,7 +13,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "A person can have at most 20 open suggestions on a list.",
       "Game cards keep their category pills to two lines. Extra categories fold into a +N chip you can tap to see them all; a verified developer is always shown.",
       "On phones, a game with several category pills no longer pushes its buttons onto a separate line: the pills wrap beside them.",
-      "Games with a verified developer who has a public profile show a blue chip with their name on every game card and list row. Tap it to open their profile.",
+      "Games with a verified developer show a blue chip with their name on every game card and list row. If the developer has a public profile, tap it to open their profile.",
       "On the home page, the category list now uses the same coloured pills as the game cards, with the number of games in each.",
       "On wide screens, game cards keep their buttons on one row. The page you're on is underlined in the header, and keyboard users get a skip-to-content link.",
       "The submit form is easier to fill in on a phone, and it says up front that an editor reviews new games.",

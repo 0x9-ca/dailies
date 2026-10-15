@@ -1894,7 +1894,10 @@ app.get("/me/rotation", async (c) => {
               const categories = categoriesByGameId[gameId] || [];
               const developer = developersByGameId[gameId];
               const developerChip = developer
-                ? '<a href="/u/' + encodeURIComponent(developer.handle) + '" class="tag category-pill dev-pill" title="Verified developer: ' + escapeText(developer.name) + '" aria-label="Verified developer: ' + escapeText(developer.name) + '">' + DEV_CHECK_SVG + '<span class="dev-pill-name">' + escapeText(developer.name) + '</span></a>'
+                ? (developer.handle
+                  ? '<a href="/u/' + encodeURIComponent(developer.handle) + '" class="tag category-pill dev-pill" title="Verified developer: ' + escapeText(developer.name) + '" aria-label="Verified developer: ' + escapeText(developer.name) + '">'
+                  : '<span class="tag category-pill dev-pill dev-pill-static" title="Verified developer: ' + escapeText(developer.name) + '">')
+                  + DEV_CHECK_SVG + '<span class="dev-pill-name">' + escapeText(developer.name) + '</span>' + (developer.handle ? '</a>' : '</span>')
                 : "";
               container.innerHTML = categories
                 .map((cat) => {
@@ -2848,11 +2851,13 @@ app.get("/lists/:slug", async (c) => {
                 pills.appendChild(pill);
               });
               if (item.developer) {
-                const chip = document.createElement("a");
-                chip.className = "tag category-pill dev-pill";
-                chip.href = "/u/" + encodeURIComponent(item.developer.handle);
+                const chip = document.createElement(item.developer.handle ? "a" : "span");
+                chip.className = "tag category-pill dev-pill" + (item.developer.handle ? "" : " dev-pill-static");
+                if (item.developer.handle) {
+                  chip.href = "/u/" + encodeURIComponent(item.developer.handle);
+                  chip.setAttribute("aria-label", "Verified developer: " + item.developer.name);
+                }
                 chip.title = "Verified developer: " + item.developer.name;
-                chip.setAttribute("aria-label", "Verified developer: " + item.developer.name);
                 chip.insertAdjacentHTML("afterbegin", DEV_CHECK_SVG);
                 const chipName = document.createElement("span");
                 chipName.className = "dev-pill-name";
@@ -7240,31 +7245,37 @@ function renderCategoryPills(categories: Array<{ slug: string; name: string }> |
   return `<div class="category-pills">${(categories ?? []).map((cat) => renderCategoryPill(cat)).join("")}${developer ? renderDeveloperChip(developer) : ""}</div>`;
 }
 
-/** A game's verified developer, when their profile is public. */
-type GameDeveloper = { handle: string; name: string };
+/** A game's verified developer. `handle` is set only when their profile is public (the chip links to it). */
+type GameDeveloper = { handle: string | null; name: string };
 
-/** Verified developers with a public profile, for a page's worth of games (at most one per game). */
+/** Verified developers for a page's worth of games (at most one per game); only those with a public profile get a handle. */
 async function getDevelopersForGames(env: Env, gameIds: string[]): Promise<Map<string, GameDeveloper>> {
   const result = new Map<string, GameDeveloper>();
   const ids = [...new Set(gameIds)];
   for (let i = 0; i < ids.length; i += 90) {
     const chunk = ids.slice(i, i + 90);
     const rows = await env.DB.prepare(
-      `SELECT game_claims.game_id, users.profile_handle AS handle, COALESCE(users.display_name, users.profile_handle) AS name
+      `SELECT game_claims.game_id,
+              CASE WHEN users.profile_public = 1 THEN users.profile_handle END AS handle,
+              COALESCE(users.display_name, CASE WHEN users.profile_public = 1 THEN users.profile_handle END, 'Developer') AS name
        FROM game_claims JOIN users ON users.id = game_claims.user_id
-       WHERE game_claims.status = 'verified' AND users.profile_public = 1 AND users.profile_handle IS NOT NULL
+       WHERE game_claims.status = 'verified'
          AND game_claims.game_id IN (${chunk.map((_, index) => `?${index + 1}`).join(",")})`
     )
       .bind(...chunk)
-      .all<{ game_id: string; handle: string; name: string }>();
+      .all<{ game_id: string; handle: string | null; name: string }>();
     for (const row of rows.results) result.set(row.game_id, { handle: row.handle, name: row.name });
   }
   return result;
 }
 
-/** A pill linking to the developer's profile, shown after a game's category pills. */
+/** A pill after a game's category pills: a link to the developer's profile, or plain text when their profile isn't public. */
 function renderDeveloperChip(dev: GameDeveloper): string {
-  return `<a href="/u/${encodeURIComponent(dev.handle)}" class="tag category-pill dev-pill" title="Verified developer: ${escapeHtml(dev.name)}" aria-label="Verified developer: ${escapeHtml(dev.name)}">${CHECK_SVG}<span class="dev-pill-name">${escapeHtml(dev.name)}</span></a>`;
+  const inner = `${CHECK_SVG}<span class="dev-pill-name">${escapeHtml(dev.name)}</span>`;
+  if (!dev.handle) {
+    return `<span class="tag category-pill dev-pill dev-pill-static" title="Verified developer: ${escapeHtml(dev.name)}">${inner}</span>`;
+  }
+  return `<a href="/u/${encodeURIComponent(dev.handle)}" class="tag category-pill dev-pill" title="Verified developer: ${escapeHtml(dev.name)}" aria-label="Verified developer: ${escapeHtml(dev.name)}">${inner}</a>`;
 }
 
 /** One coloured category pill linking to that category; the hue comes from the slug. A count, when given, follows the name. */
@@ -9089,6 +9100,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       button.tag.pill-more { cursor: pointer; font-family: inherit; line-height: inherit; font-weight: 700; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
       button.tag.pill-more:hover { color: var(--ink); }
       .tag.dev-pill { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--brand-blue); background: transparent; border-color: var(--brand-blue); font-weight: 700; text-decoration: none; }
+      /* A developer without a public profile: same look, but plain text. Taps pass through to the card behind it. */
+      .tag.dev-pill.dev-pill-static { pointer-events: none; }
+      .dev-pill-static::after { display: none; }
       .tag.dev-pill svg { width: 0.95em; height: 0.95em; flex: none; }
       .tag.dev-pill .dev-pill-name { display: block; max-width: 11ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pill-count { font-weight: 600; opacity: 0.75; font-variant-numeric: tabular-nums; margin-left: 0.15rem; }
