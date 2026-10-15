@@ -411,7 +411,7 @@ app.get("/", async (c) => {
         <p>A daily game, or "dle", is a short puzzle that resets once a day with the same challenge for every player, so you can compare results with friends. Wordle started the trend, and the name stuck: many of them end in "-dle". There are now hundreds, covering words, geography, movies, music, logic, math and more. Nearly all are free to play in your browser, with no account or download.</p>
         ${famousGamesMarkup.length > 0 ? `<p>Popular ones include ${famousGamesMarkup.length > 1 ? `${famousGamesMarkup.slice(0, -1).join(", ")} and ${famousGamesMarkup[famousGamesMarkup.length - 1]}` : famousGamesMarkup[0]}.</p>` : ""}
         ${homeCategories.length > 0 ? `<h3>Browse by category</h3>
-        <ul class="about-categories">${homeCategories.map((cat) => `<li><a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a> <span>${cat.n}</span></li>`).join("")}</ul>` : ""}
+        <ul class="about-categories">${homeCategories.map((cat) => `<li>${renderCategoryPill(cat, cat.n)}</li>`).join("")}</ul>` : ""}
         <h3>How games are ranked</h3>
         <p>Every game has a community score based on up and down votes, so a game with a few votes can't outrank one that many people like. Newer games get a small freshness boost, and games that are frequently reported or whose links stop working are ranked lower. Anyone can vote, with or without an account.</p>
         <h3>Build your daily rotation</h3>
@@ -6929,13 +6929,14 @@ function renderCategoryPills(categories: Array<{ slug: string; name: string }> |
   if (!categories || categories.length === 0) {
     return "";
   }
-  return `<div class="category-pills">${categories
-    .map((cat) => {
-      const hue = categoryHue(cat.slug);
-      const style = `color:hsl(${hue}, 65%, 28%); background:hsl(${hue}, 65%, 90%); border-color:hsl(${hue}, 55%, 72%);`;
-      return `<a href="/games?category=${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}</a>`;
-    })
-    .join("")}</div>`;
+  return `<div class="category-pills">${categories.map((cat) => renderCategoryPill(cat)).join("")}</div>`;
+}
+
+/** One coloured category pill linking to that category; the hue comes from the slug. A count, when given, follows the name. */
+function renderCategoryPill(cat: { slug: string; name: string }, count?: number): string {
+  const hue = categoryHue(cat.slug);
+  const style = `color:hsl(${hue}, 65%, 28%); background:hsl(${hue}, 65%, 90%); border-color:hsl(${hue}, 55%, 72%);`;
+  return `<a href="/games?category=${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}${count === undefined ? "" : ` <span class="pill-count">${count}</span>`}</a>`;
 }
 
 async function listGames(
@@ -8656,8 +8657,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .hero p { color: var(--muted); }
       .about { margin-top: 2rem; }
       .about p { color: var(--muted); max-width: 70ch; line-height: 1.6; }
-      .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; }
-      .about-categories span { color: var(--muted); font-size: 0.85em; }
+      .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+      .about-categories .tag { margin: 0; }
+      .pill-count { font-weight: 600; opacity: 0.75; font-variant-numeric: tabular-nums; margin-left: 0.15rem; }
       /* Shared by links and <button>s, so both get the same font, height and text position. */
       .btn {
         display: inline-flex;
