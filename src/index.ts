@@ -9112,9 +9112,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .rotation-list li > .item-main { display: contents; }
         .rotation-list li > .item-main > a { order: 1; flex: 1 1 calc(100% - 2.5rem); min-width: 0; }
         .rotation-list li > .item-main > .meta { order: 2; flex: 1 1 100%; }
-        .rotation-list li > .item-main > .category-pills { order: 3; flex: 0 1 auto; min-width: 0; }
+        /* The pills take whatever width the buttons leave and wrap inside it, so a long set of pills never pushes the buttons onto their own line. */
+        .rotation-list li > .item-main > .category-pills { order: 3; flex: 1 1 7rem; min-width: 0; }
         .rotation-list li > .item-main .category-pill { white-space: nowrap; }
-        .rotation-list li > .card-actions { order: 4; }
+        .rotation-list li > .card-actions { order: 4; align-self: flex-start; }
         /* Rows with a drag handle: line the details up under the name rather than under the handle. */
         .rotation-list li:has(> .drag) > .item-main > .meta, .rotation-list li:has(> .drag) > .item-main > .category-pills { padding-left: calc(var(--drag-width, 1rem) + 0.5rem); }
         .actions button, .actions .btn { min-height: 44px; }
