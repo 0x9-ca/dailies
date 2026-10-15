@@ -8126,23 +8126,41 @@ function timeZoneAbbreviation(timeZone: string, at: Date = new Date()): string |
   }
 }
 
+/** Zones most games reset in, shown first with friendly names: the US (including Alaska and Hawaii) and the main European ones. */
+const TIME_ZONE_SHORTLIST: Array<[string, string]> = [
+  ["America/New_York", "US Eastern (New York)"],
+  ["America/Chicago", "US Central (Chicago)"],
+  ["America/Denver", "US Mountain (Denver)"],
+  ["America/Phoenix", "US Mountain, no DST (Phoenix)"],
+  ["America/Los_Angeles", "US Pacific (Los Angeles)"],
+  ["America/Anchorage", "US Alaska (Anchorage)"],
+  ["Pacific/Honolulu", "US Hawaii (Honolulu)"],
+  ["Europe/London", "UK (London)"],
+  ["Europe/Paris", "Central Europe (Paris)"],
+  ["Europe/Berlin", "Central Europe (Berlin)"]
+];
+
 /**
- * A native <select> of IANA time zones grouped by region. (A text field with a <datalist> opens its suggestions over
- * the on-screen keyboard on phones; a select opens the system picker instead.) Blank means UTC.
+ * A native <select> of IANA time zones: "Most common" first (UTC, US and main European zones), then every other zone
+ * grouped by region. (A text field with a <datalist> opens its suggestions over the on-screen keyboard on phones; a
+ * select opens the system picker instead.) Blank means UTC.
  */
 function renderTimeZoneOptions(selected: string | null | undefined): string {
   const current = selected && selected !== "UTC" ? selected : "";
-  const zones = listTimeZones().filter((zone) => zone !== "UTC");
+  const available = listTimeZones().filter((zone) => zone !== "UTC");
+  const common = new Set(TIME_ZONE_SHORTLIST.map(([zone]) => zone));
   const groups = new Map<string, string[]>();
-  for (const zone of zones) {
+  for (const zone of available) {
+    if (common.has(zone)) continue;
     const region = zone.includes("/") ? zone.split("/")[0] : "Other";
     groups.set(region, [...(groups.get(region) ?? []), zone]);
   }
-  const option = (zone: string) => `<option value="${escapeHtml(zone)}"${zone === current ? " selected" : ""}>${escapeHtml(zone.replace(/_/g, " "))}</option>`;
+  const option = (zone: string, label = zone.replace(/_/g, " ")) => `<option value="${escapeHtml(zone)}"${zone === current ? " selected" : ""}>${escapeHtml(label)}</option>`;
   // A saved zone that isn't in the browser's list still shows (and is kept) rather than silently resetting to UTC.
-  const extra = current && !zones.includes(current) ? option(current) : "";
-  return `<option value=""${current ? "" : " selected"}>UTC (default)</option>${extra}${[...groups.entries()]
-    .map(([region, list]) => `<optgroup label="${escapeHtml(region)}">${list.map(option).join("")}</optgroup>`)
+  const extra = current && !available.includes(current) && !common.has(current) ? option(current) : "";
+  const mostCommon = [`<option value=""${current ? "" : " selected"}>UTC (default)</option>`, ...TIME_ZONE_SHORTLIST.map(([zone, label]) => option(zone, label))].join("");
+  return `<optgroup label="Most common">${mostCommon}</optgroup>${extra}${[...groups.entries()]
+    .map(([region, list]) => `<optgroup label="${escapeHtml(region)}">${list.map((zone) => option(zone)).join("")}</optgroup>`)
     .join("")}`;
 }
 
