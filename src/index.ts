@@ -508,7 +508,6 @@ app.get("/submit", async (c) => {
             </label>
             ${renderTimeZoneField("resetTimezone", null)}
             </div>
-            ${renderTimeZoneDatalist()}
           </fieldset>
           <label class="check"><input type="checkbox" name="paywall" value="1" /> This game is paywalled</label>
           <label class="check"><input type="checkbox" name="nsfw" value="1" /> This game is NSFW</label>
@@ -1129,7 +1128,6 @@ app.get("/games/:slug", async (c) => {
                   </label>
                   ${renderTimeZoneField("reset_timezone", game.reset_timezone)}
                   </div>
-                  ${renderTimeZoneDatalist()}
                   <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
                   <label style="display:block;"><input type="checkbox" name="nsfw" value="1" ${game.nsfw ? "checked" : ""} /> NSFW</label>
                  <fieldset>
@@ -3783,7 +3781,7 @@ app.get("/admin/submissions", async (c) => {
                   <option value="server" ${row.reset_basis === "server" ? "selected" : ""}>Server</option>
                 </select>
                 <input type="time" data-reset-time="${row.id}" value="${row.reset_time_minutes === null ? "" : escapeHtml(formatResetTime(row.reset_time_minutes))}" />
-                <span data-tz-wrap><input type="text" list="tz-list" data-tz-input data-reset-timezone="${row.id}" placeholder="Time zone, e.g. America/New_York" maxlength="64" value="${escapeHtml(row.reset_timezone || "")}" /></span>
+                <span data-tz-wrap><select data-tz-input data-reset-timezone="${row.id}" aria-label="Time zone">${renderTimeZoneOptions(row.reset_timezone)}</select></span>
                 </span>
                 <button type="button" data-reset-save="${row.id}">Save reset</button>
               </div>
@@ -3799,7 +3797,6 @@ app.get("/admin/submissions", async (c) => {
           .join("")}
       </div>
       <p id="admin-submissions-status" class="status" aria-live="polite"></p>
-      ${renderTimeZoneDatalist()}
     </main>
     <script>
       ${RESET_TIMEZONE_TOGGLE_SCRIPT}
@@ -3886,7 +3883,7 @@ app.get("/admin/submissions", async (c) => {
           if (!gameId) return;
           const basisNode = document.querySelector("select[data-reset-basis='" + gameId + "']");
           const timeNode = document.querySelector("input[data-reset-time='" + gameId + "']");
-          const zoneNode = document.querySelector("input[data-reset-timezone='" + gameId + "']");
+          const zoneNode = document.querySelector("[data-reset-timezone='" + gameId + "']");
           if (!(basisNode instanceof HTMLSelectElement) || !(timeNode instanceof HTMLInputElement) || !(zoneNode instanceof HTMLInputElement)) {
             return;
           }
@@ -8129,8 +8126,24 @@ function timeZoneAbbreviation(timeZone: string, at: Date = new Date()): string |
   }
 }
 
-function renderTimeZoneDatalist(): string {
-  return `<datalist id="tz-list">${listTimeZones().map((zone) => `<option value="${escapeHtml(zone)}"></option>`).join("")}</datalist>`;
+/**
+ * A native <select> of IANA time zones grouped by region. (A text field with a <datalist> opens its suggestions over
+ * the on-screen keyboard on phones; a select opens the system picker instead.) Blank means UTC.
+ */
+function renderTimeZoneOptions(selected: string | null | undefined): string {
+  const current = selected && selected !== "UTC" ? selected : "";
+  const zones = listTimeZones().filter((zone) => zone !== "UTC");
+  const groups = new Map<string, string[]>();
+  for (const zone of zones) {
+    const region = zone.includes("/") ? zone.split("/")[0] : "Other";
+    groups.set(region, [...(groups.get(region) ?? []), zone]);
+  }
+  const option = (zone: string) => `<option value="${escapeHtml(zone)}"${zone === current ? " selected" : ""}>${escapeHtml(zone.replace(/_/g, " "))}</option>`;
+  // A saved zone that isn't in the browser's list still shows (and is kept) rather than silently resetting to UTC.
+  const extra = current && !zones.includes(current) ? option(current) : "";
+  return `<option value=""${current ? "" : " selected"}>UTC (default)</option>${extra}${[...groups.entries()]
+    .map(([region, list]) => `<optgroup label="${escapeHtml(region)}">${list.map(option).join("")}</optgroup>`)
+    .join("")}`;
 }
 
 // Shows the time zone input only while the reset basis is "server".
@@ -8152,7 +8165,7 @@ const RESET_TIMEZONE_TOGGLE_SCRIPT = `
 
 function renderTimeZoneField(inputName: string, value: string | null | undefined, extraAttrs = ""): string {
   return `<label data-tz-wrap>Time zone (server time)
-    <input type="text" name="${inputName}" list="tz-list" data-tz-input placeholder="e.g. America/New_York" maxlength="64" value="${escapeHtml(value || "")}" ${extraAttrs} />
+    <select name="${inputName}" data-tz-input ${extraAttrs}>${renderTimeZoneOptions(value)}</select>
   </label>`;
 }
 
@@ -8225,7 +8238,6 @@ function renderDeveloperSections(
           </label>
           ${renderTimeZoneField("reset_timezone", game.reset_timezone)}
         </div>
-        ${renderTimeZoneDatalist()}
         <label style="display:block;"><input type="checkbox" name="paywall" value="1" ${game.paywall ? "checked" : ""} /> Paywall</label>
         <button type="submit">Save changes</button>
       </form>
