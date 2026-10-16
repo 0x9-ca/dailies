@@ -2987,6 +2987,7 @@ app.get("/lists/:slug", async (c) => {
           <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
         </div>
         <div class="fandles-body">
+        ${fandleNotice ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
         ${fandleGames.length > 0 ? renderCompactGameList(fandleGames, user, fandleViewer.votes, fandleViewer.favorites, { showVotes: false, extraActions: fandleAddAction }) : ""}
         ${fandleJoin ? `<div class="panel fandle-join">${fandleJoin}</div>
         <script>
@@ -3081,7 +3082,12 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      ${!suggestionsOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}">
+      ${!suggestionsOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}"${fandleSection && fandleNotice ? ' data-default-tab="fandles"' : ""}>
+      <div class="list-tabs" role="tablist" aria-label="List sections">
+        <button type="button" role="tab" id="tab-list" data-tab="list" aria-selected="true">List <span class="tab-count">${items.results.length}</span></button>
+        ${fandleSection ? `<button type="button" role="tab" id="tab-fandles" data-tab="fandles" aria-selected="false" tabindex="-1">Fan-dles <span class="tab-count">${fandleGames.length > 0 ? fandleGames.length : ""}</span></button>` : ""}
+        <button type="button" role="tab" id="tab-suggest" data-tab="suggest" aria-selected="false" tabindex="-1">Suggestions <span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>
+      </div>
       <details class="suggest-panel" id="suggest-panel">
         <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
         <div class="suggest-body">
@@ -3134,9 +3140,49 @@ app.get("/lists/:slug", async (c) => {
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
       ${!suggestionsOn ? "" : `</div>${fandleSection}</div>`}
-      ${fandleNotice ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
+      ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
       ${suggestionsOn ? "" : fandleSection}
     </main>
+    ${suggestionsOn ? `<script>
+      // Phones: the list, Fan-dles and suggestions are tabs. Wider screens show them side by side and hide the tab bar.
+      (() => {
+        const layout = document.querySelector(".list-layout");
+        const tabs = [...document.querySelectorAll(".list-tabs [role=tab]")];
+        if (!layout || tabs.length === 0) return;
+        const names = tabs.map((tab) => tab.dataset.tab);
+        const wide = window.matchMedia("(min-width: 900px)");
+        const select = (name, focus) => {
+          layout.dataset.tab = name;
+          tabs.forEach((tab) => {
+            const on = tab.dataset.tab === name;
+            tab.setAttribute("aria-selected", on ? "true" : "false");
+            tab.tabIndex = on ? 0 : -1;
+            if (on && focus) tab.focus();
+          });
+          const panel = document.getElementById("suggest-panel");
+          if (name === "suggest" && panel) panel.open = true;
+          if (!wide.matches) { try { history.replaceState(null, "", "#" + name); } catch {} }
+        };
+        tabs.forEach((tab, index) => {
+          tab.addEventListener("click", () => select(tab.dataset.tab));
+          tab.addEventListener("keydown", (event) => {
+            const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+            if (!step) return;
+            event.preventDefault();
+            select(names[(index + step + names.length) % names.length], true);
+          });
+        });
+        const fromHash = window.location.hash.slice(1);
+        select(names.includes(fromHash) ? fromHash : names.includes(layout.dataset.defaultTab) ? layout.dataset.defaultTab : "list");
+        // Keep the Suggestions tab's number in step with the panel's own count.
+        const count = document.getElementById("suggest-count");
+        const tabCount = document.querySelector("[data-tab-count=suggest]");
+        if (count && tabCount) {
+          const sync = () => { tabCount.textContent = count.textContent.replace(/[()]/g, "").trim(); };
+          new MutationObserver(sync).observe(count, { childList: true, characterData: true, subtree: true });
+        }
+      })();
+    </script>` : ""}
     ${!isAdminEditor ? `<script>
       (() => {
         const panel = document.getElementById("suggest-panel");
@@ -10219,6 +10265,21 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .list-layout.has-fandles .fandles-head { grid-column: 1; }
         .list-layout.has-fandles .fandles-body { grid-column: 1; grid-row: 2 / span 2; }
         .list-layout.has-fandles > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
+      }
+      /* Phones: tabs for the list, Fan-dles and suggestions (the script sets data-tab; without it everything shows). */
+      .list-tabs { display: flex; gap: 0.25rem; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--border); }
+      .list-tabs [role="tab"] { flex: 1 1 0; min-height: 44px; padding: 0.4rem 0.3rem; background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; font-size: 0.95rem; cursor: pointer; }
+      .list-tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand-blue); }
+      .list-tabs .tab-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+      .list-tabs .tab-count:empty { display: none; }
+      @media (min-width: 900px) { .list-tabs { display: none; } }
+      @media (max-width: 899px) {
+        .list-layout[data-tab="list"] > .fandles, .list-layout[data-tab="list"] > .suggest-panel,
+        .list-layout[data-tab="fandles"] > .list-main, .list-layout[data-tab="fandles"] > .suggest-panel,
+        .list-layout[data-tab="suggest"] > .list-main, .list-layout[data-tab="suggest"] > .fandles { display: none; }
+        .list-layout[data-tab] > .suggest-panel { margin-top: 0; }
+        .list-layout[data-tab] > .suggest-panel > summary { display: none; }
+        .list-layout[data-tab] > .fandles { margin-top: 0; }
       }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
