@@ -2961,6 +2961,40 @@ app.get("/lists/:slug", async (c) => {
         .all<{ id: string; title: string; display_name: string | null; hidden: number }>()).results
     : [];
 
+  // Fan-dles section: no vote buttons here, and the streamer / editors get an "Add" button to copy a game to the main list.
+  const onMainList = new Set(items.results.map((item) => item.id));
+  const fandleAddAction = canEdit
+    ? (game: { id: string; title: string }) => (onMainList.has(game.id) ? "" : `<button type="button" data-fandle-add="${escapeHtml(game.id)}" title="Add ${escapeHtml(game.title)} to the main list" aria-label="Add ${escapeHtml(game.title)} to the main list">Add</button>`)
+    : undefined;
+  const fandleSection = fandlesOn && !isAdminEditor && (fandleGames.length > 0 || fandleJoin)
+    ? `<section class="fandles" id="fandles">
+        <h2>Fan-dles</h2>
+        <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
+        ${fandleGames.length > 0 ? renderCompactGameList(fandleGames, user, fandleViewer.votes, fandleViewer.favorites, { showVotes: false, extraActions: fandleAddAction }) : ""}
+        ${fandleJoin ? `<div class="panel fandle-join">${fandleJoin}</div>
+        <script>
+          document.getElementById("fandle-leave")?.addEventListener("click", async (event) => {
+            const res = await fetch("/api/lists/" + event.currentTarget.getAttribute("data-list-id") + "/fandle-membership", { method: "DELETE" }).catch(() => null);
+            if (res && res.ok) window.location.reload();
+          });
+        </script>` : ""}
+        ${canEdit && fandleGames.length > 0 ? `<script>
+          document.querySelectorAll("[data-fandle-add]").forEach((button) => {
+            button.addEventListener("click", async () => {
+              button.disabled = true;
+              const res = await fetch("/api/lists/" + ${scriptJson(list.id)} + "/items", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ gameId: button.getAttribute("data-fandle-add"), position: ${items.results.length + 1} })
+              }).catch(() => null);
+              if (res && res.ok) window.location.reload();
+              else { button.disabled = false; if (window.appToast) window.appToast("Could not add the game.", "error"); }
+            });
+          });
+        </script>` : ""}
+      </section>`
+    : "";
+
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${suggestionsOn ? " list-page" : ""}">
       <div class="list-head">
@@ -3070,20 +3104,9 @@ app.get("/lists/:slug", async (c) => {
         }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
-      ${!suggestionsOn ? "" : `</div></div>`}
+      ${!suggestionsOn ? "" : `</div>${fandleSection}</div>`}
       ${fandleNotice ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
-      ${fandlesOn && !isAdminEditor && (fandleGames.length > 0 || fandleJoin) ? `<section class="fandles" id="fandles">
-        <h2>Fan-dles</h2>
-        <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
-        ${fandleGames.length > 0 ? renderCompactGameList(fandleGames, user, fandleViewer.votes, fandleViewer.favorites) : ""}
-        ${fandleJoin ? `<div class="panel fandle-join">${fandleJoin}</div>
-        <script>
-          document.getElementById("fandle-leave")?.addEventListener("click", async (event) => {
-            const res = await fetch("/api/lists/" + event.currentTarget.getAttribute("data-list-id") + "/fandle-membership", { method: "DELETE" }).catch(() => null);
-            if (res && res.ok) window.location.reload();
-          });
-        </script>` : ""}
-      </section>` : ""}
+      ${suggestionsOn ? "" : fandleSection}
     </main>
     ${!isAdminEditor ? `<script>
       (() => {
@@ -8381,11 +8404,13 @@ function renderCompactGameList(
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
-  userFavorites: Set<string>
+  userFavorites: Set<string>,
+  opts: { showVotes?: boolean; extraActions?: (game: { id: string; title: string; slug: string }) => string } = {}
 ): string {
   if (games.length === 0) {
     return "<p>No games found.</p>";
   }
+  const showVotes = opts.showVotes !== false;
 
   return `<ul class="games compact">
     ${games
@@ -8401,8 +8426,10 @@ function renderCompactGameList(
                 ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               </div>
               <div class="compact-actions">
-                <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${game.voteUpCount}</span></button>
+                ${showVotes ? `                <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${game.voteUpCount}</span></button>
                 <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}" title="Vote down">▼ <span data-down-count>${game.voteDownCount}</span></button>
+                ` : ""}
+                ${opts.extraActions ? opts.extraActions(game) : ""}
                 ${
                   user
                     ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}" aria-label="Favorite">${currentFavorite ? "★" : "☆"}</button>`
@@ -10017,14 +10044,17 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* From 900px (landscape phones and "desktop site" mode lay out at about 900-980px) the panel moves to the right of the list. */
       @media (min-width: 900px) {
         main.list-page { max-width: 1200px; }
-        .list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 270px; column-gap: 1rem; row-gap: 0; align-items: start; }
+        .list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 270px; grid-template-rows: auto auto 1fr auto; column-gap: 1rem; row-gap: 0; align-items: start; }
         /* The sort control, list and status line become grid items, so the panel (first in the page, so it sits above
            the list on phones) can start level with the first card in the right-hand column. */
         .list-main { display: contents; }
         #list-sort-wrap { grid-column: 1; grid-row: 1; }
-        .list-layout #list-items { grid-column: 1; grid-row: 2; }
-        .list-layout #list-reorder-status { grid-column: 1; grid-row: 3; }
-        .suggest-panel { grid-column: 2; grid-row: 2 / span 2; margin: 1em 0 0; } /* 1em: the list's own top margin */
+        .list-layout #list-items { grid-column: 1; grid-row: 2 / span 2; }
+        .list-layout #list-reorder-status { grid-column: 1; grid-row: 4; }
+        .suggest-panel { grid-column: 2; grid-row: 2; margin: 1em 0 0; }
+        /* Fan-dles sit in the right-hand column, under the suggestions. */
+        .list-layout > .fandles { grid-column: 2; grid-row: 3; margin-top: 1.5rem; }
+        .list-layout > .fandles h2 { font-size: 1.15rem; } /* 1em: the list's own top margin */
         .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
         .suggest-panel > summary::-webkit-details-marker { display: none; }
       }
