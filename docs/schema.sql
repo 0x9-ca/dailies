@@ -261,6 +261,13 @@ CREATE TABLE sessions (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE site_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_by_user_id TEXT REFERENCES users(id),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,

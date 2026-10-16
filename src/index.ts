@@ -13,7 +13,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
-import { FANDLE_MAX_PER_DEVELOPER, FANDLE_MAX_SHOWN, FANDLE_MEMBERSHIP_DAYS, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
+import { FANDLE_HARD_MAX_SHOWN, FANDLE_MEMBERSHIP_DAYS, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
@@ -2870,7 +2870,8 @@ app.get("/lists/:slug", async (c) => {
   // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
   const fandlesAvailable = !!list.is_creator_list && !!list.twitch_user_id && list.visibility === "public";
   const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
-  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: FANDLE_MAX_SHOWN, fandleListId: list.id }) : [];
+  const fandleLimits = fandlesOn && !isAdminEditor ? await getFandleLimits(c.env) : { perDeveloper: null, shown: null };
+  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper }) : [];
   const fandleViewer = fandleGames.length > 0 ? await getViewerGameState(c, fandleGames.map((game) => game.id)) : { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() };
   const fandleNotice = (({
     joined: "You're in. Your verified games now show in Fan-dles below.",
@@ -3921,6 +3922,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/reports">Review reports</a>
         <a class="panel" href="/admin/claims">Developer claims</a>
         <a class="panel" href="/admin/creators">Verified creators</a>
+        ${auth.role === "admin" ? `<a class="panel" href="/admin/settings">Site settings</a>` : ""}
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
       </div>
@@ -4179,6 +4181,102 @@ app.get("/admin/claims", async (c) => {
       });
     </script>
   `, c.env));
+});
+
+/** Site settings (key/value, set at /admin/settings). A missing key means the default. */
+async function getSiteSettings(env: Env, keys: string[]): Promise<Map<string, string>> {
+  const rows = await env.DB.prepare(`SELECT key, value FROM site_settings WHERE key IN (${keys.map((_, i) => `?${i + 1}`).join(",")})`)
+    .bind(...keys)
+    .all<{ key: string; value: string }>();
+  return new Map(rows.results.map((row) => [row.key, row.value]));
+}
+
+/** Fan-dles caps: null means no limit (the default). */
+async function getFandleLimits(env: Env): Promise<{ perDeveloper: number | null; shown: number | null }> {
+  const settings = await getSiteSettings(env, [FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN]);
+  const parse = (value: string | undefined) => {
+    const n = Number(value);
+    return Number.isInteger(n) && n >= 1 ? n : null;
+  };
+  return { perDeveloper: parse(settings.get(FANDLE_SETTING_MAX_PER_DEVELOPER)), shown: parse(settings.get(FANDLE_SETTING_MAX_SHOWN)) };
+}
+
+app.get("/admin/settings", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const limits = await getFandleLimits(c.env);
+  return c.html(await layout("Settings", auth, `
+    <main class="narrow">
+      <h1>Site settings</h1>
+      <section class="panel">
+        <h2>Fan-dles limits</h2>
+        <p>How many community games a streamer's Fan-dles section shows. Leave a box empty for no limit. Games are picked best-scoring first. With no total set, at most ${FANDLE_HARD_MAX_SHOWN} are shown.</p>
+        <form id="settings-form" class="stack-form">
+          <label>Most games per developer <small>(empty = no limit)</small>
+            <input type="number" name="perDeveloper" min="1" max="${FANDLE_SETTING_LIMIT_MAX}" inputmode="numeric" value="${limits.perDeveloper ?? ""}" />
+          </label>
+          <label>Most games in total <small>(empty = no limit)</small>
+            <input type="number" name="shown" min="1" max="${FANDLE_SETTING_LIMIT_MAX}" inputmode="numeric" value="${limits.shown ?? ""}" />
+          </label>
+          <button type="submit" class="btn">Save</button>
+        </form>
+        <p id="settings-status" class="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script>
+      const settingsForm = document.getElementById("settings-form");
+      settingsForm?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const data = new FormData(settingsForm);
+        const num = (name) => { const raw = String(data.get(name) || "").trim(); return raw === "" ? null : Number(raw); };
+        const statusNode = document.getElementById("settings-status");
+        statusNode.textContent = "Saving...";
+        const res = await fetch("/api/admin/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fandleMaxPerDeveloper: num("perDeveloper"), fandleMaxShown: num("shown") })
+        });
+        const body = await res.json().catch(() => ({}));
+        statusNode.textContent = res.ok ? "Saved." : body.error || "Could not save.";
+        if (window.appToast) window.appToast(statusNode.textContent, res.ok ? "success" : "error");
+      });
+    </script>
+  `, c.env));
+});
+
+const siteSettingsSchema = z.object({
+  fandleMaxPerDeveloper: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable(),
+  fandleMaxShown: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable()
+});
+
+app.put("/api/admin/settings", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = siteSettingsSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: `Enter a whole number from 1 to ${FANDLE_SETTING_LIMIT_MAX}, or leave it empty for no limit` }, 400);
+  }
+  const entries: Array<[string, number | null]> = [
+    [FANDLE_SETTING_MAX_PER_DEVELOPER, parsed.data.fandleMaxPerDeveloper],
+    [FANDLE_SETTING_MAX_SHOWN, parsed.data.fandleMaxShown]
+  ];
+  await c.env.DB.batch(
+    entries.map(([key, value]) =>
+      value === null
+        ? c.env.DB.prepare("DELETE FROM site_settings WHERE key = ?1").bind(key)
+        : c.env.DB.prepare(
+            `INSERT INTO site_settings (key, value, updated_by_user_id, updated_at) VALUES (?1, ?2, ?3, datetime('now'))
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by_user_id = excluded.updated_by_user_id, updated_at = excluded.updated_at`
+          ).bind(key, String(value), auth.id)
+    )
+  );
+  await writeAudit(c.env, auth.id, "settings", "site", "update_settings", Object.fromEntries(entries));
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
 });
 
 app.get("/admin/creators", async (c) => {
@@ -7635,6 +7733,8 @@ async function listGames(
     developerUserId?: string;
     /** Only the Fan-dles of this creator list: games of its current members, a few per developer, minus hidden ones. */
     fandleListId?: string;
+    /** With fandleListId: most games per developer (none = no limit). */
+    fandlePerDeveloper?: number | null;
   }
 ): Promise<
   Array<{
@@ -7715,7 +7815,7 @@ async function listGames(
         WHERE fm.list_id = ? AND fm.expires_at > datetime('now')
           AND gc.game_id NOT IN (SELECT game_id FROM fandle_hidden WHERE list_id = ?)
           AND gc.game_id NOT IN (SELECT game_id FROM curated_list_items WHERE curated_list_id = ?)
-      ) WHERE rn <= ${FANDLE_MAX_PER_DEVELOPER}
+      )${opts.fandlePerDeveloper && Number.isInteger(opts.fandlePerDeveloper) ? ` WHERE rn <= ${opts.fandlePerDeveloper}` : ""}
     )`;
     params.push(opts.fandleListId, opts.fandleListId, opts.fandleListId);
   }
