@@ -52,6 +52,7 @@
 
 - `POST /auth/twitch/fandle` (form field `list` = creator list slug; verified developers only. Starts a Twitch authorization with the `user:read:follows` and `user:read:subscriptions` scopes, then redirects back to the list with `?fandle=joined|not_following|too_new|cancelled|conflict|need_claim|self|error`)
 - `DELETE /api/lists/:id/fandle-membership` (leave a list's Fan-dles)
+- `GET /api/admin/developers?q=` (admin only: verified developers by name or handle), `POST /api/lists/:id/fandle-members` (`{ userId }`) and `DELETE /api/lists/:id/fandle-members/:userId` (admin only: add or remove a Fan-dles member by hand)
 - `PUT /api/lists/:id/fandles/:gameId/hidden` (`{ hidden }`; the list's owner or staff)
 - `PATCH /api/lists/:id` also takes `fandlesEnabled`
 
