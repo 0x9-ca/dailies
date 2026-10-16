@@ -48,6 +48,13 @@
 
 - `PUT /api/me/public-profile` (`{ public, handle, showRotation, showTwitch, avatarProvider }`; the profile page `GET /u/:handle` is a 404 unless `public` is on, except for its owner. 409 handle taken, 400 invalid or reserved handle, or Twitch/avatar provider not linked)
 
+## Fan-dles (signed-in user)
+
+- `POST /auth/twitch/fandle` (form field `list` = creator list slug; verified developers only. Starts a Twitch authorization with the `user:read:follows` and `user:read:subscriptions` scopes, then redirects back to the list with `?fandle=joined|not_following|too_new|cancelled|conflict|need_claim|self|error`)
+- `DELETE /api/lists/:id/fandle-membership` (leave a list's Fan-dles)
+- `PUT /api/lists/:id/fandles/:gameId/hidden` (`{ hidden }`; the list's owner or staff)
+- `PATCH /api/lists/:id` also takes `fandlesEnabled`
+
 ## Developer claims (signed-in user)
 
 - `POST /api/games` also takes `isDeveloper: true` (signed-in submitters: starts a developer claim on the new game, response `claim: true`); a duplicate URL returns 409 with `code: "duplicate"` and the listed game's `slug`

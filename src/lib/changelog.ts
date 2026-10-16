@@ -10,6 +10,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "Game pages no longer run off the edge of a phone screen.",
       "Main buttons such as Play and Browse games are now bright blue, so they no longer look disabled in the dark theme.",
       "The time zone field is now a regular picker with the most common zones (UTC, the US ones and the main European ones) at the top, so it no longer opens over the keyboard on phones.",
+      "Fan-dles: a section on a streamer's list for games made by their community. Verified developers who subscribe to the streamer, or have followed them for over a week, can show their games there after a one-time Twitch check. Streamers can hide a game or switch the section off.",
       "The submit form has an optional \"How to play\" box, shown on the game's page once an editor approves it.",
       "Submitting a game now asks if you made it. Say yes (and sign in, if you aren't) to start becoming its verified developer, and your answers are kept while you sign in. Once verified, you're offered a link to the game's page on 0x9 dles to share from your game and your socials.",
       "Twitch affiliates and partners are now verified creators when they sign in. They get a verified check and a public list of their own, open to suggestions from viewers, which they can edit or make private any time. If an editor already had a list for their channel, its games are copied over.",

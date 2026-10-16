@@ -13,6 +13,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
+import { FANDLE_MAX_PER_DEVELOPER, FANDLE_MAX_SHOWN, FANDLE_MEMBERSHIP_DAYS, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
@@ -151,6 +152,23 @@ app.get("/auth/mock-login/:role", async (c) => {
 
 // Development-only stand-in for a Discord/Twitch sign-in: runs the same completeOAuth() as the real callbacks with a
 // made-up provider account id, to test login, linking (?link=1) and merging locally. Same gate as mock login.
+// Development only: stands in for the Twitch follow/sub check on Fan-dles (?followDays=10 and/or ?sub=1).
+app.get("/auth/mock-fandle/:slug", async (c) => {
+  const user = c.get("user");
+  if (!mockAuthAllowed(c) || !user) {
+    return c.text("Not found", 404);
+  }
+  const slug = c.req.param("slug");
+  const list = await getFandleList(c.env, slug);
+  if (!list) return c.text("Not found", 404);
+  const days = Number(c.req.query("followDays") ?? "");
+  const rel: FandleRelationship = {
+    followedAt: Number.isFinite(days) && c.req.query("followDays") !== undefined ? new Date(Date.now() - days * 86_400_000).toISOString() : null,
+    subscribed: c.req.query("sub") === "1"
+  };
+  return c.redirect(`/lists/${encodeURIComponent(slug)}?fandle=${(await applyFandleResult(c.env, list, user.id, rel)).code}`);
+});
+
 app.get("/auth/mock-oauth/:provider/:providerUserId", async (c) => {
   const provider = c.req.param("provider");
   if (!mockAuthAllowed(c) || (provider !== "discord" && provider !== "twitch")) {
@@ -258,12 +276,107 @@ app.post("/auth/:provider/link", (c) => {
   return beginOAuth(c, provider, "link");
 });
 
+// Fan-dles: a verified developer proves they follow or subscribe to a streamer, so their games show in that streamer's
+// Fan-dles. This is the only place Twitch is asked for scopes (follows and subscriptions); ordinary sign-ins ask for none.
+// POST, so other sites can't start it. The token is used once for the check and revoked right after.
+app.post("/auth/twitch/fandle", async (c) => {
+  const user = c.get("user");
+  if (!user) {
+    return c.redirect("/login");
+  }
+  if (!c.env.OAUTH_TWITCH_CLIENT_ID) {
+    return c.text("Twitch OAuth not configured", 501);
+  }
+  const slug = String((await c.req.parseBody().catch(() => ({})) as Record<string, unknown>).list ?? "");
+  const list = await getFandleList(c.env, slug);
+  const back = (code: string) => c.redirect(`/lists/${encodeURIComponent(slug)}?fandle=${code}`);
+  if (!list) return notFoundPage(c);
+  if (list.owner_user_id === user.id) return back("self");
+  if (!(await hasVerifiedClaim(c.env, user.id))) return back("need_claim");
+  setCookie(c, "fandle_list", list.slug, { path: "/", httpOnly: true, sameSite: "Lax", secure: wantsSecureCookies(c.env), maxAge: 600 });
+  return beginOAuth(c, "twitch", "fandle", FANDLE_SCOPES);
+});
+
+type FandleList = { id: string; slug: string; owner_user_id: string; twitch_user_id: string };
+
+/** A creator list that takes Fan-dles: public, tagged with a Twitch channel, and with Fan-dles switched on. */
+async function getFandleList(env: Env, slug: string): Promise<FandleList | null> {
+  return env.DB.prepare(
+    `SELECT curated_lists.id, curated_lists.slug, curated_lists.owner_user_id, curated_lists.twitch_user_id
+     FROM curated_lists JOIN users ON users.id = curated_lists.owner_user_id
+     WHERE curated_lists.slug = ?1 AND curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL
+       AND curated_lists.visibility = 'public' AND curated_lists.twitch_user_id IS NOT NULL AND curated_lists.fandles_enabled = 1`
+  )
+    .bind(slug)
+    .first<FandleList>();
+}
+
+async function hasVerifiedClaim(env: Env, userId: string): Promise<boolean> {
+  return !!(await env.DB.prepare("SELECT 1 AS ok FROM game_claims WHERE user_id = ?1 AND status = 'verified' LIMIT 1").bind(userId).first());
+}
+
+/**
+ * Turns a Twitch relationship into Fan-dles membership. Returns the code shown on the list page: "joined" (follow or
+ * sub), "not_following", "too_new" (followed under a week ago), or "error".
+ */
+async function applyFandleResult(env: Env, list: FandleList, userId: string, rel: FandleRelationship): Promise<{ code: string; source?: string }> {
+  const decision = decideFandle(rel);
+  if (!decision.ok) {
+    return { code: decision.reason };
+  }
+  await env.DB.prepare(
+    `INSERT INTO fandle_members (list_id, user_id, source, followed_at, verified_at, expires_at)
+     VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now', ?5))
+     ON CONFLICT (list_id, user_id) DO UPDATE SET source = excluded.source, followed_at = excluded.followed_at,
+       verified_at = excluded.verified_at, expires_at = excluded.expires_at`
+  )
+    .bind(list.id, userId, decision.source, rel.followedAt, `+${FANDLE_MEMBERSHIP_DAYS} days`)
+    .run();
+  await writeAudit(env, userId, "list", list.id, "fandle_join", { source: decision.source });
+  await invalidateGameCaches(env);
+  return { code: "joined", source: decision.source };
+}
+
+async function completeFandleVerification(
+  c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
+  accessToken: string,
+  twitchUser: { id: string; login?: string; display_name?: string; profile_image_url?: string; broadcaster_type?: string }
+): Promise<Response> {
+  const slug = getCookie(c, "fandle_list") ?? "";
+  deleteCookie(c, "fandle_list", { path: "/" });
+  const user = c.get("user");
+  if (!user || !slug) {
+    return c.redirect(user ? "/" : "/login");
+  }
+  const back = (code: string) => c.redirect(`/lists/${encodeURIComponent(slug)}?fandle=${code}`);
+  const list = await getFandleList(c.env, slug);
+  if (!list) return back("error");
+  if (list.owner_user_id === user.id || twitchUser.id === list.twitch_user_id) return back("self");
+  // The Twitch account used has to be this account's: link it if it isn't yet (as Settings would), refuse a clash.
+  const linked = await linkOAuthAccount(c.env, user.id, {
+    provider: "twitch",
+    providerUserId: twitchUser.id,
+    displayName: twitchUser.display_name || twitchUser.login || null,
+    avatarUrl: twitchUser.profile_image_url ?? null,
+    twitchLogin: twitchUser.login ?? null,
+    creatorType: twitchUser.broadcaster_type === "partner" ? "partner" : twitchUser.broadcaster_type === "affiliate" ? "affiliate" : null
+  });
+  if (linked === "conflict") return back("conflict");
+  try {
+    const rel = await fetchTwitchRelationship(c.env.OAUTH_TWITCH_CLIENT_ID!, accessToken, twitchUser.id, list.twitch_user_id);
+    return back((await applyFandleResult(c.env, list, user.id, rel)).code);
+  } catch (error) {
+    if (error instanceof TwitchCheckError) return back("error");
+    throw error;
+  }
+}
+
 app.get("/auth/twitch/callback", async (c) => {
   const callback = readOAuthCallback(c, "twitch");
   if (callback instanceof Response) {
     return callback;
   }
-  const { code, link } = callback;
+  const { code, link, fandle } = callback;
   if (!c.env.OAUTH_TWITCH_CLIENT_ID || !c.env.OAUTH_TWITCH_CLIENT_SECRET) {
     return c.text("Twitch OAuth not configured", 501);
   }
@@ -281,6 +394,10 @@ app.get("/auth/twitch/callback", async (c) => {
       : undefined;
     if (!twitchUser?.id) {
       return c.text("OAuth profile fetch failed", 400);
+    }
+
+    if (fandle) {
+      return await completeFandleVerification(c, accessToken, twitchUser);
     }
 
     return await completeOAuth(
@@ -2697,14 +2814,14 @@ app.get("/lists/:slug", async (c) => {
   const isStaff = !!user && (user.role === "editor" || user.role === "admin");
   const list = await c.env.DB.prepare(
     `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
-            curated_lists.twitch_login, curated_lists.twitch_user_id, curated_lists.suggestions_enabled,
+            curated_lists.twitch_login, curated_lists.twitch_user_id, curated_lists.suggestions_enabled, curated_lists.fandles_enabled,
             CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list
      FROM curated_lists
      LEFT JOIN users ON users.id = curated_lists.owner_user_id
      WHERE curated_lists.slug = ?1`
   )
     .bind(slug)
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; suggestions_enabled: number }>();
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; fandles_enabled: number; suggestions_enabled: number }>();
   const userTwitchId = await getUserTwitchId(c.env, user);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return notFoundPage(c);
@@ -2750,6 +2867,51 @@ app.get("/lists/:slug", async (c) => {
   const suggestionsOn = !isAdminEditor && list.suggestions_enabled === 1;
   const suggestions = suggestionsOn ? await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null) : [];
 
+  // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
+  const fandlesAvailable = !!list.is_creator_list && !!list.twitch_user_id && list.visibility === "public";
+  const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
+  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: FANDLE_MAX_SHOWN, fandleListId: list.id }) : [];
+  const fandleViewer = fandleGames.length > 0 ? await getViewerGameState(c, fandleGames.map((game) => game.id)) : { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() };
+  const fandleNotice = (({
+    joined: "You're in. Your verified games now show in Fan-dles below.",
+    not_following: "Twitch says you don't follow or subscribe to this channel yet. Follow it for a week (or subscribe), then check again.",
+    too_new: `You've followed this channel for under ${FANDLE_MIN_FOLLOW_DAYS} days. Check again once it has been a week, or subscribe to join now.`,
+    cancelled: "No problem. Nothing was checked or saved.",
+    conflict: "That Twitch account is already used by another 0x9 dles account, so it can't be checked from this one.",
+    need_claim: "Only verified developers can show games here. Verify a game you made first.",
+    self: "This is your own list.",
+    error: "Twitch couldn't check that just now. Please try again in a minute."
+  }) as Record<string, string>)[c.req.query("fandle") ?? ""];
+  let fandleJoin = "";
+  if (fandlesOn && user && !isCreatorOwner && !isAdminEditor) {
+    const membership = await c.env.DB.prepare("SELECT source, expires_at FROM fandle_members WHERE list_id = ?1 AND user_id = ?2 AND expires_at > datetime('now')")
+      .bind(list.id, user.id)
+      .first<{ source: string; expires_at: string }>();
+    if (await hasVerifiedClaim(c.env, user.id)) {
+      const formHtml = (label: string) => `<form method="post" action="/auth/twitch/fandle" class="fandle-form"><input type="hidden" name="list" value="${escapeHtml(list.slug)}" /><button type="submit" class="btn">${label}</button></form>`;
+      fandleJoin = membership
+        ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : "follower"}) until ${escapeHtml(membership.expires_at.slice(0, 10))}.</p>
+           <div class="actions">${formHtml("Check again")}<button type="button" id="fandle-leave" data-list-id="${escapeHtml(list.id)}">Leave Fan-dles</button></div>`
+        : `<p><strong>Made a game?</strong> Show it in this community's Fan-dles. Subscribers qualify straight away, and followers after ${FANDLE_MIN_FOLLOW_DAYS} days. We ask Twitch once, with your permission, whether you follow or subscribe to this channel. Nothing else is read, and we don't keep access to your Twitch account.</p>
+           ${formHtml("Check with Twitch")}`;
+    }
+  }
+  // Editors and the streamer manage which Fan-dles show.
+  const fandleManage = isAdminEditor && fandlesAvailable
+    ? (await c.env.DB.prepare(
+        `SELECT games.id, games.title, users.display_name,
+                EXISTS(SELECT 1 FROM fandle_hidden WHERE list_id = ?1 AND game_id = games.id) AS hidden
+         FROM fandle_members fm
+         JOIN game_claims gc ON gc.user_id = fm.user_id AND gc.status = 'verified'
+         JOIN games ON games.id = gc.game_id AND games.status = 'approved'
+         JOIN users ON users.id = fm.user_id
+         WHERE fm.list_id = ?1 AND fm.expires_at > datetime('now')
+         ORDER BY games.title ASC LIMIT 100`
+      )
+        .bind(list.id)
+        .all<{ id: string; title: string; display_name: string | null; hidden: number }>()).results
+    : [];
+
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${suggestionsOn ? " list-page" : ""}">
       <div class="list-head">
@@ -2768,6 +2930,7 @@ app.get("/lists/:slug", async (c) => {
             ${isStaff ? `<input type="text" name="slug" value="${escapeHtml(list.slug)}" required pattern="[a-z0-9-]+" title="Lowercase alphanumeric with hyphens" />` : ""}
             <textarea name="description" rows="2" placeholder="Description" aria-label="Description">${escapeHtml(list.description || "")}</textarea>
             <label class="check"><input type="checkbox" id="list-suggestions-toggle"${list.suggestions_enabled === 1 ? " checked" : ""} /> Allow suggestions <small class="muted">(turning this off hides the panel; existing suggestions are kept)</small></label>
+            ${fandlesAvailable ? `<label class="check"><input type="checkbox" id="list-fandles-toggle"${list.fandles_enabled === 1 ? " checked" : ""} /> Show Fan-dles <small class="muted">(games made by verified developers who follow or subscribe to this channel)</small></label>` : ""}
             <div class="actions">
               <button type="submit">Save details</button>
               ${canSetVisibility ? `<button type="button" id="list-visibility-toggle">Set ${list.visibility === "public" ? "private" : "public"}</button>` : ""}
@@ -2776,6 +2939,14 @@ app.get("/lists/:slug", async (c) => {
           </form>
           <p id="list-edit-status" class="status" aria-live="polite"></p>
         </section>
+        ${fandlesAvailable ? `<section class="panel">
+          <h2>Fan-dles</h2>
+          ${fandleManage.length === 0 ? `<p class="muted">No community games yet. They show up here after a verified developer who follows or subscribes to ${escapeHtml(list.twitch_login || "this channel")} checks in from this page.</p>` : `<ul class="stack">${fandleManage
+            .map((game) => `<li class="panel"><strong>${escapeHtml(game.title)}</strong> <small class="muted">by ${escapeHtml(game.display_name || "a community member")}${game.hidden ? " · hidden" : ""}</small>
+              <div class="actions"><button type="button" data-fandle-hidden="${game.hidden ? "0" : "1"}" data-game-id="${escapeHtml(game.id)}">${game.hidden ? "Show again" : "Hide"}</button></div></li>`)
+            .join("")}</ul>`}
+          <p id="fandle-status" class="status" aria-live="polite"></p>
+        </section>` : ""}
         ${isStaff ? `<section class="panel">
           <h2>Twitch owner</h2>
           <p>Tagging a Twitch user adds a verified checkmark and a channel link, and lets that user edit this list's games, title and description when logged in with Twitch.</p>
@@ -2851,6 +3022,19 @@ app.get("/lists/:slug", async (c) => {
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
       ${!suggestionsOn ? "" : `</div></div>`}
+      ${fandleNotice ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
+      ${fandlesOn && !isAdminEditor && (fandleGames.length > 0 || fandleJoin) ? `<section class="fandles" id="fandles">
+        <h2>Fan-dles</h2>
+        <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
+        ${fandleGames.length > 0 ? renderCompactGameList(fandleGames, user, fandleViewer.votes, fandleViewer.favorites) : ""}
+        ${fandleJoin ? `<div class="panel fandle-join">${fandleJoin}</div>
+        <script>
+          document.getElementById("fandle-leave")?.addEventListener("click", async (event) => {
+            const res = await fetch("/api/lists/" + event.currentTarget.getAttribute("data-list-id") + "/fandle-membership", { method: "DELETE" }).catch(() => null);
+            if (res && res.ok) window.location.reload();
+          });
+        </script>` : ""}
+      </section>` : ""}
     </main>
     ${!isAdminEditor ? `<script>
       (() => {
@@ -3274,6 +3458,37 @@ app.get("/lists/:slug", async (c) => {
             box.checked = !box.checked;
             setStatus("Could not save.");
           }
+        });
+
+        document.getElementById("list-fandles-toggle")?.addEventListener("change", async (e) => {
+          const box = e.target;
+          box.disabled = true;
+          setStatus("Saving...");
+          const res = await fetch("/api/lists/" + listId, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fandlesEnabled: box.checked })
+          }).catch(() => null);
+          box.disabled = false;
+          if (res && res.ok) {
+            setStatus(box.checked ? "Fan-dles are on." : "Fan-dles are off.");
+          } else {
+            box.checked = !box.checked;
+            setStatus("Could not save.");
+          }
+        });
+
+        document.querySelectorAll("[data-fandle-hidden]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const hide = button.getAttribute("data-fandle-hidden") === "1";
+            const res = await fetch("/api/lists/" + listId + "/fandles/" + button.getAttribute("data-game-id") + "/hidden", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ hidden: hide })
+            }).catch(() => null);
+            if (res && res.ok) window.location.reload();
+            else { const node = document.getElementById("fandle-status"); if (node) node.textContent = "Could not save."; }
+          });
         });
 
         document.getElementById("list-twitch-form")?.addEventListener("submit", async (e) => {
@@ -6016,7 +6231,8 @@ const updateListSchema = z.object({
   title: z.string().min(2).max(100).optional(),
   description: z.string().max(300).optional(),
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
-  suggestionsEnabled: z.boolean().optional()
+  suggestionsEnabled: z.boolean().optional(),
+  fandlesEnabled: z.boolean().optional()
 });
 
 app.post("/api/lists", async (c) => {
@@ -6072,9 +6288,9 @@ app.patch("/api/lists/:id", async (c) => {
     return c.json({ error: "Invalid payload" }, 400);
   }
   const isStaff = auth.role === "editor" || auth.role === "admin";
-  const existing = await c.env.DB.prepare("SELECT title, description, slug, suggestions_enabled FROM curated_lists WHERE id = ?1")
+  const existing = await c.env.DB.prepare("SELECT title, description, slug, suggestions_enabled, fandles_enabled FROM curated_lists WHERE id = ?1")
     .bind(listId)
-    .first<{ title: string; description: string | null; slug: string; suggestions_enabled: number }>();
+    .first<{ title: string; description: string | null; slug: string; suggestions_enabled: number; fandles_enabled: number }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
   }
@@ -6091,7 +6307,7 @@ app.patch("/api/lists/:id", async (c) => {
   }
   await c.env.DB.prepare(
     `UPDATE curated_lists
-     SET title = ?1, description = ?2, slug = ?3, updated_by_user_id = ?4, updated_at = datetime('now'), suggestions_enabled = ?6
+     SET title = ?1, description = ?2, slug = ?3, updated_by_user_id = ?4, updated_at = datetime('now'), suggestions_enabled = ?6, fandles_enabled = ?7
      WHERE id = ?5`
   )
     .bind(
@@ -6100,11 +6316,45 @@ app.patch("/api/lists/:id", async (c) => {
       parsed.data.slug ?? existing.slug,
       auth.id,
       listId,
-      parsed.data.suggestionsEnabled === undefined ? existing.suggestions_enabled : parsed.data.suggestionsEnabled ? 1 : 0
+      parsed.data.suggestionsEnabled === undefined ? existing.suggestions_enabled : parsed.data.suggestionsEnabled ? 1 : 0,
+      parsed.data.fandlesEnabled === undefined ? existing.fandles_enabled : parsed.data.fandlesEnabled ? 1 : 0
     )
     .run();
   await writeAudit(c.env, auth.id, "list", listId, "update_list", parsed.data);
   await purgeListPageCache(c, listId);
+  return c.json({ ok: true });
+});
+
+// Fan-dles moderation and membership.
+app.put("/api/lists/:id/fandles/:gameId/hidden", async (c) => {
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ hidden: z.boolean() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const gameId = c.req.param("gameId");
+  if (parsed.data.hidden) {
+    await c.env.DB.prepare("INSERT OR IGNORE INTO fandle_hidden (list_id, game_id, hidden_by_user_id) VALUES (?1, ?2, ?3)").bind(listId, gameId, auth.id).run();
+  } else {
+    await c.env.DB.prepare("DELETE FROM fandle_hidden WHERE list_id = ?1 AND game_id = ?2").bind(listId, gameId).run();
+  }
+  await writeAudit(c.env, auth.id, "list", listId, parsed.data.hidden ? "fandle_hide" : "fandle_unhide", { gameId });
+  await purgeListPageCache(c, listId);
+  return c.json({ ok: true });
+});
+
+// A developer leaves a streamer's Fan-dles (their games stop showing there).
+app.delete("/api/lists/:id/fandle-membership", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  await c.env.DB.prepare("DELETE FROM fandle_members WHERE list_id = ?1 AND user_id = ?2").bind(c.req.param("id"), auth.id).run();
+  await purgeListPageCache(c, c.req.param("id"));
   return c.json({ ok: true });
 });
 
@@ -7383,6 +7633,8 @@ async function listGames(
     hideNsfw?: boolean;
     /** Only games this user is the verified developer of. */
     developerUserId?: string;
+    /** Only the Fan-dles of this creator list: games of its current members, a few per developer, minus hidden ones. */
+    fandleListId?: string;
   }
 ): Promise<
   Array<{
@@ -7452,6 +7704,20 @@ async function listGames(
   if (opts.developerUserId) {
     whereSql += " AND games.id IN (SELECT game_id FROM game_claims WHERE user_id = ? AND status = 'verified')";
     params.push(opts.developerUserId);
+  }
+  if (opts.fandleListId) {
+    whereSql += ` AND games.id IN (
+      SELECT game_id FROM (
+        SELECT gc.game_id AS game_id, ROW_NUMBER() OVER (PARTITION BY fm.user_id ORDER BY g2.score DESC) AS rn
+        FROM fandle_members fm
+        JOIN game_claims gc ON gc.user_id = fm.user_id AND gc.status = 'verified'
+        JOIN games g2 ON g2.id = gc.game_id AND g2.status = 'approved'
+        WHERE fm.list_id = ? AND fm.expires_at > datetime('now')
+          AND gc.game_id NOT IN (SELECT game_id FROM fandle_hidden WHERE list_id = ?)
+          AND gc.game_id NOT IN (SELECT game_id FROM curated_list_items WHERE curated_list_id = ?)
+      ) WHERE rn <= ${FANDLE_MAX_PER_DEVELOPER}
+    )`;
+    params.push(opts.fandleListId, opts.fandleListId, opts.fandleListId);
   }
 
   params.push(...sortParams, opts.limit, opts.offset || 0);
@@ -9224,6 +9490,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .about-categories { list-style: none; padding: 0; margin: 0.5rem 0 0; display: flex; flex-wrap: wrap; gap: 0.5rem; }
       .about-categories .tag { margin: 0; }
       /* Verified developer: an outlined blue pill after the category pills, so it doesn't read as another category. */
+      .fandles { margin-top: 2rem; }
+      .fandle-form { display: inline; margin: 0; }
+      .fandle-join .actions { margin-top: 0.5rem; }
       .category-pills [hidden] { display: none !important; }
       button.tag.pill-more { cursor: pointer; font-family: inherit; line-height: inherit; font-weight: 700; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
       button.tag.pill-more:hover { color: var(--ink); }
@@ -9837,7 +10106,7 @@ function safeNextPath(value: string | undefined | null): string | null {
   return value && value.length <= 200 && /^\/[^/\\]/.test(value) && !/[\r\n]/.test(value) ? value : null;
 }
 
-function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider, intent: "login" | "link"): Response {
+function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, provider: OAuthProvider, intent: "login" | "link" | "fandle", scope?: string): Response {
   // The state cookie ties the callback to this browser, so nobody can log someone else into an attacker's account.
   // It also carries the intent (login, or link to the signed-in account), which the callback trusts only via this cookie.
   const state = randomToken();
@@ -9856,7 +10125,7 @@ function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
   url.searchParams.set("client_id", oauthClientId(c.env, provider) ?? "");
   url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, provider));
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", OAUTH_AUTHORIZE[provider].scope);
+  url.searchParams.set("scope", scope ?? OAUTH_AUTHORIZE[provider].scope);
   url.searchParams.set("state", state);
   return c.redirect(url.toString());
 }
@@ -9865,19 +10134,24 @@ function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
 function readOAuthCallback(
   c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
   provider: OAuthProvider
-): { code: string; link: boolean } | Response {
+): { code: string; link: boolean; fandle: boolean } | Response {
   const state = c.req.query("state");
   const code = c.req.query("code");
   const [storedState, intent] = (getCookie(c, `oauth_state_${provider}`) ?? "").split(".");
   deleteCookie(c, `oauth_state_${provider}`, { path: "/" });
   if (c.req.query("error")) {
     // The user pressed cancel on the provider's consent screen.
+    if (intent === "fandle") {
+      const slug = getCookie(c, "fandle_list");
+      deleteCookie(c, "fandle_list", { path: "/" });
+      return c.redirect(slug ? `/lists/${encodeURIComponent(slug)}?fandle=cancelled` : "/");
+    }
     return c.redirect(intent === "link" ? "/me/settings" : "/login");
   }
   if (!state || !code || !storedState || state !== storedState) {
     return c.text("Invalid OAuth state", 400);
   }
-  return { code, link: intent === "link" };
+  return { code, link: intent === "link", fandle: intent === "fandle" };
 }
 
 type OAuthProfile = {
@@ -10011,6 +10285,7 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     env.DB.prepare("DELETE FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1").bind(fromId),
     reassign("list_suggestions", "suggested_by_user_id"),
     reassign("list_blocked_games", "blocked_by_user_id"),
+    env.DB.prepare("UPDATE OR IGNORE fandle_members SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
     // A claim the target account already has for the same game stays; the other is dropped with the user row.
     env.DB.prepare("UPDATE OR IGNORE game_claims SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
     // Keep a shared-rotation link if only the merged-away account had one (cleared first: the token is unique).

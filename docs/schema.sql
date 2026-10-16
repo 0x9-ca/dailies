@@ -74,7 +74,7 @@ CREATE TABLE curated_lists (
   created_by_user_id TEXT NOT NULL,
   updated_by_user_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'curated' CHECK (kind IN ('curated', 'creator')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'curated' CHECK (kind IN ('curated', 'creator')), fandles_enabled INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY (owner_user_id) REFERENCES users(id),
   FOREIGN KEY (created_by_user_id) REFERENCES users(id),
   FOREIGN KEY (updated_by_user_id) REFERENCES users(id)
@@ -90,6 +90,25 @@ CREATE TABLE discord_role_grants (
   next_check_at TEXT
 );
 CREATE INDEX idx_discord_role_grants_pending ON discord_role_grants(granted_at, next_check_at);
+
+CREATE TABLE fandle_hidden (
+  list_id TEXT NOT NULL REFERENCES curated_lists(id) ON DELETE CASCADE,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  hidden_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (list_id, game_id)
+);
+
+CREATE TABLE fandle_members (
+  list_id TEXT NOT NULL REFERENCES curated_lists(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source TEXT NOT NULL CHECK (source IN ('follow', 'sub')),
+  followed_at TEXT,
+  verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (list_id, user_id)
+);
+CREATE INDEX idx_fandle_members_user ON fandle_members(user_id);
 
 CREATE TABLE favorites (
   user_id TEXT NOT NULL,
