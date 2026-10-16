@@ -51,6 +51,13 @@ CREATE TABLE categories (
   FOREIGN KEY (created_by_user_id) REFERENCES users(id)
 );
 
+CREATE TABLE creator_allowlist (
+  twitch_user_id TEXT PRIMARY KEY,
+  twitch_login TEXT NOT NULL,
+  added_by_user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE curated_list_items (
   curated_list_id TEXT NOT NULL,
   game_id TEXT NOT NULL,
