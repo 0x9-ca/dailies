@@ -291,7 +291,8 @@ app.post("/auth/twitch/fandle", async (c) => {
   const list = await getFandleList(c.env, slug);
   const back = (code: string) => c.redirect(`/lists/${encodeURIComponent(slug)}?fandle=${code}`);
   if (!list) return notFoundPage(c);
-  if (list.owner_user_id === user.id) return back("self");
+  // Only the streamer's own list counts as "yours": an editor-made list is owned by an editor, not by the streamer.
+  if (list.kind === "creator" && list.owner_user_id === user.id) return back("self");
   if (!(await hasVerifiedClaim(c.env, user.id))) return back("need_claim");
   setCookie(c, "fandle_list", list.slug, { path: "/", httpOnly: true, sameSite: "Lax", secure: wantsSecureCookies(c.env), maxAge: 600 });
   return beginOAuth(c, "twitch", "fandle", FANDLE_SCOPES);
@@ -309,12 +310,12 @@ const VERIFIED_LIST_SQL = `(
       AND NOT EXISTS (SELECT 1 FROM curated_lists own WHERE own.kind = 'creator' AND own.twitch_user_id = curated_lists.twitch_user_id))
 )`;
 
-type FandleList = { id: string; slug: string; owner_user_id: string; twitch_user_id: string };
+type FandleList = { id: string; slug: string; owner_user_id: string; kind: string; twitch_user_id: string };
 
 /** A creator list that takes Fan-dles: public, tagged with a Twitch channel, and with Fan-dles switched on. */
 async function getFandleList(env: Env, slug: string): Promise<FandleList | null> {
   return env.DB.prepare(
-    `SELECT curated_lists.id, curated_lists.slug, curated_lists.owner_user_id, curated_lists.twitch_user_id
+    `SELECT curated_lists.id, curated_lists.slug, curated_lists.owner_user_id, curated_lists.kind, curated_lists.twitch_user_id
      FROM curated_lists LEFT JOIN users ON users.id = curated_lists.owner_user_id
      WHERE curated_lists.slug = ?1 AND ${VERIFIED_LIST_SQL}
        AND curated_lists.visibility = 'public' AND curated_lists.twitch_user_id IS NOT NULL AND curated_lists.fandles_enabled = 1`
@@ -363,7 +364,7 @@ async function completeFandleVerification(
   const back = (code: string) => c.redirect(`/lists/${encodeURIComponent(slug)}?fandle=${code}`);
   const list = await getFandleList(c.env, slug);
   if (!list) return back("error");
-  if (list.owner_user_id === user.id || twitchUser.id === list.twitch_user_id) return back("self");
+  if ((list.kind === "creator" && list.owner_user_id === user.id) || twitchUser.id === list.twitch_user_id) return back("self");
   // The Twitch account used has to be this account's: link it if it isn't yet (as Settings would), refuse a clash.
   const linked = await linkOAuthAccount(c.env, user.id, {
     provider: "twitch",
