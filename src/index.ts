@@ -3586,28 +3586,41 @@ app.get("/lists/:slug", async (c) => {
         const devSearch = document.getElementById("fandle-dev-search");
         const devResults = document.getElementById("fandle-dev-results");
         let devTimer = 0;
+        const closeDevResults = () => { devResults.classList.remove("open"); };
         devSearch?.addEventListener("input", () => {
           window.clearTimeout(devTimer);
           devTimer = window.setTimeout(async () => {
             const q = devSearch.value.trim();
             devResults.replaceChildren();
-            if (q.length < 2) return;
+            if (q.length < 2) { closeDevResults(); return; }
             const res = await fetch("/api/admin/developers?q=" + encodeURIComponent(q)).catch(() => null);
             const data = res && res.ok ? await res.json() : { results: [] };
-            if (data.results.length === 0) { const none = document.createElement("div"); none.className = "game-search-item"; none.textContent = "No verified developers found."; devResults.appendChild(none); return; }
+            if (!res || !res.ok) fandleStatus("Could not search developers.");
+            if (data.results.length === 0) {
+              const none = document.createElement("div");
+              none.className = "game-search-item";
+              none.textContent = res && res.ok ? "No verified developers found." : "Search failed.";
+              devResults.appendChild(none);
+            }
             for (const dev of data.results) {
-              const row = document.createElement("button");
-              row.type = "button";
+              const row = document.createElement("div");
               row.className = "game-search-item";
               row.textContent = dev.name + (dev.handle ? " (@" + dev.handle + ")" : "") + " · " + dev.games + " verified game" + (dev.games === 1 ? "" : "s");
-              row.addEventListener("click", async () => {
+              // mousedown, like the game search above, so the pick lands before the box loses focus.
+              row.addEventListener("mousedown", async (event) => {
+                event.preventDefault();
+                closeDevResults();
+                fandleStatus("Adding " + dev.name + "...");
                 const add = await fetch("/api/lists/" + listId + "/fandle-members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: dev.id }) }).catch(() => null);
-                if (add && add.ok) window.location.reload(); else fandleStatus("Could not add that developer.");
+                if (add && add.ok) window.location.reload();
+                else { const body = add ? await add.json().catch(() => ({})) : {}; fandleStatus(body.error || "Could not add that developer."); }
               });
               devResults.appendChild(row);
             }
+            devResults.classList.add("open");
           }, 250);
         });
+        devSearch?.addEventListener("blur", () => window.setTimeout(closeDevResults, 150));
 
         document.querySelectorAll("[data-fandle-hidden]").forEach((button) => {
           button.addEventListener("click", async () => {
