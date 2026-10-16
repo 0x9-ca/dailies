@@ -1514,8 +1514,12 @@ async function syncCreatorStatus(env: Env, userId: string, profile: OAuthProfile
   const row = await env.DB.prepare("SELECT creator_type FROM users WHERE id = ?1").bind(userId).first<{ creator_type: string | null }>();
   if (!row) return;
   let next = row.creator_type;
+  const allowlisted = !!(await env.DB.prepare("SELECT 1 AS ok FROM creator_allowlist WHERE twitch_user_id = ?1").bind(profile.providerUserId).first());
   if (profile.creatorType) {
     next = profile.creatorType;
+  } else if (allowlisted) {
+    // Verified by hand: not an affiliate or partner (any more), but staff have vouched for them.
+    next = "manual";
   } else if (row.creator_type === "affiliate" || row.creator_type === "partner") {
     next = null;
   }
@@ -4307,6 +4311,11 @@ app.get("/admin/creators", async (c) => {
         .bind(`%${q}%`)
         .all<{ id: string; display_name: string | null; created_at: string }>()
     : null;
+  const allowlist = await c.env.DB.prepare(
+    `SELECT creator_allowlist.twitch_user_id, creator_allowlist.twitch_login,
+            EXISTS(SELECT 1 FROM oauth_accounts WHERE provider = 'twitch' AND provider_user_id = creator_allowlist.twitch_user_id) AS signed_up
+     FROM creator_allowlist ORDER BY creator_allowlist.twitch_login`
+  ).all<{ twitch_user_id: string; twitch_login: string; signed_up: number }>();
   const typeLabel: Record<string, string> = { affiliate: "Twitch Affiliate", partner: "Twitch Partner", manual: "Granted by staff" };
   return c.html(await layout("Verified creators", auth, `
     <main>
@@ -4323,6 +4332,18 @@ app.get("/admin/creators", async (c) => {
             <div class="actions"><button type="button" data-creator-action="grant">Make verified creator</button></div></li>`)
           .join("")}</ul>`) : ""}
       </section>
+      <section class="panel">
+        <h2>Verify a Twitch streamer by username</h2>
+        <p>For a streamer who isn't an affiliate or partner, or who hasn't signed in yet. They become a verified creator, with a list of their own, as soon as they sign in with Twitch (straight away if they already have an account).</p>
+        <form id="allowlist-form" class="stack-form">
+          <input name="login" placeholder="Twitch username" aria-label="Twitch username" maxlength="25" pattern="[A-Za-z0-9_]{4,25}" required />
+          <button type="submit" class="btn">Verify streamer</button>
+        </form>
+        ${allowlist.results.length === 0 ? "" : `<ul class="stack">${allowlist.results
+          .map((row) => `<li class="panel" data-twitch-id="${escapeHtml(row.twitch_user_id)}"><strong>${escapeHtml(row.twitch_login)}</strong> <small class="muted">${row.signed_up ? "has an account" : "waiting for their first sign-in"}</small>
+            <div class="actions"><button type="button" class="danger" data-allowlist-remove>Remove</button></div></li>`)
+          .join("")}</ul>`}
+      </section>
       <section>
         <h2>Current creators (${creators.results.length})</h2>
         ${creators.results.length === 0 ? "<p>None yet.</p>" : `<ul class="stack">${creators.results
@@ -4333,6 +4354,26 @@ app.get("/admin/creators", async (c) => {
       <p id="creators-status" class="status" aria-live="polite"></p>
     </main>
     <script>
+      const failWith = (message) => {
+        document.getElementById("creators-status").textContent = message;
+        if (window.appToast) window.appToast(message, "error");
+      };
+      document.getElementById("allowlist-form")?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const login = String(new FormData(event.target).get("login") || "").trim();
+        const res = await fetch("/api/admin/creators/twitch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ login }) });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) window.location.href = "/admin/creators";
+        else failWith(data.error || "Could not verify that streamer.");
+      });
+      document.querySelectorAll("[data-allowlist-remove]").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const id = button.closest("[data-twitch-id]").getAttribute("data-twitch-id");
+          const res = await fetch("/api/admin/creators/twitch/" + encodeURIComponent(id), { method: "DELETE" });
+          if (res.ok) window.location.href = "/admin/creators";
+          else failWith("Could not remove that streamer.");
+        });
+      });
       document.querySelectorAll("[data-creator-action]").forEach((button) => {
         button.addEventListener("click", async () => {
           const card = button.closest("[data-user-id]");
@@ -4353,6 +4394,62 @@ app.get("/admin/creators", async (c) => {
       });
     </script>
   `, c.env));
+});
+
+app.post("/api/admin/creators/twitch", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ login: z.string().regex(/^[A-Za-z0-9_]{4,25}$/) }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Enter a valid Twitch username (4-25 letters, numbers or underscores)" }, 400);
+  }
+  let twitch: { id: string; login: string } | null;
+  try {
+    // Development only: "mock<digits>" stands in for a Twitch user, so this works without calling Twitch.
+    const mock = isDevEnv(c.env) ? /^mock(\d+)$/i.exec(parsed.data.login) : null;
+    twitch = mock ? { id: mock[1], login: parsed.data.login.toLowerCase() } : await lookupTwitchUser(c.env, parsed.data.login);
+  } catch {
+    return c.json({ error: "Could not reach Twitch to verify that username. Try again shortly." }, 502);
+  }
+  if (!twitch) {
+    return c.json({ error: "No Twitch user with that username" }, 404);
+  }
+  await c.env.DB.prepare(
+    `INSERT INTO creator_allowlist (twitch_user_id, twitch_login, added_by_user_id) VALUES (?1, ?2, ?3)
+     ON CONFLICT (twitch_user_id) DO UPDATE SET twitch_login = excluded.twitch_login`
+  )
+    .bind(twitch.id, twitch.login, auth.id)
+    .run();
+  // Someone with that Twitch account already here becomes a creator now; otherwise it happens at their first sign-in.
+  const account = await c.env.DB.prepare("SELECT user_id FROM oauth_accounts WHERE provider = 'twitch' AND provider_user_id = ?1").bind(twitch.id).first<{ user_id: string }>();
+  if (account) {
+    await c.env.DB.prepare("UPDATE users SET creator_type = COALESCE(creator_type, 'manual'), updated_at = datetime('now') WHERE id = ?1").bind(account.user_id).run();
+    await ensureCreatorList(c.env, account.user_id, { twitchId: twitch.id, twitchLogin: twitch.login });
+  }
+  await writeAudit(c.env, auth.id, "user", account?.user_id ?? twitch.id, "verify_streamer", { twitchLogin: twitch.login, twitchUserId: twitch.id, hasAccount: !!account });
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true, login: twitch.login, hasAccount: !!account });
+});
+
+app.delete("/api/admin/creators/twitch/:id", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const twitchId = c.req.param("id");
+  await c.env.DB.batch([
+    // Only a hand-granted status goes with it; an affiliate or partner keeps theirs.
+    c.env.DB.prepare(
+      `UPDATE users SET creator_type = NULL, updated_at = datetime('now')
+       WHERE creator_type = 'manual' AND id IN (SELECT user_id FROM oauth_accounts WHERE provider = 'twitch' AND provider_user_id = ?1)`
+    ).bind(twitchId),
+    c.env.DB.prepare("DELETE FROM creator_allowlist WHERE twitch_user_id = ?1").bind(twitchId)
+  ]);
+  await writeAudit(c.env, auth.id, "user", twitchId, "unverify_streamer", {});
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
 });
 
 app.post("/api/admin/users/:id/creator", async (c) => {
