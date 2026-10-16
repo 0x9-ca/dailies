@@ -67,8 +67,8 @@
 ## Editor/Admin
 
 - `PUT /api/admin/settings` (admin only: `{ fandleMaxPerDeveloper, fandleMaxShown, fandleMembershipDays }`: games 1-100, days 1-3650, each `null` for no limit)
-- `POST /api/admin/creators/twitch` (`{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:twitchUserId` removes them)
-- `POST /api/admin/users/:id/creator` (`{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)
+- `POST /api/admin/creators/twitch` (admin only; `{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:twitchUserId` removes them)
+- `POST /api/admin/users/:id/creator` (admin only; `{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)
 - `POST /api/admin/claims/:claimId` (`{ action: "approve" | "reject" | "revoke" }`; approve verifies a manual claim)
 
 - `GET /api/admin/submissions?status=pending|rejected|disabled|approved&q=<query>`
