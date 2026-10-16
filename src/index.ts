@@ -3077,7 +3077,7 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      ${!suggestionsOn ? "" : `<div class="list-layout">
+      ${!suggestionsOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}">
       <details class="suggest-panel" id="suggest-panel">
         <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
         <div class="suggest-body">
@@ -10197,6 +10197,18 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       }
       @media (min-width: 1100px) {
         .list-layout { grid-template-columns: minmax(0, 1fr) 320px; column-gap: 1.5rem; }
+      }
+      /* Wide desktop with Fan-dles: three columns, Fan-dles on the left, the list in the middle with most of the room,
+         suggestions on the right. Narrower screens keep the two-column layout above. */
+      @media (min-width: 1200px) {
+        main.list-page:has(.list-layout.has-fandles) { max-width: 1440px; }
+        .list-layout.has-fandles { grid-template-columns: minmax(240px, 22%) minmax(0, 1fr) minmax(240px, 22%); column-gap: 1.5rem; }
+        .list-layout.has-fandles > .fandles ul.games .game-title { font-size: 1.05rem; }
+        .list-layout.has-fandles #list-sort-wrap { grid-column: 2; }
+        .list-layout.has-fandles #list-items { grid-column: 2; }
+        .list-layout.has-fandles #list-reorder-status { grid-column: 2; }
+        .list-layout.has-fandles > .fandles { grid-column: 1; grid-row: 2 / span 2; margin-top: 1em; }
+        .list-layout.has-fandles > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
       }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
