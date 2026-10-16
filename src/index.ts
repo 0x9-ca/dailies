@@ -13,6 +13,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
+import { loadStats } from "./lib/stats";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
@@ -4116,6 +4117,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/reports">Review reports</a>
         <a class="panel" href="/admin/claims">Developer claims</a>
         ${auth.role === "admin" ? `<a class="panel" href="/admin/creators">Verified creators</a>
+        <a class="panel" href="/admin/stats">Stats</a>
         <a class="panel" href="/admin/settings">Site settings</a>` : ""}
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
@@ -4398,6 +4400,118 @@ async function getFandleLimits(env: Env): Promise<{ perDeveloper: number | null;
     membershipDays: parse(settings.get(FANDLE_SETTING_MEMBERSHIP_DAYS))
   };
 }
+
+app.get("/admin/stats", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const { scalars: s, topClicked, topVoted, topFavorited, series } = await loadStats(c.env.DB);
+  const num = (n: number) => n.toLocaleString("en-US");
+  const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "–");
+  const card = (label: string, value: number | string, note = "") =>
+    `<div class="stat-card"><div class="stat-value">${typeof value === "number" ? num(value) : escapeHtml(value)}</div><div class="stat-label">${escapeHtml(label)}</div>${note ? `<div class="stat-note">${escapeHtml(note)}</div>` : ""}</div>`;
+  const section = (title: string, intro: string, cards: string) =>
+    `<section class="panel"><h2>${escapeHtml(title)}</h2>${intro ? `<p class="muted">${escapeHtml(intro)}</p>` : ""}<div class="stat-grid">${cards}</div></section>`;
+  const topTable = (title: string, rows: { slug: string; title: string; n: number }[], unit: string) =>
+    `<div class="stat-top"><h3>${escapeHtml(title)}</h3>${rows.length ? `<ol>${rows.map((r) => `<li><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a> <span class="muted">${num(r.n)} ${unit}</span></li>`).join("")}</ol>` : `<p class="muted">Nothing yet.</p>`}</div>`;
+  const maxOf = (key: "users" | "votes" | "games") => Math.max(1, ...series.map((d) => d[key]));
+  const chart = (title: string, key: "users" | "votes" | "games") =>
+    `<div class="stat-chart"><h3>${escapeHtml(title)} <span class="muted">(${num(series.reduce((t, d) => t + d[key], 0))} in 14 days)</span></h3><div class="bars" role="img" aria-label="${escapeHtml(title)}, last 14 days">${series
+      .map((d) => `<span class="bar" title="${d.date}: ${d[key]}" style="height:${Math.max(d[key] > 0 ? 6 : 2, Math.round((d[key] / maxOf(key)) * 100))}%"></span>`)
+      .join("")}</div><div class="bars-axis"><span>${series[0].date.slice(5)}</span><span>${series[series.length - 1].date.slice(5)}</span></div></div>`;
+
+  const accounts = s.usersTotal;
+  const votesTotal = s.votesUser + s.votesAnon;
+  const favTotal = s.favUser + s.favAnon;
+  return c.html(await layout("Stats", auth, `
+    <main>
+      <h1>Stats</h1>
+      <p class="muted">Counted live from the database. Page views and total visitors are not recorded, so "anonymous" means people who voted or kept a rotation without signing in.</p>
+      ${section("People", "", [
+        card("Accounts", accounts),
+        card("New today", s.usersNew1),
+        card("New in 7 days", s.usersNew7),
+        card("New in 30 days", s.usersNew30),
+        card("Signed in now", s.usersSignedIn, "with a live session"),
+        card("Discord linked", s.usersDiscord),
+        card("Twitch linked", s.usersTwitch),
+        card("Both linked", s.usersBothProviders),
+        card("Editors", s.usersEditors),
+        card("Admins", s.usersAdmins),
+        card("Public profiles", s.usersPublicProfile),
+        card("Verified creators", s.usersCreators)
+      ].join(""))}
+      ${section("Signed in vs anonymous", "Anonymous voters are counted by hashed IP address and anonymous rotations by browser, so they are approximate.", [
+        card("Signed-in voters", s.usersVoted, `${pct(s.usersVoted, accounts)} of accounts`),
+        card("Anonymous voters", s.anonVoters),
+        card("Signed-in rotations", s.usersWithFavorites, `${pct(s.usersWithFavorites, accounts)} of accounts`),
+        card("Anonymous rotations", s.anonRotations),
+        card("Votes by signed-in", s.votesUser, pct(s.votesUser, votesTotal)),
+        card("Votes by anonymous", s.votesAnon, pct(s.votesAnon, votesTotal))
+      ].join(""))}
+      ${section("Votes, favorites and clicks", "", [
+        card("Votes in total", votesTotal),
+        card("Votes today", s.votes1),
+        card("Votes in 7 days", s.votes7),
+        card("Votes in 30 days", s.votes30),
+        card("Upvote share", pct(s.votesUserUp + s.votesAnonUp, votesTotal)),
+        card("Favorites in total", favTotal, `${num(s.favUser)} signed in, ${num(s.favAnon)} anonymous`),
+        card("Favorites in 7 days", s.fav7),
+        card("Game clicks", s.clicksTotal, "all time, no per-day history")
+      ].join(""))}
+      ${section("Games", "", [
+        card("Listed games", s.gamesApproved),
+        card("Awaiting review", s.gamesPending),
+        card("Rejected", s.gamesRejected),
+        card("Disabled", s.gamesDisabled),
+        card("Submitted in 7 days", s.gamesNew7),
+        card("Submitted in 30 days", s.gamesNew30),
+        card("With a reset time", s.gamesWithReset, pct(s.gamesWithReset, s.gamesApproved)),
+        card("Paywalled", s.gamesPaywall),
+        card("NSFW", s.gamesNsfw),
+        card("Failing link checks", s.gamesBroken),
+        card("No votes yet", s.gamesNoVotes),
+        card("Categories", s.categories)
+      ].join(""))}
+      ${section("Lists, Fan-dles and developers", "", [
+        card("Public lists", s.listsPublic),
+        card("Private lists", s.listsPrivate),
+        card("Creator lists", s.listsCreator),
+        card("Games on lists", s.listItems),
+        card("Open suggestions", s.suggestions),
+        card("Suggestion votes", s.suggestionVotes),
+        card("Fan-dles members", s.fandleMembers, `${num(s.fandleManual)} added by hand`),
+        card("Verified developers", s.claimDevelopers),
+        card("Verified games", s.claimsVerified),
+        card("Claims in progress", s.claimsOpen, `${num(s.claimsReview)} awaiting review`),
+        card("Open reports", s.reportsOpen, `${num(s.reportsTotal)} in total`)
+      ].join(""))}
+      <section class="panel">
+        <h2>Last 14 days</h2>
+        <div class="stat-charts">${chart("New accounts", "users")}${chart("Votes", "votes")}${chart("Games submitted", "games")}</div>
+      </section>
+      <section class="panel">
+        <h2>Top games</h2>
+        <div class="stat-tops">${topTable("Most clicked", topClicked, "clicks")}${topTable("Most voted on", topVoted, "votes")}${topTable("Most favorited", topFavorited, "rotations")}</div>
+      </section>
+    </main>
+    <style>
+      .stat-grid { display:grid; gap:0.6rem; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+      .stat-card { padding:0.7rem 0.8rem; border:1px solid var(--border); border-radius:10px; background:var(--bg-soft); min-width:0; }
+      .stat-value { font-size:1.6rem; font-weight:800; line-height:1.1; color:var(--title-ink); font-variant-numeric: tabular-nums; }
+      .stat-label { margin-top:0.2rem; font-size:0.85rem; color:var(--ink); }
+      .stat-note { margin-top:0.1rem; font-size:0.75rem; color:var(--muted); }
+      .stat-charts, .stat-tops { display:grid; gap:1rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+      .stat-chart h3, .stat-top h3 { margin:0 0 0.5rem; font-size:0.95rem; }
+      .bars { display:flex; align-items:flex-end; gap:3px; height:90px; }
+      .bar { flex:1; background:var(--primary); border-radius:3px 3px 0 0; min-width:0; }
+      .bars-axis { display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:0.2rem; }
+      .stat-top ol { margin:0; padding-left:1.3rem; display:flex; flex-direction:column; gap:0.25rem; }
+      .stat-top li { overflow-wrap:anywhere; }
+    </style>
+  `, c.env));
+});
 
 app.get("/admin/settings", async (c) => {
   const auth = requireRole(c, ["admin"]);
