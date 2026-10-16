@@ -4,8 +4,18 @@
 export const FANDLE_SCOPES = "user:read:follows user:read:subscriptions";
 /** A follower needs to have followed this long (subscribers qualify at once). */
 export const FANDLE_MIN_FOLLOW_DAYS = 7;
-/** How long a check counts before the developer has to verify again. */
-export const FANDLE_MEMBERSHIP_DAYS = 90;
+/**
+ * How long a check counts before the developer has to verify again. No limit by default: a membership stays until the
+ * developer leaves or staff change this at /admin/settings (days; empty = never).
+ */
+export const FANDLE_SETTING_MEMBERSHIP_DAYS = "fandle_membership_days";
+/** Stored in fandle_members.expires_at: expiry is worked out from verified_at and the setting, so this never lapses. */
+export const FANDLE_NO_EXPIRY = "9999-12-31 00:00:00";
+
+/** SQL for "this membership still counts" given the setting (null = always). Days is a validated integer. */
+export function fandleActiveSql(alias: string, membershipDays: number | null): string {
+  return membershipDays && Number.isInteger(membershipDays) ? `${alias}.verified_at > datetime('now', '-${membershipDays} days')` : "1 = 1";
+}
 /**
  * Games shown per developer, and in total, in a streamer's Fan-dles. No limit by default; an admin can set either at
  * /admin/settings (site_settings keys below). FANDLE_HARD_MAX_SHOWN only guards the page's size when there is no total.

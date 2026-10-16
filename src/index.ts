@@ -13,7 +13,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
-import { FANDLE_HARD_MAX_SHOWN, FANDLE_MEMBERSHIP_DAYS, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
+import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 
 type Bindings = Env;
@@ -326,11 +326,11 @@ async function applyFandleResult(env: Env, list: FandleList, userId: string, rel
   }
   await env.DB.prepare(
     `INSERT INTO fandle_members (list_id, user_id, source, followed_at, verified_at, expires_at)
-     VALUES (?1, ?2, ?3, ?4, datetime('now'), datetime('now', ?5))
+     VALUES (?1, ?2, ?3, ?4, datetime('now'), ?5)
      ON CONFLICT (list_id, user_id) DO UPDATE SET source = excluded.source, followed_at = excluded.followed_at,
        verified_at = excluded.verified_at, expires_at = excluded.expires_at`
   )
-    .bind(list.id, userId, decision.source, rel.followedAt, `+${FANDLE_MEMBERSHIP_DAYS} days`)
+    .bind(list.id, userId, decision.source, rel.followedAt, FANDLE_NO_EXPIRY)
     .run();
   await writeAudit(env, userId, "list", list.id, "fandle_join", { source: decision.source });
   await invalidateGameCaches(env);
@@ -2870,8 +2870,8 @@ app.get("/lists/:slug", async (c) => {
   // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
   const fandlesAvailable = !!list.is_creator_list && !!list.twitch_user_id && list.visibility === "public";
   const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
-  const fandleLimits = fandlesOn && !isAdminEditor ? await getFandleLimits(c.env) : { perDeveloper: null, shown: null };
-  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper }) : [];
+  const fandleLimits = fandlesOn ? await getFandleLimits(c.env) : { perDeveloper: null, shown: null, membershipDays: null };
+  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper, fandleMembershipDays: fandleLimits.membershipDays }) : [];
   const fandleViewer = fandleGames.length > 0 ? await getViewerGameState(c, fandleGames.map((game) => game.id)) : { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() };
   const fandleNotice = (({
     joined: "You're in. Your verified games now show in Fan-dles below.",
@@ -2885,13 +2885,13 @@ app.get("/lists/:slug", async (c) => {
   }) as Record<string, string>)[c.req.query("fandle") ?? ""];
   let fandleJoin = "";
   if (fandlesOn && user && !isCreatorOwner && !isAdminEditor) {
-    const membership = await c.env.DB.prepare("SELECT source, expires_at FROM fandle_members WHERE list_id = ?1 AND user_id = ?2 AND expires_at > datetime('now')")
+    const membership = await c.env.DB.prepare(`SELECT source, verified_at FROM fandle_members fm WHERE list_id = ?1 AND user_id = ?2 AND ${fandleActiveSql("fm", fandleLimits.membershipDays)}`)
       .bind(list.id, user.id)
-      .first<{ source: string; expires_at: string }>();
+      .first<{ source: string; verified_at: string }>();
     if (await hasVerifiedClaim(c.env, user.id)) {
       const formHtml = (label: string) => `<form method="post" action="/auth/twitch/fandle" class="fandle-form"><input type="hidden" name="list" value="${escapeHtml(list.slug)}" /><button type="submit" class="btn">${label}</button></form>`;
       fandleJoin = membership
-        ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : "follower"}) until ${escapeHtml(membership.expires_at.slice(0, 10))}.</p>
+        ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : "follower"})${fandleLimits.membershipDays ? ` until ${escapeHtml(new Date(Date.parse(membership.verified_at.replace(" ", "T") + "Z") + fandleLimits.membershipDays * 86_400_000).toISOString().slice(0, 10))}` : ""}.</p>
            <div class="actions">${formHtml("Check again")}<button type="button" id="fandle-leave" data-list-id="${escapeHtml(list.id)}">Leave Fan-dles</button></div>`
         : `<p><strong>Made a game?</strong> Show it in this community's Fan-dles. Subscribers qualify straight away, and followers after ${FANDLE_MIN_FOLLOW_DAYS} days. We ask Twitch once, with your permission, whether you follow or subscribe to this channel. Nothing else is read, and we don't keep access to your Twitch account.</p>
            ${formHtml("Check with Twitch")}`;
@@ -2906,7 +2906,7 @@ app.get("/lists/:slug", async (c) => {
          JOIN game_claims gc ON gc.user_id = fm.user_id AND gc.status = 'verified'
          JOIN games ON games.id = gc.game_id AND games.status = 'approved'
          JOIN users ON users.id = fm.user_id
-         WHERE fm.list_id = ?1 AND fm.expires_at > datetime('now')
+         WHERE fm.list_id = ?1 AND ${fandleActiveSql("fm", fandleLimits.membershipDays)}
          ORDER BY games.title ASC LIMIT 100`
       )
         .bind(list.id)
@@ -4192,13 +4192,17 @@ async function getSiteSettings(env: Env, keys: string[]): Promise<Map<string, st
 }
 
 /** Fan-dles caps: null means no limit (the default). */
-async function getFandleLimits(env: Env): Promise<{ perDeveloper: number | null; shown: number | null }> {
-  const settings = await getSiteSettings(env, [FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN]);
+async function getFandleLimits(env: Env): Promise<{ perDeveloper: number | null; shown: number | null; membershipDays: number | null }> {
+  const settings = await getSiteSettings(env, [FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_SETTING_MEMBERSHIP_DAYS]);
   const parse = (value: string | undefined) => {
     const n = Number(value);
     return Number.isInteger(n) && n >= 1 ? n : null;
   };
-  return { perDeveloper: parse(settings.get(FANDLE_SETTING_MAX_PER_DEVELOPER)), shown: parse(settings.get(FANDLE_SETTING_MAX_SHOWN)) };
+  return {
+    perDeveloper: parse(settings.get(FANDLE_SETTING_MAX_PER_DEVELOPER)),
+    shown: parse(settings.get(FANDLE_SETTING_MAX_SHOWN)),
+    membershipDays: parse(settings.get(FANDLE_SETTING_MEMBERSHIP_DAYS))
+  };
 }
 
 app.get("/admin/settings", async (c) => {
@@ -4212,13 +4216,16 @@ app.get("/admin/settings", async (c) => {
       <h1>Site settings</h1>
       <section class="panel">
         <h2>Fan-dles limits</h2>
-        <p>How many community games a streamer's Fan-dles section shows. Leave a box empty for no limit. Games are picked best-scoring first. With no total set, at most ${FANDLE_HARD_MAX_SHOWN} are shown.</p>
+        <p>How many community games a streamer's Fan-dles section shows, and how long a Twitch check counts. Leave a box empty for no limit. Games are picked best-scoring first. With no total set, at most ${FANDLE_HARD_MAX_SHOWN} are shown.</p>
         <form id="settings-form" class="stack-form">
           <label>Most games per developer <small>(empty = no limit)</small>
             <input type="number" name="perDeveloper" min="1" max="${FANDLE_SETTING_LIMIT_MAX}" inputmode="numeric" value="${limits.perDeveloper ?? ""}" />
           </label>
           <label>Most games in total <small>(empty = no limit)</small>
             <input type="number" name="shown" min="1" max="${FANDLE_SETTING_LIMIT_MAX}" inputmode="numeric" value="${limits.shown ?? ""}" />
+          </label>
+          <label>Check again after (days) <small>(empty = a check never runs out; the developer can still leave)</small>
+            <input type="number" name="membershipDays" min="1" max="3650" inputmode="numeric" value="${limits.membershipDays ?? ""}" />
           </label>
           <button type="submit" class="btn">Save</button>
         </form>
@@ -4236,7 +4243,7 @@ app.get("/admin/settings", async (c) => {
         const res = await fetch("/api/admin/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fandleMaxPerDeveloper: num("perDeveloper"), fandleMaxShown: num("shown") })
+          body: JSON.stringify({ fandleMaxPerDeveloper: num("perDeveloper"), fandleMaxShown: num("shown"), fandleMembershipDays: num("membershipDays") })
         });
         const body = await res.json().catch(() => ({}));
         statusNode.textContent = res.ok ? "Saved." : body.error || "Could not save.";
@@ -4248,7 +4255,8 @@ app.get("/admin/settings", async (c) => {
 
 const siteSettingsSchema = z.object({
   fandleMaxPerDeveloper: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable(),
-  fandleMaxShown: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable()
+  fandleMaxShown: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable(),
+  fandleMembershipDays: z.number().int().min(1).max(3650).nullable()
 });
 
 app.put("/api/admin/settings", async (c) => {
@@ -4258,11 +4266,12 @@ app.put("/api/admin/settings", async (c) => {
   }
   const parsed = siteSettingsSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
-    return c.json({ error: `Enter a whole number from 1 to ${FANDLE_SETTING_LIMIT_MAX}, or leave it empty for no limit` }, 400);
+    return c.json({ error: `Enter a whole number (up to ${FANDLE_SETTING_LIMIT_MAX} games, or 3650 days), or leave it empty for no limit` }, 400);
   }
   const entries: Array<[string, number | null]> = [
     [FANDLE_SETTING_MAX_PER_DEVELOPER, parsed.data.fandleMaxPerDeveloper],
-    [FANDLE_SETTING_MAX_SHOWN, parsed.data.fandleMaxShown]
+    [FANDLE_SETTING_MAX_SHOWN, parsed.data.fandleMaxShown],
+    [FANDLE_SETTING_MEMBERSHIP_DAYS, parsed.data.fandleMembershipDays]
   ];
   await c.env.DB.batch(
     entries.map(([key, value]) =>
@@ -7735,6 +7744,8 @@ async function listGames(
     fandleListId?: string;
     /** With fandleListId: most games per developer (none = no limit). */
     fandlePerDeveloper?: number | null;
+    /** With fandleListId: how many days a check counts (none = always). */
+    fandleMembershipDays?: number | null;
   }
 ): Promise<
   Array<{
@@ -7812,7 +7823,7 @@ async function listGames(
         FROM fandle_members fm
         JOIN game_claims gc ON gc.user_id = fm.user_id AND gc.status = 'verified'
         JOIN games g2 ON g2.id = gc.game_id AND g2.status = 'approved'
-        WHERE fm.list_id = ? AND fm.expires_at > datetime('now')
+        WHERE fm.list_id = ? AND ${fandleActiveSql("fm", opts.fandleMembershipDays ?? null)}
           AND gc.game_id NOT IN (SELECT game_id FROM fandle_hidden WHERE list_id = ?)
           AND gc.game_id NOT IN (SELECT game_id FROM curated_list_items WHERE curated_list_id = ?)
       )${opts.fandlePerDeveloper && Number.isInteger(opts.fandlePerDeveloper) ? ` WHERE rn <= ${opts.fandlePerDeveloper}` : ""}
