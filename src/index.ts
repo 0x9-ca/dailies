@@ -3014,8 +3014,10 @@ app.get("/lists/:slug", async (c) => {
       </section>`
     : "";
 
+  // The side-by-side / tabbed layout applies whenever there is a second section: suggestions, Fan-dles, or both.
+  const layoutOn = suggestionsOn || !!fandleSection;
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
-    <main class="narrow${suggestionsOn ? " list-page" : ""}">
+    <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
@@ -3082,13 +3084,13 @@ app.get("/lists/:slug", async (c) => {
           <p id="list-add-status" class="status" aria-live="polite"></p>
         </section>
       ` : ""}
-      ${!suggestionsOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}"${fandleSection && fandleNotice ? ' data-default-tab="fandles"' : ""}>
+      ${!layoutOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}${suggestionsOn ? "" : " no-suggest"}"${fandleSection && fandleNotice ? ' data-default-tab="fandles"' : ""}>
       <div class="list-tabs" role="tablist" aria-label="List sections">
         <button type="button" role="tab" id="tab-list" data-tab="list" aria-selected="true">List <span class="tab-count">${items.results.length}</span></button>
         ${fandleSection ? `<button type="button" role="tab" id="tab-fandles" data-tab="fandles" aria-selected="false" tabindex="-1">Fan-dles <span class="tab-count">${fandleGames.length > 0 ? fandleGames.length : ""}</span></button>` : ""}
-        <button type="button" role="tab" id="tab-suggest" data-tab="suggest" aria-selected="false" tabindex="-1">Suggestions <span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>
+        ${suggestionsOn ? `<button type="button" role="tab" id="tab-suggest" data-tab="suggest" aria-selected="false" tabindex="-1">Suggestions <span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>` : ""}
       </div>
-      <details class="suggest-panel" id="suggest-panel">
+      ${suggestionsOn ? `      <details class="suggest-panel" id="suggest-panel">
         <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
         <div class="suggest-body">
           <p class="suggest-help">Know a game that belongs here? Suggest it, or agree with someone else's suggestion.</p>
@@ -3102,7 +3104,7 @@ app.get("/lists/:slug", async (c) => {
           <ol class="suggest-list" id="suggest-list"></ol>
           <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet.</p>
         </div>
-      </details>
+      </details>` : ""}
       <div class="list-main">`}
       ${isAdminEditor ? "" : `<div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div>`}
       <ol class="rotation-list" id="list-items">
@@ -3139,11 +3141,10 @@ app.get("/lists/:slug", async (c) => {
         }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
-      ${!suggestionsOn ? "" : `</div>${fandleSection}</div>`}
+      ${!layoutOn ? "" : `</div>${fandleSection}</div>`}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
-      ${suggestionsOn ? "" : fandleSection}
     </main>
-    ${suggestionsOn ? `<script>
+    ${layoutOn ? `<script>
       // Phones: the list, Fan-dles and suggestions are tabs. Wider screens show them side by side and hide the tab bar.
       (() => {
         const layout = document.querySelector(".list-layout");
@@ -10255,23 +10256,30 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* Wide desktop with Fan-dles: three columns, Fan-dles on the left, the list in the middle with most of the room,
          suggestions on the right. Narrower screens keep the two-column layout above. */
       @media (min-width: 1200px) {
-        main.list-page:has(.list-layout.has-fandles) { max-width: 1440px; }
-        .list-layout.has-fandles { grid-template-columns: minmax(240px, 22%) minmax(0, 1fr) minmax(240px, 22%); column-gap: 1.5rem; }
-        .list-layout.has-fandles > .fandles ul.games .game-title { font-size: 1.05rem; }
-        .list-layout.has-fandles #list-sort-wrap { grid-column: 2; }
-        .list-layout.has-fandles #list-items { grid-column: 2; }
-        .list-layout.has-fandles #list-reorder-status { grid-column: 2; }
+        main.list-page:has(.list-layout.has-fandles:not(.no-suggest)) { max-width: 1440px; }
+        .list-layout.has-fandles:not(.no-suggest) { grid-template-columns: minmax(240px, 22%) minmax(0, 1fr) minmax(240px, 22%); column-gap: 1.5rem; }
+        .list-layout.has-fandles:not(.no-suggest) > .fandles ul.games .game-title { font-size: 1.05rem; }
+        .list-layout.has-fandles:not(.no-suggest) #list-sort-wrap { grid-column: 2; }
+        .list-layout.has-fandles:not(.no-suggest) #list-items { grid-column: 2; }
+        .list-layout.has-fandles:not(.no-suggest) #list-reorder-status { grid-column: 2; }
         /* The heading sits level with the Sort control and the cards level with the list's first card. */
-        .list-layout.has-fandles .fandles-head { grid-column: 1; }
-        .list-layout.has-fandles .fandles-body { grid-column: 1; grid-row: 2 / span 2; }
-        .list-layout.has-fandles > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
+        .list-layout.has-fandles:not(.no-suggest) .fandles-head { grid-column: 1; }
+        .list-layout.has-fandles:not(.no-suggest) .fandles-body { grid-column: 1; grid-row: 2 / span 2; }
+        .list-layout.has-fandles:not(.no-suggest) > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
       }
       /* Phones: tabs for the list, Fan-dles and suggestions (the script sets data-tab; without it everything shows). */
       .list-tabs { display: flex; gap: 0.25rem; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--border); }
-      .list-tabs [role="tab"] { flex: 1 1 0; min-height: 44px; padding: 0.4rem 0.3rem; background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; font-size: 0.95rem; cursor: pointer; }
+      .list-tabs [role="tab"] { flex: 1 1 0; min-width: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.2rem; background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; font-size: 0.92rem; white-space: nowrap; cursor: pointer; }
       .list-tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand-blue); }
-      .list-tabs .tab-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+      /* The count is a small pill; the selected tab's is filled in the accent colour. */
+      .list-tabs .tab-count { min-width: 1.5rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--border); color: var(--ink); font-size: 0.78rem; font-weight: 700; line-height: 1.35; text-align: center; font-variant-numeric: tabular-nums; }
+      .list-tabs [aria-selected="true"] .tab-count { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
       .list-tabs .tab-count:empty { display: none; }
+      /* Narrow phones: the count sits under the name so three tabs never run out of room. */
+      @media (max-width: 419px) {
+        .list-tabs [role="tab"] { flex-direction: column; gap: 0.15rem; min-height: 52px; padding: 0.35rem 0.1rem; }
+      }
+      @media (max-width: 359px) { .list-tabs [role="tab"] { font-size: 0.8rem; } }
       @media (min-width: 900px) { .list-tabs { display: none; } }
       @media (max-width: 899px) {
         .list-layout[data-tab="list"] > .fandles, .list-layout[data-tab="list"] > .suggest-panel,
