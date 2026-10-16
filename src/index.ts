@@ -3925,8 +3925,8 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/submissions">Moderate submissions</a>
         <a class="panel" href="/admin/reports">Review reports</a>
         <a class="panel" href="/admin/claims">Developer claims</a>
-        <a class="panel" href="/admin/creators">Verified creators</a>
-        ${auth.role === "admin" ? `<a class="panel" href="/admin/settings">Site settings</a>` : ""}
+        ${auth.role === "admin" ? `<a class="panel" href="/admin/creators">Verified creators</a>
+        <a class="panel" href="/admin/settings">Site settings</a>` : ""}
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
       </div>
@@ -4293,7 +4293,7 @@ app.put("/api/admin/settings", async (c) => {
 });
 
 app.get("/admin/creators", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = requireRole(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4397,7 +4397,7 @@ app.get("/admin/creators", async (c) => {
 });
 
 app.post("/api/admin/creators/twitch", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = requireRole(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4434,7 +4434,7 @@ app.post("/api/admin/creators/twitch", async (c) => {
 });
 
 app.delete("/api/admin/creators/twitch/:id", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = requireRole(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4453,7 +4453,7 @@ app.delete("/api/admin/creators/twitch/:id", async (c) => {
 });
 
 app.post("/api/admin/users/:id/creator", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = requireRole(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
