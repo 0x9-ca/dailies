@@ -2982,8 +2982,11 @@ app.get("/lists/:slug", async (c) => {
     : undefined;
   const fandleSection = fandlesOn && !isAdminEditor && (fandleGames.length > 0 || fandleJoin)
     ? `<section class="fandles" id="fandles">
-        <h2>Fan-dles</h2>
-        <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
+        <div class="fandles-head">
+          <h2>Fan-dles</h2>
+          <p class="muted">Games made by people in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s community.</p>
+        </div>
+        <div class="fandles-body">
         ${fandleGames.length > 0 ? renderCompactGameList(fandleGames, user, fandleViewer.votes, fandleViewer.favorites, { showVotes: false, extraActions: fandleAddAction }) : ""}
         ${fandleJoin ? `<div class="panel fandle-join">${fandleJoin}</div>
         <script>
@@ -3006,6 +3009,7 @@ app.get("/lists/:slug", async (c) => {
             });
           });
         </script>` : ""}
+        </div>
       </section>`
     : "";
 
@@ -10190,8 +10194,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .list-layout #list-reorder-status { grid-column: 1; grid-row: 4; }
         .suggest-panel { grid-column: 2; grid-row: 3; margin: 1.5rem 0 0; }
         /* Fan-dles sit in the right-hand column, above the suggestions (level with the first card). */
-        .list-layout > .fandles { grid-column: 2; grid-row: 2; margin-top: 1em; }
-        .list-layout > .fandles h2 { font-size: 1.15rem; } /* 1em: the list's own top margin */
+        .list-layout > .fandles { display: contents; }
+        .list-layout .fandles-head { grid-column: 2; grid-row: 1; align-self: end; }
+        .list-layout .fandles-head h2 { margin: 0 0 0.15rem; font-size: 1.15rem; }
+        .list-layout .fandles-head p { margin: 0; font-size: 0.85rem; }
+        .list-layout .fandles-body { grid-column: 2; grid-row: 2; }
+        .list-layout .fandles-body ul.games { margin-top: 1em; } /* 1em: the list's own top margin */
         .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
         .suggest-panel > summary::-webkit-details-marker { display: none; }
       }
@@ -10207,7 +10215,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .list-layout.has-fandles #list-sort-wrap { grid-column: 2; }
         .list-layout.has-fandles #list-items { grid-column: 2; }
         .list-layout.has-fandles #list-reorder-status { grid-column: 2; }
-        .list-layout.has-fandles > .fandles { grid-column: 1; grid-row: 2 / span 2; margin-top: 1em; }
+        /* The heading sits level with the Sort control and the cards level with the list's first card. */
+        .list-layout.has-fandles .fandles-head { grid-column: 1; }
+        .list-layout.has-fandles .fandles-body { grid-column: 1; grid-row: 2 / span 2; }
         .list-layout.has-fandles > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
       }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
