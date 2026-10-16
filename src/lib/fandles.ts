@@ -6,9 +6,14 @@ export const FANDLE_SCOPES = "user:read:follows user:read:subscriptions";
 export const FANDLE_MIN_FOLLOW_DAYS = 7;
 /** How long a check counts before the developer has to verify again. */
 export const FANDLE_MEMBERSHIP_DAYS = 90;
-/** Games shown per developer, and in total, in a streamer's Fan-dles. */
-export const FANDLE_MAX_PER_DEVELOPER = 3;
-export const FANDLE_MAX_SHOWN = 12;
+/**
+ * Games shown per developer, and in total, in a streamer's Fan-dles. No limit by default; an admin can set either at
+ * /admin/settings (site_settings keys below). FANDLE_HARD_MAX_SHOWN only guards the page's size when there is no total.
+ */
+export const FANDLE_SETTING_MAX_PER_DEVELOPER = "fandle_max_per_developer";
+export const FANDLE_SETTING_MAX_SHOWN = "fandle_max_shown";
+export const FANDLE_HARD_MAX_SHOWN = 100;
+export const FANDLE_SETTING_LIMIT_MAX = 100;
 
 const DAY_MS = 86_400_000;
 
