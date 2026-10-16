@@ -2923,18 +2923,17 @@ app.get("/lists/:slug", async (c) => {
       const mine = membership
         ? (await c.env.DB.prepare(
             `SELECT games.title,
-                    EXISTS(SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = games.id) AS on_list,
                     EXISTS(SELECT 1 FROM fandle_hidden WHERE list_id = ?1 AND game_id = games.id) AS hidden
              FROM game_claims JOIN games ON games.id = game_claims.game_id AND games.status = 'approved'
              WHERE game_claims.user_id = ?2 AND game_claims.status = 'verified'
              ORDER BY games.title`
           )
             .bind(list.id, user.id)
-            .all<{ title: string; on_list: number; hidden: number }>()).results
+            .all<{ title: string; hidden: number }>()).results
         : [];
       const gameStatus = mine.length > 0
         ? `<ul>${mine
-            .map((game) => `<li><strong>${escapeHtml(game.title)}</strong>: ${game.on_list ? "already on this list's main section, so it isn't repeated here" : game.hidden ? "hidden by the streamer" : "shown in Fan-dles"}</li>`)
+            .map((game) => `<li><strong>${escapeHtml(game.title)}</strong>: ${game.hidden ? "hidden by the streamer" : "shown in Fan-dles"}</li>`)
             .join("")}</ul>`
         : "";
       const formHtml = (label: string) => `<form method="post" action="/auth/twitch/fandle" class="fandle-form"><input type="hidden" name="list" value="${escapeHtml(list.slug)}" /><button type="submit" class="btn">${label}</button></form>`;
@@ -7969,10 +7968,9 @@ async function listGames(
         JOIN games g2 ON g2.id = gc.game_id AND g2.status = 'approved'
         WHERE fm.list_id = ? AND ${fandleActiveSql("fm", opts.fandleMembershipDays ?? null)}
           AND gc.game_id NOT IN (SELECT game_id FROM fandle_hidden WHERE list_id = ?)
-          AND gc.game_id NOT IN (SELECT game_id FROM curated_list_items WHERE curated_list_id = ?)
       )${opts.fandlePerDeveloper && Number.isInteger(opts.fandlePerDeveloper) ? ` WHERE rn <= ${opts.fandlePerDeveloper}` : ""}
     )`;
-    params.push(opts.fandleListId, opts.fandleListId, opts.fandleListId);
+    params.push(opts.fandleListId, opts.fandleListId);
   }
 
   params.push(...sortParams, opts.limit, opts.offset || 0);
