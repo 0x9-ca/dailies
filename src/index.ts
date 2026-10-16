@@ -10175,9 +10175,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         #list-sort-wrap { grid-column: 1; grid-row: 1; }
         .list-layout #list-items { grid-column: 1; grid-row: 2 / span 2; }
         .list-layout #list-reorder-status { grid-column: 1; grid-row: 4; }
-        .suggest-panel { grid-column: 2; grid-row: 2; margin: 1em 0 0; }
-        /* Fan-dles sit in the right-hand column, under the suggestions. */
-        .list-layout > .fandles { grid-column: 2; grid-row: 3; margin-top: 1.5rem; }
+        .suggest-panel { grid-column: 2; grid-row: 3; margin: 1.5rem 0 0; }
+        /* Fan-dles sit in the right-hand column, above the suggestions (level with the first card). */
+        .list-layout > .fandles { grid-column: 2; grid-row: 2; margin-top: 1em; }
         .list-layout > .fandles h2 { font-size: 1.15rem; } /* 1em: the list's own top margin */
         .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
         .suggest-panel > summary::-webkit-details-marker { display: none; }
