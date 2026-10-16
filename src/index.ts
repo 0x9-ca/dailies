@@ -2938,13 +2938,26 @@ app.get("/lists/:slug", async (c) => {
         : "";
       const formHtml = (label: string) => `<form method="post" action="/auth/twitch/fandle" class="fandle-form"><input type="hidden" name="list" value="${escapeHtml(list.slug)}" /><button type="submit" class="btn">${label}</button></form>`;
       fandleJoin = membership
-        ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : "follower"})${fandleLimits.membershipDays ? ` until ${escapeHtml(new Date(Date.parse(membership.verified_at.replace(" ", "T") + "Z") + fandleLimits.membershipDays * 86_400_000).toISOString().slice(0, 10))}` : ""}.</p>
+        ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : membership.source === "manual" ? "added by an admin" : "follower"})${fandleLimits.membershipDays && membership.source !== "manual" ? ` until ${escapeHtml(new Date(Date.parse(membership.verified_at.replace(" ", "T") + "Z") + fandleLimits.membershipDays * 86_400_000).toISOString().slice(0, 10))}` : ""}.</p>
            ${gameStatus}
            <div class="actions">${formHtml("Check again")}<button type="button" id="fandle-leave" data-list-id="${escapeHtml(list.id)}">Leave Fan-dles</button></div>`
         : `<p><strong>Made a game?</strong> Show it in this community's Fan-dles. Subscribers qualify straight away, and followers after ${FANDLE_MIN_FOLLOW_DAYS} days. We ask Twitch once, with your permission, whether you follow or subscribe to this channel. Nothing else is read, and we don't keep access to your Twitch account.</p>
            ${formHtml("Check with Twitch")}`;
     }
   }
+  // Admins also manage who is a member.
+  const isAdminUser = !!user && user.role === "admin";
+  const fandleMembers = isAdminEditor && fandlesAvailable
+    ? (await c.env.DB.prepare(
+        `SELECT fm.user_id, fm.source, COALESCE(users.display_name, users.profile_handle, 'Developer') AS name,
+                (SELECT COUNT(*) FROM game_claims WHERE game_claims.user_id = fm.user_id AND game_claims.status = 'verified') AS games
+         FROM fandle_members fm JOIN users ON users.id = fm.user_id
+         WHERE fm.list_id = ?1 AND ${fandleActiveSql("fm", fandleLimits.membershipDays)}
+         ORDER BY name ASC LIMIT 200`
+      )
+        .bind(list.id)
+        .all<{ user_id: string; source: string; name: string; games: number }>()).results
+    : [];
   // Editors and the streamer manage which Fan-dles show.
   const fandleManage = isAdminEditor && fandlesAvailable
     ? (await c.env.DB.prepare(
@@ -3028,6 +3041,17 @@ app.get("/lists/:slug", async (c) => {
             .map((game) => `<li class="panel"><strong>${escapeHtml(game.title)}</strong> <small class="muted">by ${escapeHtml(game.display_name || "a community member")}${game.hidden ? " · hidden" : ""}</small>
               <div class="actions"><button type="button" data-fandle-hidden="${game.hidden ? "0" : "1"}" data-game-id="${escapeHtml(game.id)}">${game.hidden ? "Show again" : "Hide"}</button></div></li>`)
             .join("")}</ul>`}
+          ${isAdminUser ? `<h3>Community members</h3>
+          ${fandleMembers.length === 0 ? `<p class="muted">No members yet.</p>` : `<ul class="stack">${fandleMembers
+            .map((member) => `<li class="panel" data-member-id="${escapeHtml(member.user_id)}"><strong>${escapeHtml(member.name)}</strong> <small class="muted">${member.source === "sub" ? "subscriber" : member.source === "follow" ? "follower" : "added by an admin"} · ${member.games} verified game${member.games === 1 ? "" : "s"}</small>
+              <div class="actions"><button type="button" class="danger" data-fandle-member-remove>Remove</button></div></li>`)
+            .join("")}</ul>`}
+          <h3>Add a developer</h3>
+          <p class="muted">Adds a verified developer without a Twitch check. Their verified games show here.</p>
+          <div class="game-search-wrap">
+            <input type="text" id="fandle-dev-search" placeholder="Search verified developers by name or handle…" aria-label="Search verified developers" autocomplete="off" />
+            <div id="fandle-dev-results" class="game-search-list"></div>
+          </div>` : ""}
           <p id="fandle-status" class="status" aria-live="polite"></p>
         </section>` : ""}
         ${isStaff ? `<section class="panel">
@@ -3548,6 +3572,40 @@ app.get("/lists/:slug", async (c) => {
             box.checked = !box.checked;
             setStatus("Could not save.");
           }
+        });
+
+        const fandleStatus = (text) => { const node = document.getElementById("fandle-status"); if (node) node.textContent = text; };
+        document.querySelectorAll("[data-fandle-member-remove]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const userId = button.closest("[data-member-id]").getAttribute("data-member-id");
+            const res = await fetch("/api/lists/" + listId + "/fandle-members/" + encodeURIComponent(userId), { method: "DELETE" }).catch(() => null);
+            if (res && res.ok) window.location.reload(); else fandleStatus("Could not remove that member.");
+          });
+        });
+        const devSearch = document.getElementById("fandle-dev-search");
+        const devResults = document.getElementById("fandle-dev-results");
+        let devTimer = 0;
+        devSearch?.addEventListener("input", () => {
+          window.clearTimeout(devTimer);
+          devTimer = window.setTimeout(async () => {
+            const q = devSearch.value.trim();
+            devResults.replaceChildren();
+            if (q.length < 2) return;
+            const res = await fetch("/api/admin/developers?q=" + encodeURIComponent(q)).catch(() => null);
+            const data = res && res.ok ? await res.json() : { results: [] };
+            if (data.results.length === 0) { const none = document.createElement("div"); none.className = "game-search-item"; none.textContent = "No verified developers found."; devResults.appendChild(none); return; }
+            for (const dev of data.results) {
+              const row = document.createElement("button");
+              row.type = "button";
+              row.className = "game-search-item";
+              row.textContent = dev.name + (dev.handle ? " (@" + dev.handle + ")" : "") + " · " + dev.games + " verified game" + (dev.games === 1 ? "" : "s");
+              row.addEventListener("click", async () => {
+                const add = await fetch("/api/lists/" + listId + "/fandle-members", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userId: dev.id }) }).catch(() => null);
+                if (add && add.ok) window.location.reload(); else fandleStatus("Could not add that developer.");
+              });
+              devResults.appendChild(row);
+            }
+          }, 250);
         });
 
         document.querySelectorAll("[data-fandle-hidden]").forEach((button) => {
@@ -6617,6 +6675,71 @@ app.put("/api/lists/:id/fandles/:gameId/hidden", async (c) => {
   }
   await writeAudit(c.env, auth.id, "list", listId, parsed.data.hidden ? "fandle_hide" : "fandle_unhide", { gameId });
   await purgeListPageCache(c, listId);
+  return c.json({ ok: true });
+});
+
+// Admins add or remove community members by hand, with no Twitch check.
+app.get("/api/admin/developers", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const q = (c.req.query("q") || "").trim().slice(0, 60);
+  if (q.length < 2) {
+    return c.json({ results: [] });
+  }
+  const like = `%${q.replace(/[%_]/g, "")}%`;
+  const rows = await c.env.DB.prepare(
+    `SELECT users.id, COALESCE(users.display_name, users.profile_handle, 'Developer') AS name,
+            CASE WHEN users.profile_public = 1 THEN users.profile_handle END AS handle,
+            (SELECT COUNT(*) FROM game_claims WHERE game_claims.user_id = users.id AND game_claims.status = 'verified') AS games
+     FROM users
+     WHERE (users.display_name LIKE ?1 OR users.profile_handle LIKE ?1)
+       AND EXISTS (SELECT 1 FROM game_claims WHERE game_claims.user_id = users.id AND game_claims.status = 'verified')
+     ORDER BY users.display_name LIMIT 10`
+  )
+    .bind(like)
+    .all<{ id: string; name: string; handle: string | null; games: number }>();
+  return c.json({ results: rows.results });
+});
+
+app.post("/api/lists/:id/fandle-members", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ userId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const listId = c.req.param("id");
+  const list = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE id = ?1").bind(listId).first<{ slug: string }>();
+  if (!list || !(await getFandleList(c.env, list.slug))) {
+    return c.json({ error: "This list doesn't take Fan-dles (it needs to be a public verified creator list with Fan-dles on)" }, 409);
+  }
+  if (!(await hasVerifiedClaim(c.env, parsed.data.userId))) {
+    return c.json({ error: "That person has no verified game yet" }, 409);
+  }
+  await c.env.DB.prepare(
+    `INSERT INTO fandle_members (list_id, user_id, source, followed_at, verified_at, expires_at, added_by_user_id)
+     VALUES (?1, ?2, 'manual', NULL, datetime('now'), ?3, ?4)
+     ON CONFLICT (list_id, user_id) DO UPDATE SET source = 'manual', verified_at = datetime('now'), expires_at = excluded.expires_at, added_by_user_id = excluded.added_by_user_id`
+  )
+    .bind(listId, parsed.data.userId, FANDLE_NO_EXPIRY, auth.id)
+    .run();
+  await writeAudit(c.env, auth.id, "list", listId, "fandle_add_member", { userId: parsed.data.userId });
+  await purgeListPageCache(c, listId);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/lists/:id/fandle-members/:userId", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  await c.env.DB.prepare("DELETE FROM fandle_members WHERE list_id = ?1 AND user_id = ?2").bind(c.req.param("id"), c.req.param("userId")).run();
+  await writeAudit(c.env, auth.id, "list", c.req.param("id"), "fandle_remove_member", { userId: c.req.param("userId") });
+  await purgeListPageCache(c, c.req.param("id"));
   return c.json({ ok: true });
 });
 

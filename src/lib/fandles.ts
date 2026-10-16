@@ -14,7 +14,8 @@ export const FANDLE_NO_EXPIRY = "9999-12-31 00:00:00";
 
 /** SQL for "this membership still counts" given the setting (null = always). Days is a validated integer. */
 export function fandleActiveSql(alias: string, membershipDays: number | null): string {
-  return membershipDays && Number.isInteger(membershipDays) ? `${alias}.verified_at > datetime('now', '-${membershipDays} days')` : "1 = 1";
+  // A member an admin added by hand never lapses.
+  return membershipDays && Number.isInteger(membershipDays) ? `(${alias}.source = 'manual' OR ${alias}.verified_at > datetime('now', '-${membershipDays} days'))` : "1 = 1";
 }
 /**
  * Games shown per developer, and in total, in a streamer's Fan-dles. No limit by default; an admin can set either at
