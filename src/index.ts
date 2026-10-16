@@ -2919,9 +2919,28 @@ app.get("/lists/:slug", async (c) => {
       .bind(list.id, user.id)
       .first<{ source: string; verified_at: string }>();
     if (await hasVerifiedClaim(c.env, user.id)) {
+      // Where each of the developer's games stands here, so a member is never left wondering why one isn't shown.
+      const mine = membership
+        ? (await c.env.DB.prepare(
+            `SELECT games.title,
+                    EXISTS(SELECT 1 FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = games.id) AS on_list,
+                    EXISTS(SELECT 1 FROM fandle_hidden WHERE list_id = ?1 AND game_id = games.id) AS hidden
+             FROM game_claims JOIN games ON games.id = game_claims.game_id AND games.status = 'approved'
+             WHERE game_claims.user_id = ?2 AND game_claims.status = 'verified'
+             ORDER BY games.title`
+          )
+            .bind(list.id, user.id)
+            .all<{ title: string; on_list: number; hidden: number }>()).results
+        : [];
+      const gameStatus = mine.length > 0
+        ? `<ul>${mine
+            .map((game) => `<li><strong>${escapeHtml(game.title)}</strong>: ${game.on_list ? "already on this list's main section, so it isn't repeated here" : game.hidden ? "hidden by the streamer" : "shown in Fan-dles"}</li>`)
+            .join("")}</ul>`
+        : "";
       const formHtml = (label: string) => `<form method="post" action="/auth/twitch/fandle" class="fandle-form"><input type="hidden" name="list" value="${escapeHtml(list.slug)}" /><button type="submit" class="btn">${label}</button></form>`;
       fandleJoin = membership
         ? `<p>Your verified games are in ${escapeHtml(list.title.replace(/'s Dailies$/, ""))}'s Fan-dles (${membership.source === "sub" ? "subscriber" : "follower"})${fandleLimits.membershipDays ? ` until ${escapeHtml(new Date(Date.parse(membership.verified_at.replace(" ", "T") + "Z") + fandleLimits.membershipDays * 86_400_000).toISOString().slice(0, 10))}` : ""}.</p>
+           ${gameStatus}
            <div class="actions">${formHtml("Check again")}<button type="button" id="fandle-leave" data-list-id="${escapeHtml(list.id)}">Leave Fan-dles</button></div>`
         : `<p><strong>Made a game?</strong> Show it in this community's Fan-dles. Subscribers qualify straight away, and followers after ${FANDLE_MIN_FOLLOW_DAYS} days. We ask Twitch once, with your permission, whether you follow or subscribe to this channel. Nothing else is read, and we don't keep access to your Twitch account.</p>
            ${formHtml("Check with Twitch")}`;
