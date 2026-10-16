@@ -297,14 +297,26 @@ app.post("/auth/twitch/fandle", async (c) => {
   return beginOAuth(c, "twitch", "fandle", FANDLE_SCOPES);
 });
 
+/**
+ * SQL for "this list belongs to a verified creator" (needs `curated_lists` and `users` joined on the owner): a creator's
+ * own list, or an editor-tagged list for a Twitch channel an admin has verified by username who hasn't got a list of
+ * their own yet. The second case is what lets a streamer count as verified before they ever sign in.
+ */
+const VERIFIED_LIST_SQL = `(
+  (curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL)
+  OR (curated_lists.kind = 'curated' AND curated_lists.twitch_user_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM creator_allowlist WHERE creator_allowlist.twitch_user_id = curated_lists.twitch_user_id)
+      AND NOT EXISTS (SELECT 1 FROM curated_lists own WHERE own.kind = 'creator' AND own.twitch_user_id = curated_lists.twitch_user_id))
+)`;
+
 type FandleList = { id: string; slug: string; owner_user_id: string; twitch_user_id: string };
 
 /** A creator list that takes Fan-dles: public, tagged with a Twitch channel, and with Fan-dles switched on. */
 async function getFandleList(env: Env, slug: string): Promise<FandleList | null> {
   return env.DB.prepare(
     `SELECT curated_lists.id, curated_lists.slug, curated_lists.owner_user_id, curated_lists.twitch_user_id
-     FROM curated_lists JOIN users ON users.id = curated_lists.owner_user_id
-     WHERE curated_lists.slug = ?1 AND curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL
+     FROM curated_lists LEFT JOIN users ON users.id = curated_lists.owner_user_id
+     WHERE curated_lists.slug = ?1 AND ${VERIFIED_LIST_SQL}
        AND curated_lists.visibility = 'public' AND curated_lists.twitch_user_id IS NOT NULL AND curated_lists.fandles_enabled = 1`
   )
     .bind(slug)
@@ -1586,6 +1598,19 @@ async function ensureCreatorList(env: Env, userId: string, twitch?: { twitchId: 
     }
     throw error;
   }
+  // Fan-dles members (and hidden games) from the streamer's earlier tagged list(s) carry over to their own list.
+  if (twitch) {
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE OR IGNORE fandle_members SET list_id = ?1
+         WHERE list_id IN (SELECT id FROM curated_lists WHERE twitch_user_id = ?2 AND kind = 'curated' AND id != ?1)`
+      ).bind(id, twitch.twitchId),
+      env.DB.prepare(
+        `UPDATE OR IGNORE fandle_hidden SET list_id = ?1
+         WHERE list_id IN (SELECT id FROM curated_lists WHERE twitch_user_id = ?2 AND kind = 'curated' AND id != ?1)`
+      ).bind(id, twitch.twitchId)
+    ]);
+  }
   const copied = await env.DB.prepare("SELECT COUNT(*) AS n FROM curated_list_items WHERE curated_list_id = ?1").bind(id).first<{ n: number }>();
   await writeAudit(env, userId, "list", id, "create_creator_list", { slug, copiedGames: copied?.n ?? 0 });
   await invalidateGameCaches(env);
@@ -2727,7 +2752,7 @@ app.get("/lists", async (c) => {
   const lists = await c.env.DB.prepare(
     `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
             curated_lists.twitch_login, curated_lists.twitch_user_id,
-            CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list,
+            CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_creator_list,
             (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
      FROM curated_lists
      LEFT JOIN users ON users.id = curated_lists.owner_user_id
@@ -2819,13 +2844,14 @@ app.get("/lists/:slug", async (c) => {
   const list = await c.env.DB.prepare(
     `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
             curated_lists.twitch_login, curated_lists.twitch_user_id, curated_lists.suggestions_enabled, curated_lists.fandles_enabled,
-            CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list
+            CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list,
+            CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_verified_list
      FROM curated_lists
      LEFT JOIN users ON users.id = curated_lists.owner_user_id
      WHERE curated_lists.slug = ?1`
   )
     .bind(slug)
-    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; fandles_enabled: number; suggestions_enabled: number }>();
+    .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; is_verified_list: number; fandles_enabled: number; suggestions_enabled: number }>();
   const userTwitchId = await getUserTwitchId(c.env, user);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return notFoundPage(c);
@@ -2872,7 +2898,7 @@ app.get("/lists/:slug", async (c) => {
   const suggestions = suggestionsOn ? await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null) : [];
 
   // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
-  const fandlesAvailable = !!list.is_creator_list && !!list.twitch_user_id && list.visibility === "public";
+  const fandlesAvailable = !!list.is_verified_list && !!list.twitch_user_id && list.visibility === "public";
   const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
   const fandleLimits = fandlesOn ? await getFandleLimits(c.env) : { perDeveloper: null, shown: null, membershipDays: null };
   const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper, fandleMembershipDays: fandleLimits.membershipDays }) : [];
@@ -2920,7 +2946,7 @@ app.get("/lists/:slug", async (c) => {
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${suggestionsOn ? " list-page" : ""}">
       <div class="list-head">
-      <h1>${escapeHtml(list.title)}${list.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
+      <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       </div>
       <p>${escapeHtml(list.description || "")}</p>
@@ -4313,9 +4339,10 @@ app.get("/admin/creators", async (c) => {
     : null;
   const allowlist = await c.env.DB.prepare(
     `SELECT creator_allowlist.twitch_user_id, creator_allowlist.twitch_login,
-            EXISTS(SELECT 1 FROM oauth_accounts WHERE provider = 'twitch' AND provider_user_id = creator_allowlist.twitch_user_id) AS signed_up
+            EXISTS(SELECT 1 FROM oauth_accounts WHERE provider = 'twitch' AND provider_user_id = creator_allowlist.twitch_user_id) AS signed_up,
+            (SELECT GROUP_CONCAT(title, ', ') FROM curated_lists WHERE twitch_user_id = creator_allowlist.twitch_user_id AND kind = 'curated' AND visibility = 'public') AS list_titles
      FROM creator_allowlist ORDER BY creator_allowlist.twitch_login`
-  ).all<{ twitch_user_id: string; twitch_login: string; signed_up: number }>();
+  ).all<{ twitch_user_id: string; twitch_login: string; signed_up: number; list_titles: string | null }>();
   const typeLabel: Record<string, string> = { affiliate: "Twitch Affiliate", partner: "Twitch Partner", manual: "Granted by staff" };
   return c.html(await layout("Verified creators", auth, `
     <main>
@@ -4334,13 +4361,13 @@ app.get("/admin/creators", async (c) => {
       </section>
       <section class="panel">
         <h2>Verify a Twitch streamer by username</h2>
-        <p>For a streamer who isn't an affiliate or partner, or who hasn't signed in yet. They become a verified creator, with a list of their own, as soon as they sign in with Twitch (straight away if they already have an account).</p>
+        <p>For a streamer who isn't an affiliate or partner, or who hasn't signed in yet. If they already have a public list tagged to their channel, it is verified (with the check and Fan-dles) straight away. They get a list of their own, and full creator tools, when they sign in with Twitch (at once if they already have an account).</p>
         <form id="allowlist-form" class="stack-form">
           <input name="login" placeholder="Twitch username" aria-label="Twitch username" maxlength="25" pattern="[A-Za-z0-9_]{4,25}" required />
           <button type="submit" class="btn">Verify streamer</button>
         </form>
         ${allowlist.results.length === 0 ? "" : `<ul class="stack">${allowlist.results
-          .map((row) => `<li class="panel" data-twitch-id="${escapeHtml(row.twitch_user_id)}"><strong>${escapeHtml(row.twitch_login)}</strong> <small class="muted">${row.signed_up ? "has an account" : "waiting for their first sign-in"}</small>
+          .map((row) => `<li class="panel" data-twitch-id="${escapeHtml(row.twitch_user_id)}"><strong>${escapeHtml(row.twitch_login)}</strong> <small class="muted">${row.signed_up ? "has an account" : row.list_titles ? `verified now on their list (${escapeHtml(row.list_titles)}); gets their own list at first sign-in` : "waiting for their first sign-in"}</small>
             <div class="actions"><button type="button" class="danger" data-allowlist-remove>Remove</button></div></li>`)
           .join("")}</ul>`}
       </section>
@@ -4430,7 +4457,8 @@ app.post("/api/admin/creators/twitch", async (c) => {
   }
   await writeAudit(c.env, auth.id, "user", account?.user_id ?? twitch.id, "verify_streamer", { twitchLogin: twitch.login, twitchUserId: twitch.id, hasAccount: !!account });
   await invalidateGameCaches(c.env);
-  return c.json({ ok: true, login: twitch.login, hasAccount: !!account });
+  const taggedLists = await c.env.DB.prepare("SELECT title FROM curated_lists WHERE twitch_user_id = ?1 AND kind = 'curated' AND visibility = 'public'").bind(twitch.id).all<{ title: string }>();
+  return c.json({ ok: true, login: twitch.login, hasAccount: !!account, verifiedLists: taggedLists.results.map((row) => row.title) });
 });
 
 app.delete("/api/admin/creators/twitch/:id", async (c) => {
