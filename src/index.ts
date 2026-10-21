@@ -10043,6 +10043,26 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .theme-toggle { padding: 0.25rem 0.5rem; cursor: pointer; }
       .logout-form { display: inline; margin: 0; }
       .logout-form button { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
+      /* Search: an inline field on wide screens; at 1200px and below an icon that opens the field over the whole header. */
+      .header-search { position: relative; display: flex; align-items: center; flex: 0 1 260px; min-width: 120px; margin-left: auto; }
+      .header-search input { width: 100%; min-width: 0; padding: 0.45rem 2.1rem 0.45rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--ink); font-size: 0.92rem; }
+      .header-search input::-webkit-search-cancel-button { display: none; }
+      .header-search-go { position: absolute; right: 0.15rem; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
+      .header-search-go:hover { color: var(--ink); }
+      .header-search-go svg, .search-toggle svg { width: 1.05rem; height: 1.05rem; }
+      .header-search-close, .search-toggle { display: none; }
+      .header-search + .header-tools { margin-left: 0; }
+      @media (min-width: 1201px) { .site-header > .site-nav { flex: none; } }
+      .search-toggle { align-items: center; justify-content: center; min-width: 44px; min-height: 40px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: none; color: var(--ink); cursor: pointer; }
+      .search-toggle svg { width: 1.2rem; height: 1.2rem; }
+      @media (max-width: 1200px) {
+        .search-toggle { display: inline-flex; }
+        .header-search { display: none; position: absolute; inset: 0; z-index: 5; flex: none; margin: 0; padding: 0 0.75rem; gap: 0.5rem; background: var(--bg); border-bottom: 1px solid var(--border); }
+        .site-header.searching .header-search { display: flex; }
+        .header-search input { flex: 1; width: auto; min-height: 44px; font-size: 1rem; padding-right: 2.6rem; }
+        .header-search-go { right: calc(0.75rem + 44px + 0.5rem + 0.2rem); }
+        .header-search-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border: 0; border-radius: 8px; background: none; color: var(--ink); font-size: 1.1rem; cursor: pointer; }
+      }
       .nav-menu { display: none; position: relative; }
       .nav-menu > summary { list-style: none; cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; font-size: 1.15rem; color: var(--ink); }
       .nav-menu > summary::-webkit-details-marker { display: none; }
@@ -10590,7 +10610,13 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/submit"${current("/submit")}>Submit</a>
         <span class="nav-extra">${secondaryLinks}</span>
       </nav>
+      <form class="header-search" id="header-search" role="search" action="/games" method="get">
+        <input type="search" name="q" id="header-search-input" placeholder="Search games" aria-label="Search games" autocomplete="off" enterkeyhint="search" maxlength="100" />
+        <button type="submit" class="header-search-go" aria-label="Search">${SEARCH_ICON}</button>
+        <button type="button" class="header-search-close" id="header-search-close" aria-label="Close search">\u2715</button>
+      </form>
       <div class="header-tools">
+        <button type="button" class="search-toggle" id="search-toggle" aria-label="Search games" aria-expanded="false" aria-controls="header-search">${SEARCH_ICON}</button>
         ${accountMarkup ? `<span class="account-desktop">${accountMarkup}</span>` : ""}
         ${themeToggle}
         <details class="nav-menu" id="nav-menu">
@@ -10629,6 +10655,33 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
           render();
         }));
         render();
+
+        // Search: on narrow screens the icon opens the field over the header; Escape or the close button puts it away.
+        const siteHeader = document.querySelector(".site-header");
+        const searchInput = document.getElementById("header-search-input");
+        const searchToggle = document.getElementById("search-toggle");
+        const setSearch = (open) => {
+          if (!siteHeader || !searchInput) return;
+          siteHeader.classList.toggle("searching", open);
+          if (searchToggle) searchToggle.setAttribute("aria-expanded", String(open));
+          if (open) { if (menu) menu.open = false; searchInput.focus(); searchInput.select(); }
+          else if (searchToggle && searchToggle.offsetParent !== null) searchToggle.focus();
+        };
+        if (searchInput && location.pathname === "/games") searchInput.value = new URLSearchParams(location.search).get("q") || "";
+        searchToggle?.addEventListener("click", () => setSearch(true));
+        document.getElementById("header-search-close")?.addEventListener("click", () => setSearch(false));
+        searchInput?.addEventListener("keydown", (event) => { if (event.key === "Escape") setSearch(false); });
+        document.getElementById("header-search")?.addEventListener("submit", (event) => {
+          if (!searchInput.value.trim()) { event.preventDefault(); searchInput.focus(); }
+        });
+        // "/" jumps to the search field on wide screens, unless the visitor is already typing somewhere.
+        document.addEventListener("keydown", (event) => {
+          if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || !searchInput) return;
+          const t = event.target;
+          if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+          event.preventDefault();
+          if (searchToggle && searchToggle.offsetParent !== null) setSearch(true); else searchInput.focus();
+        });
 
         // A tap outside the open phone menu only closes it (cards are links, so it would otherwise open a game).
         const menu = document.getElementById("nav-menu");
@@ -10697,6 +10750,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
 }
 
 // JSON for an inline <script>: escaping "<" stops a value such as a game title from closing the tag.
+const SEARCH_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5 21 21"/></svg>`;
+
 function scriptJson(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }

@@ -4,6 +4,12 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-21",
+    items: [
+      "Search from any page: a search box in the header on wide screens, and a search icon on phones and tablets that opens the full search bar. Press / to jump to it.",
+    ]
+  },
+  {
     date: "2026-10-15",
     items: [
       "Verified developers who have joined our Discord server now get the Dle Developer role automatically: as soon as you verify a game, when you join afterwards, or the next time you sign in with Discord.",
