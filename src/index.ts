@@ -10815,7 +10815,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .game-sub .tag { font-size: 0.75rem; padding: 0.1rem 0.4rem; }
       .game-sub .meta { margin: 0; }
       /* Game names, the same on every card and row. */
-      .game-title { font-size: 1.1rem; font-weight: 700; line-height: 1.3; color: var(--title-ink); text-decoration-color: var(--border); }
+      /* anywhere (not break-word): a long unbroken word then counts as breakable in the card's min-content width, so it can't widen the card. */
+      .game-title { font-size: 1.1rem; font-weight: 700; line-height: 1.3; color: var(--title-ink); text-decoration-color: var(--border); overflow-wrap: anywhere; }
       .game-title:hover { text-decoration-color: currentColor; }
       /* The game name's link stretches over the whole card, so a tap anywhere opens the game; buttons and tags sit above it. */
       .card-click { position: relative; }
@@ -10910,6 +10911,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .stack-form { display:flex; flex-direction:column; gap:0.6rem; }
       /* A select with a very long option would otherwise stretch the form (and the page) past a phone screen. */
       .stack-form label, .stack-form select, .stack-form input, .stack-form textarea { min-width: 0; max-width: 100%; }
+      /* A select sizes to its longest option (time zone names), so it fills the column instead of pushing the form wider than the screen. */
+      .stack-form select { width: 100%; }
+      .stack-form fieldset { min-width: 0; max-width: 100%; }
+      .stack-form [data-reset-group] { min-width: 0; }
+      .stack-form [data-reset-group] > label { display: flex; flex-direction: column; gap: 0.25rem; }
       textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
       .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
@@ -11213,6 +11219,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .compact-actions .hide-btn { padding-left: 0.6rem; padding-right: 0.6rem; }
         .compact-actions .hide-btn::after { inset: -9px -5px; }
         .compact-actions, .card-actions { gap: 0.3rem; }
+        /* Game cards: when the name and the buttons don't both fit on the first line (long titles on 320-400px phones),
+           the buttons drop to their own line instead of squeezing the name into a sliver or pushing the card wider than the screen. */
+        .game-top { flex-wrap: wrap; row-gap: 0.4rem; }
+        .game-name { flex: 1 1 auto; }
+        .game-row .compact-actions { flex-wrap: wrap; max-width: 100%; }
         /* List and rotation rows on phones: the name, then "% liked · Resets in" across the full width, then the
            category pills with the buttons beside them (the buttons drop below the pills only if both don't fit). */
         .rotation-list li:not(.empty-state) { flex-wrap: wrap; row-gap: 0.4rem; column-gap: 0.5rem; }
