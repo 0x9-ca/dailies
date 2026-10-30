@@ -70,6 +70,8 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - `/changelog` lists visitor-facing feature updates by day from `CHANGELOG` in `src/lib/changelog.ts`; add an entry with every user-visible change.
 - Games listed in the last 7 days (`COALESCE(approved_at, created_at)`, `listedAt` from `listGames()`) show a "New" pill (`renderNewBadge()`) on cards and the game page header. The clock decides, not the visitor, so it is cache-safe.
 - `GET /feed.xml` is an Atom feed of the 50 newest approved games (same games as the sitemap, NSFW included). Linked from `layout()`'s head and the footer.
+- `GET /feed.xml?category=<slug>` filters the feed to one active category (404 XML for unknown slugs). `/games?category=` pages add it as a second alternate link (`layout()`'s `feed` option) and a "Feed" link under the heading.
+- `/admin/submissions` marks possible duplicates of pending submissions (`findPossibleDuplicates()`, `urlLocationKey()` in `src/lib/url.ts`: same host without `www.` and path without trailing slash, or same title ignoring case and punctuation) against every non-rejected game, in a `.duplicate-warning` line. Admin-only; the API route `/api/admin/submissions` does not show them.
 - `GET /badge/:slug.svg` is the developer badge (`renderBadgeSvg()`, shown with its HTML snippet in the "Help players find your game" panel). It sets its own CSP, which the global middleware leaves alone.
 - Share buttons (`data-share`, `data-share-title`) on game and list pages use `navigator.share` with the canonical URL, else copy it and toast "Link copied". Per-visitor state: none.
 - `/llms.txt` is a generated Markdown overview (categories, public lists, top 30 games) for AI assistants.

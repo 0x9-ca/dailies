@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
+      "Each category has its own feed of new games for any feed reader. Open a category on Browse and tap Feed under its name.",
       "Your rotation now shows how many of today's games you've played, a Play next button for the first one you haven't, and a day streak when you finish them all.",
       "Not interested in a game? Tap the eye on its card to hide it from the home page and Browse. You can undo it right away, or unhide games from the bottom of Browse or from Settings.",
       "Games listed in the last 7 days show a small New badge on their cards and their game page.",
