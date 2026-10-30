@@ -3281,22 +3281,43 @@ app.get("/lists/:slug", async (c) => {
       </section>`
     : "";
 
+  const suggestPanelHtml = suggestionsOn ? `<details class="suggest-panel" id="suggest-panel">
+        <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
+        <div class="suggest-body">
+          <form class="suggest-form" id="suggest-form" autocomplete="off">
+            <div class="game-search-wrap">
+              <input type="text" id="suggest-input" placeholder="Suggest a game…" aria-label="Search for a game to suggest" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest-options" maxlength="100" />
+              <div id="suggest-options" class="game-search-list" role="listbox"></div>
+            </div>
+            <button type="submit" id="suggest-submit" disabled>Suggest</button>
+          </form>
+          <ol class="suggest-list" id="suggest-list"></ol>
+          <button type="button" class="suggest-more" id="suggest-more" aria-expanded="false" hidden></button>
+          <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet. Know a game that belongs here? Suggest it.</p>
+        </div>
+      </details>` : "";
+  const streamHost = new URL(c.env.APP_URL).host;
   // The side-by-side / tabbed layout applies whenever there is a second section: suggestions, Fan-dles, or both.
   const layoutOn = suggestionsOn || !!fandleSection;
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
-      <span class="list-head-actions">
-        <button type="button" class="secondary" data-share data-share-title="${escapeHtml(list.title)}">Share</button>
-        ${isAdminEditor || items.results.length === 0 ? "" : `<button type="button" class="secondary" id="add-all-btn">Add all to my rotation</button>`}
-      </span>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
+      <div class="list-head-actions" id="head-actions">
+        <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
+        ${canEdit ? `<a class="btn" data-head-item data-head-keep href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a>` : ""}
+        ${isAdminEditor || items.results.length === 0 ? "" : `<button type="button" class="secondary" data-head-item id="add-all-btn">Add all to my rotation</button>`}
+        ${isAdminEditor ? "" : `<button type="button" class="secondary" data-head-item id="stream-toggle" aria-pressed="false" title="Large-type view for streaming (Esc exits)">Stream mode</button>`}
+        <div class="head-more" id="head-more" hidden>
+          <button type="button" class="secondary" id="head-more-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="head-more-menu" aria-label="More actions" title="More actions">⋯</button>
+          <div class="head-more-menu" id="head-more-menu" role="menu" aria-label="More actions" hidden></div>
+        </div>
       </div>
-      <p>${escapeHtml(list.description || "")}</p>
+      </div>
+      ${list.description ? `<div class="list-desc-wrap"><p class="list-desc" id="list-desc">${escapeHtml(list.description)}</p><button type="button" class="list-desc-more" id="list-desc-more" aria-expanded="false" aria-controls="list-desc" hidden>More</button></div>` : ""}
       ${isCreatorOwner ? `<p class="panel creator-note">This is your creator list. It's <strong>${list.visibility}</strong>${list.visibility === "public" ? " and anyone can see it" : ""}, and suggestions are <strong>${list.suggestions_enabled === 1 ? "open" : "off"}</strong>. Use Edit list to change either. <a href="/me/settings">Creator settings</a></p>` : ""}
-      ${canEdit ? `<p><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>` : ""}
-      ${canEdit ? `<p><a class="btn" href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a></p>` : ""}
+      ${canEdit ? `<p class="list-meta-line"><code>${escapeHtml(list.slug)}</code> · ${list.visibility}</p>` : ""}
       ${isAdminEditor ? `
         <section class="panel">
           <h2>Edit list</h2>
@@ -3357,27 +3378,12 @@ app.get("/lists/:slug", async (c) => {
       ` : ""}
       ${!layoutOn ? "" : `<div class="list-layout${fandleSection ? " has-fandles" : ""}${suggestionsOn ? "" : " no-suggest"}"${fandleSection && fandleNotice ? ' data-default-tab="fandles"' : ""}>
       <div class="list-tabs" role="tablist" aria-label="List sections">
-        <button type="button" role="tab" id="tab-list" data-tab="list" aria-selected="true">List <span class="tab-count">${items.results.length}</span></button>
+        <button type="button" role="tab" id="tab-list" data-tab="list" aria-selected="true">List <span class="tab-count" data-list-count>${items.results.length}</span></button>
         ${fandleSection ? `<button type="button" role="tab" id="tab-fandles" data-tab="fandles" aria-selected="false" tabindex="-1">Fan-dles <span class="tab-count">${fandleGames.length > 0 ? fandleGames.length : ""}</span></button>` : ""}
         ${suggestionsOn ? `<button type="button" role="tab" id="tab-suggest" data-tab="suggest" aria-selected="false" tabindex="-1">Suggestions <span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>` : ""}
       </div>
-      ${suggestionsOn ? `      <details class="suggest-panel" id="suggest-panel">
-        <summary><span class="suggest-heading">Suggestions</span> <span class="suggest-count" id="suggest-count">${suggestions.length > 0 ? `(${suggestions.length})` : ""}</span></summary>
-        <div class="suggest-body">
-          <p class="suggest-help">Know a game that belongs here? Suggest it, or agree with someone else's suggestion.</p>
-          <form class="suggest-form" id="suggest-form" autocomplete="off">
-            <div class="game-search-wrap">
-              <input type="text" id="suggest-input" placeholder="Search games…" aria-label="Search for a game to suggest" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="suggest-options" maxlength="100" />
-              <div id="suggest-options" class="game-search-list" role="listbox"></div>
-            </div>
-            <button type="submit" id="suggest-submit" disabled>Suggest</button>
-          </form>
-          <ol class="suggest-list" id="suggest-list"></ol>
-          <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet.</p>
-        </div>
-      </details>` : ""}
       <div class="list-main">`}
-      ${isAdminEditor ? "" : `<div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div>`}
+      ${isAdminEditor ? "" : `<div class="list-bar"><h2 class="list-bar-title">Games <span class="tab-count" id="list-count" data-list-count>${items.results.length}</span></h2><div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div></div>`}
       <ol class="rotation-list" id="list-items">
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
@@ -3412,18 +3418,37 @@ app.get("/lists/:slug", async (c) => {
         }).join("")}
       </ol>
       <p id="list-reorder-status" class="status" aria-live="polite"></p>
-      ${!layoutOn ? "" : `</div>${fandleSection}</div>`}
+      ${!layoutOn ? "" : `</div>
+      <aside class="list-sidebar" id="list-sidebar" aria-label="${fandleSection && suggestionsOn ? "Fan-dles and suggestions" : fandleSection ? "Fan-dles" : "Suggestions"}">
+        <div class="side-head">
+          <div class="side-tabs" role="tablist" aria-label="Sidebar sections">
+            ${fandleSection ? `<button type="button" role="tab" id="stab-fandles" data-side="fandles" aria-selected="false" aria-controls="fandles" title="Fan-dles">${SIDE_ICON_FANDLES}<span class="side-label">Fan-dles</span><span class="tab-count">${fandleGames.length > 0 ? fandleGames.length : ""}</span></button>` : ""}
+            ${suggestionsOn ? `<button type="button" role="tab" id="stab-suggest" data-side="suggest" aria-selected="false" aria-controls="suggest-panel" title="Suggestions">${SIDE_ICON_SUGGEST}<span class="side-label">Suggestions</span><span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>` : ""}
+          </div>
+          <button type="button" class="side-toggle" id="side-toggle" aria-expanded="true" aria-controls="list-sidebar" aria-label="Collapse sidebar" title="Collapse sidebar"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        </div>
+        ${suggestPanelHtml}
+        ${fandleSection}
+      </aside></div>`}
+      ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions)}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
+    <script>${LIST_PAGE_SCRIPT}</script>
     ${layoutOn ? `<script>
-      // Phones: the list, Fan-dles and suggestions are tabs. Wider screens show them side by side and hide the tab bar.
+      // Phones: the list, Fan-dles and suggestions are tabs (.list-tabs). From 900px the list stands alone and Fan-dles and
+      // suggestions are tabs in the right-hand sidebar (.side-tabs), which can collapse to a rail (dgl_list_sidebar_v1).
       (() => {
         const layout = document.querySelector(".list-layout");
         const tabs = [...document.querySelectorAll(".list-tabs [role=tab]")];
+        const sideTabs = [...document.querySelectorAll(".side-tabs [role=tab]")];
+        const toggle = document.getElementById("side-toggle");
         if (!layout || tabs.length === 0) return;
+        const root = document.documentElement;
         const names = tabs.map((tab) => tab.dataset.tab);
+        const sideNames = sideTabs.map((tab) => tab.dataset.side);
         const wide = window.matchMedia("(min-width: 900px)");
-        const select = (name, focus) => {
+        const panel = document.getElementById("suggest-panel");
+        const selectPhone = (name, focus) => {
           layout.dataset.tab = name;
           tabs.forEach((tab) => {
             const on = tab.dataset.tab === name;
@@ -3431,26 +3456,67 @@ app.get("/lists/:slug", async (c) => {
             tab.tabIndex = on ? 0 : -1;
             if (on && focus) tab.focus();
           });
-          const panel = document.getElementById("suggest-panel");
           if (name === "suggest" && panel) panel.open = true;
-          if (!wide.matches) { try { history.replaceState(null, "", "#" + name); } catch {} }
+        };
+        const selectSide = (name, focus) => {
+          layout.dataset.side = name;
+          sideTabs.forEach((tab) => {
+            const on = tab.dataset.side === name;
+            tab.setAttribute("aria-selected", on ? "true" : "false");
+            tab.tabIndex = on ? 0 : -1;
+            if (on && focus) tab.focus();
+          });
+          if (name === "suggest" && panel) panel.open = true;
+        };
+        const select = (name, focus, byUser) => {
+          if (names.includes(name)) selectPhone(name, focus && !wide.matches);
+          if (sideNames.includes(name)) selectSide(name, focus && wide.matches);
+          if (byUser && !wide.matches) { try { history.replaceState(null, "", "#" + name); } catch {} }
         };
         tabs.forEach((tab, index) => {
-          tab.addEventListener("click", () => select(tab.dataset.tab));
+          tab.addEventListener("click", () => select(tab.dataset.tab, false, true));
           tab.addEventListener("keydown", (event) => {
             const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
             if (!step) return;
             event.preventDefault();
-            select(names[(index + step + names.length) % names.length], true);
+            select(names[(index + step + names.length) % names.length], true, true);
+          });
+        });
+        // Collapse to a rail; the choice is remembered in this browser.
+        const setCollapsed = (on, persist) => {
+          root.classList.toggle("dgl-sb-collapsed", on);
+          if (toggle) {
+            toggle.setAttribute("aria-expanded", on ? "false" : "true");
+            toggle.setAttribute("aria-label", on ? "Expand sidebar" : "Collapse sidebar");
+            toggle.title = on ? "Expand sidebar" : "Collapse sidebar";
+          }
+          if (persist) { try { window.localStorage.setItem("dgl_list_sidebar_v1", on ? "collapsed" : "expanded"); } catch {} }
+        };
+        setCollapsed(root.classList.contains("dgl-sb-collapsed"), false);
+        toggle?.addEventListener("click", () => setCollapsed(!root.classList.contains("dgl-sb-collapsed"), true));
+        sideTabs.forEach((tab, index) => {
+          tab.addEventListener("click", () => {
+            // A tab in the rail opens the sidebar on that tab.
+            if (root.classList.contains("dgl-sb-collapsed")) setCollapsed(false, true);
+            select(tab.dataset.side, false, true);
+          });
+          tab.addEventListener("keydown", (event) => {
+            const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+            if (!step) return;
+            event.preventDefault();
+            select(sideNames[(index + step + sideNames.length) % sideNames.length], true, true);
           });
         });
         const fromHash = window.location.hash.slice(1);
-        select(names.includes(fromHash) ? fromHash : names.includes(layout.dataset.defaultTab) ? layout.dataset.defaultTab : "list");
-        // Keep the Suggestions tab's number in step with the panel's own count.
+        const start = names.includes(fromHash) ? fromHash : names.includes(layout.dataset.defaultTab) ? layout.dataset.defaultTab : "list";
+        select(start);
+        if (!sideNames.includes(start)) selectSide(sideNames[0]);
+        if (fromHash && sideNames.includes(fromHash) && wide.matches) setCollapsed(false, false);
+        // Keep the tabs' Suggestions numbers in step with the panel's own count.
         const count = document.getElementById("suggest-count");
-        const tabCount = document.querySelector("[data-tab-count=suggest]");
-        if (count && tabCount) {
-          const sync = () => { tabCount.textContent = count.textContent.replace(/[()]/g, "").trim(); };
+        const tabCounts = [...document.querySelectorAll("[data-tab-count=suggest]")];
+        if (count && tabCounts.length > 0) {
+          const sync = () => { const text = count.textContent.replace(/[()]/g, "").trim(); tabCounts.forEach((node) => { node.textContent = text; }); };
           new MutationObserver(sync).observe(count, { childList: true, characterData: true, subtree: true });
         }
       })();
@@ -3493,11 +3559,34 @@ app.get("/lists/:slug", async (c) => {
         syncOpen();
         panel.querySelector("summary")?.addEventListener("click", (event) => { if (wide.matches) event.preventDefault(); });
 
-        const DEV_CHECK_SVG = ${scriptJson(CHECK_SVG)};
+        const moreBtn = document.getElementById("suggest-more");
+        const streamTop = document.getElementById("stream-top");
+        const TOP_N = 5;
+        let showAll = false;
         const render = () => {
           countEl.textContent = suggestions.length > 0 ? "(" + suggestions.length + ")" : "";
           emptyEl.hidden = suggestions.length > 0;
-          const rows = suggestions.map((item) => {
+          if (suggestions.length <= TOP_N) showAll = false;
+          const shown = showAll ? suggestions : suggestions.slice(0, TOP_N);
+          if (moreBtn) {
+            moreBtn.hidden = suggestions.length <= TOP_N;
+            moreBtn.textContent = showAll ? "Show top " + TOP_N : "Show all (" + suggestions.length + ")";
+            moreBtn.setAttribute("aria-expanded", showAll ? "true" : "false");
+          }
+          if (streamTop) {
+            streamTop.replaceChildren(...suggestions.slice(0, 3).map((item) => {
+              const li = document.createElement("li");
+              const name = document.createElement("span");
+              name.className = "st-title";
+              name.textContent = item.title;
+              const votes = document.createElement("span");
+              votes.className = "st-votes";
+              votes.textContent = "▲ " + item.votes;
+              li.append(name, votes);
+              return li;
+            }));
+          }
+          const rows = shown.map((item) => {
             const li = document.createElement("li");
             li.className = "suggest-item";
             li.dataset.gameId = item.gameId;
@@ -3527,35 +3616,13 @@ app.get("/lists/:slug", async (c) => {
               link.appendChild(badge);
             }
             main.appendChild(link);
-            if (item.categories.length > 0 || item.developer) {
-              const pills = document.createElement("div");
-              pills.className = "category-pills";
-              item.categories.forEach((cat) => {
-                const pill = document.createElement("a");
-                pill.className = "tag category-pill";
-                pill.href = "/games?category=" + encodeURIComponent(cat.slug);
-                pill.textContent = cat.name;
-                pill.style.color = "hsl(" + cat.hue + ", 65%, 28%)";
-                pill.style.background = "hsl(" + cat.hue + ", 65%, 90%)";
-                pill.style.borderColor = "hsl(" + cat.hue + ", 55%, 72%)";
-                pills.appendChild(pill);
-              });
-              if (item.developer) {
-                const chip = document.createElement(item.developer.handle ? "a" : "span");
-                chip.className = "tag category-pill dev-pill" + (item.developer.handle ? "" : " dev-pill-static");
-                if (item.developer.handle) {
-                  chip.href = "/u/" + encodeURIComponent(item.developer.handle);
-                  chip.setAttribute("aria-label", "Verified developer: " + item.developer.name);
-                }
-                chip.title = "Verified developer: " + item.developer.name;
-                chip.insertAdjacentHTML("afterbegin", DEV_CHECK_SVG);
-                const chipName = document.createElement("span");
-                chipName.className = "dev-pill-name";
-                chipName.textContent = item.developer.name;
-                chip.appendChild(chipName);
-                pills.appendChild(chip);
-              }
-              main.appendChild(pills);
+            // One muted line instead of a pill per category: the rows stay short.
+            const sub = [...item.categories.slice(0, 2).map((cat) => cat.name), ...(item.developer ? ["by " + item.developer.name] : [])].join(" · ");
+            if (sub) {
+              const line = document.createElement("div");
+              line.className = "suggest-sub";
+              line.textContent = sub;
+              main.appendChild(line);
             }
             const vote = document.createElement("button");
             vote.type = "button";
@@ -3614,6 +3681,8 @@ app.get("/lists/:slug", async (c) => {
             busy = false;
           }
         };
+
+        moreBtn?.addEventListener("click", () => { showAll = !showAll; render(); });
 
         listEl.addEventListener("click", async (event) => {
           const button = event.target.closest("button[data-action]");
@@ -3831,6 +3900,7 @@ app.get("/lists/:slug", async (c) => {
               sorter.refresh();
               manualIds = ids;
               if (sortWrap) sortWrap.hidden = ids.length < 2;
+              document.querySelectorAll("[data-list-count]").forEach((node) => { node.textContent = String(ids.length); });
             }, removed.length > 0 ? 350 : 0);
             // A game that joined (or left) the list has left the suggestions too.
             window.dglSuggestRefresh?.();
@@ -4175,7 +4245,7 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>
     ` : ""}
-  `, c.env, { path: `/lists/${list.slug}`, description: listMetaDescription(list, items.results), noindex: isAdminEditor || list.visibility !== "public" || items.results.length === 0, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]]), gameItemListLd(items.results)] }));
+  `, c.env, { headHtml: isAdminEditor ? "" : LIST_PAGE_HEAD_SCRIPT, path: `/lists/${list.slug}`, description: listMetaDescription(list, items.results), noindex: isAdminEditor || list.visibility !== "public" || items.results.length === 0, jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"], [list.title, `/lists/${list.slug}`]]), gameItemListLd(items.results)] }));
 });
 
 // Sibling 0x9.ca sites, cross-listed so Google discovers them via referring sitemaps.
@@ -10782,6 +10852,138 @@ function renderListSortControl(options: { votes?: boolean } = {}): string {
   </label>`;
 }
 
+// Curated list pages: set before first paint (no layout jump). The sidebar collapse is remembered per browser
+// (dgl_list_sidebar_v1); stream mode comes from ?view=stream (never remembered) or the remembered toggle (dgl_list_stream_v1).
+// Handled client-side because the edge-cached HTML is the same for every query string.
+const LIST_PAGE_HEAD_SCRIPT = `<script>(function(){var h=document.documentElement;try{if(localStorage.getItem("dgl_list_sidebar_v1")==="collapsed")h.classList.add("dgl-sb-collapsed")}catch(e){}try{if(new URLSearchParams(location.search).get("view")==="stream")h.classList.add("dgl-stream","dgl-stream-forced");else if(localStorage.getItem("dgl_list_stream_v1")==="1")h.classList.add("dgl-stream")}catch(e){}})()</script>`;
+
+const SIDE_ICON_FANDLES = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><circle cx="7.5" cy="6.5" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M2 16c0-3 2.4-5 5.5-5s5.5 2 5.5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="14.5" cy="7.5" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 11.3c2 .2 3.6 1.7 3.6 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+const SIDE_ICON_SUGGEST = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 4.5h14v9H9l-4 3v-3H3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 7v4M8 9h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+
+// Stream mode footer: where to suggest, and the three leading suggestions (the suggestions script keeps them current).
+function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
+  const address = `${host}/lists/${slug}`;
+  return `<div class="stream-bar" id="stream-bar">
+    <p class="stream-cta">${suggestionsOn ? "Suggest games at " : ""}<strong>${escapeHtml(address)}</strong></p>
+    ${suggestionsOn ? `<ol class="stream-top" id="stream-top" aria-label="Top suggestions">${suggestions.slice(0, 3).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
+  </div>
+  <button type="button" class="stream-exit" id="stream-exit">Exit stream mode</button>`;
+}
+
+// Curated list header and modes: "⋯" overflow menu, clamped description, stream mode.
+const LIST_PAGE_SCRIPT = `
+  (() => {
+    const root = document.documentElement;
+    const wide = window.matchMedia("(min-width: 900px)");
+    const head = document.querySelector(".list-head");
+    const actions = document.getElementById("head-actions");
+    const more = document.getElementById("head-more");
+    const moreBtn = document.getElementById("head-more-btn");
+    const menu = document.getElementById("head-more-menu");
+    const items = actions ? Array.from(actions.querySelectorAll("[data-head-item]")) : [];
+    const menuItems = () => Array.from(menu.children);
+    const closeMenu = (focusBtn) => {
+      if (!menu || menu.hidden) return;
+      menu.hidden = true;
+      moreBtn.setAttribute("aria-expanded", "false");
+      if (focusBtn) moreBtn.focus();
+    };
+    const openMenu = () => {
+      menu.hidden = false;
+      moreBtn.setAttribute("aria-expanded", "true");
+      menuItems()[0]?.focus();
+    };
+    const place = (item, inMenu) => {
+      if (inMenu) { menu.appendChild(item); item.setAttribute("role", "menuitem"); item.tabIndex = -1; }
+      else { actions.insertBefore(item, more); item.removeAttribute("role"); item.removeAttribute("tabindex"); }
+    };
+    // Actions other than the first (Share) and Edit move into the menu, last first, until the row fits on one line.
+    const fit = () => {
+      if (!actions || !head || !more) return;
+      closeMenu();
+      items.forEach((item) => place(item, false));
+      more.hidden = true;
+      const title = head.querySelector("h1");
+      const wrapped = () => actions.getBoundingClientRect().top - title.getBoundingClientRect().top > title.getBoundingClientRect().height * 0.6;
+      for (let i = items.length - 1; i > 0; i -= 1) {
+        if (wide.matches && !wrapped()) break;
+        if (items[i].hasAttribute("data-head-keep")) continue;
+        // The item moved last goes first in the menu, so the menu keeps the buttons' own order.
+        if (menu.firstChild) menu.insertBefore(items[i], menu.firstChild); else place(items[i], true);
+        items[i].setAttribute("role", "menuitem");
+        items[i].tabIndex = -1;
+        more.hidden = false;
+      }
+    };
+    let fitTimer = 0;
+    const scheduleFit = () => { window.cancelAnimationFrame(fitTimer); fitTimer = window.requestAnimationFrame(fit); };
+    if (moreBtn) {
+      moreBtn.addEventListener("click", () => { if (menu.hidden) openMenu(); else closeMenu(); });
+      moreBtn.addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" && menu.hidden) { event.preventDefault(); openMenu(); }
+      });
+      menu.addEventListener("keydown", (event) => {
+        const list = menuItems();
+        const index = list.indexOf(document.activeElement);
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(true); }
+        else if (event.key === "ArrowDown") { event.preventDefault(); list[(index + 1) % list.length]?.focus(); }
+        else if (event.key === "ArrowUp") { event.preventDefault(); list[(index - 1 + list.length) % list.length]?.focus(); }
+        else if (event.key === "Home") { event.preventDefault(); list[0]?.focus(); }
+        else if (event.key === "End") { event.preventDefault(); list[list.length - 1]?.focus(); }
+        else if (event.key === "Tab") closeMenu();
+      });
+      menu.addEventListener("click", () => window.setTimeout(() => closeMenu(), 0));
+      document.addEventListener("click", (event) => { if (!more.contains(event.target)) closeMenu(); });
+    }
+    window.addEventListener("resize", scheduleFit);
+    fit();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleFit);
+
+    // Description: three lines, then "More".
+    const desc = document.getElementById("list-desc");
+    const descMore = document.getElementById("list-desc-more");
+    const checkDesc = () => {
+      if (!desc || !descMore || desc.classList.contains("expanded")) return;
+      descMore.hidden = desc.scrollHeight <= desc.clientHeight + 1;
+    };
+    if (descMore) {
+      descMore.addEventListener("click", () => {
+        const open = desc.classList.toggle("expanded");
+        descMore.textContent = open ? "Less" : "More";
+        descMore.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      window.addEventListener("resize", checkDesc);
+      checkDesc();
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(checkDesc);
+    }
+
+    // Stream mode: large type, no site chrome or sidebar. ?view=stream forces it for this load only.
+    const toggle = document.getElementById("stream-toggle");
+    const exit = document.getElementById("stream-exit");
+    const setStream = (on) => {
+      const wasForced = root.classList.contains("dgl-stream-forced");
+      root.classList.toggle("dgl-stream", on);
+      if (toggle) toggle.setAttribute("aria-pressed", on ? "true" : "false");
+      if (!on && wasForced) {
+        root.classList.remove("dgl-stream-forced");
+        try { const url = new URL(window.location.href); url.searchParams.delete("view"); window.history.replaceState(null, "", url); } catch {}
+      }
+      if (!wasForced) { try { window.localStorage.setItem("dgl_list_stream_v1", on ? "1" : "0"); } catch {} }
+      if (on) window.scrollTo(0, 0);
+      scheduleFit();
+      window.setTimeout(checkDesc, 50);
+    };
+    if (toggle) {
+      toggle.setAttribute("aria-pressed", root.classList.contains("dgl-stream") ? "true" : "false");
+      toggle.addEventListener("click", () => setStream(!root.classList.contains("dgl-stream")));
+    }
+    if (exit) exit.addEventListener("click", () => setStream(false));
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && root.classList.contains("dgl-stream") && !event.defaultPrevented) setStream(false);
+    });
+  })();
+`;
+
 function getResetMetaLabel(
   resetBasis: "local" | "server" | null | undefined,
   resetTimeMinutes: number | null | undefined,
@@ -10871,7 +11073,7 @@ function breadcrumbLd(items: Array<[string, string]>) {
   };
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string } }): Promise<string> {
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string }; headHtml?: string }): Promise<string> {
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
@@ -10910,6 +11112,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
+    ${opts?.headHtml ?? ""}
     <script>${GAME_ACTIONS_SCRIPT}</script>
     <script>${HIDDEN_GAMES_SCRIPT}</script>
     <script>${ROTATION_TODAY_SCRIPT}</script>
@@ -10993,6 +11196,20 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --heat-2: #0b78ad;
         --heat-3: #00a4fc;
         --heat-4: #7dd3fc;
+        --sp-1: 0.25rem;
+        --sp-2: 0.5rem;
+        --sp-3: 0.75rem;
+        --sp-4: 1rem;
+        --sp-5: 1.5rem;
+        --sp-6: 2rem;
+        --row-hover: #262626;
+        --stream-bg: #000000;
+        --stream-row: #0d0d0d;
+        --stream-ink: #ffffff;
+        --stream-sep: #6b6b6b;
+        --stream-accent: #38bdf8;
+        --stream-reset: #fde047;
+        --stream-bar: #111111;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -11025,6 +11242,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --heat-2: #6ab6e3;
         --heat-3: #1f8fcf;
         --heat-4: #005a94;
+        --row-hover: #f0f0f4;
+        --stream-bg: #ffffff;
+        --stream-row: #ffffff;
+        --stream-ink: #000000;
+        --stream-sep: #3a3a40;
+        --stream-accent: #005a94;
+        --stream-reset: #8a1c00;
+        --stream-bar: #eeeef2;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -11154,14 +11379,6 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       li.played { opacity: 0.6; transition: opacity 0.15s ease; }
       li.played:hover, li.played:focus-within { opacity: 0.85; }
       .twitch-watch { text-align: center; }
-      /* Wide screens: the list title and its Twitch button share a line. */
-      @media (min-width: 900px) {
-        .list-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; margin: 1.34rem 0 1rem; }
-        .list-head h1 { margin: 0; }
-        .list-head-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-        .list-head-actions button { min-height: 44px; }
-        .list-head .twitch-watch { margin: 0; }
-      }
       .btn:hover { background: var(--primary-strong); }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
       .btn-discord { gap: 0.5rem; background: #5865F2; border-color: #5865F2; color: #fff; }
@@ -11396,52 +11613,101 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .suggest-title:hover { color: var(--accent); }
       .suggest-item button { padding: 0.2rem 0.5rem; font-size: 0.85rem; white-space: nowrap; position: relative; }
       .suggest-item button::after { content: ""; position: absolute; inset: -8px -2px; }
-      /* From 900px (landscape phones and "desktop site" mode lay out at about 900-980px) the panel moves to the right of the list. */
+      /* Curated list pages: the list is the hero on desktop, with one sidebar (Fan-dles and Suggestions as tabs) that can
+         collapse to a rail. Phones keep the List / Fan-dles / Suggestions tabs. */
+      .tab-count { min-width: 1.5rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--border); color: var(--ink); font-size: 0.78rem; font-weight: 700; line-height: 1.35; text-align: center; font-variant-numeric: tabular-nums; }
+      [aria-selected="true"] > .tab-count { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+      .tab-count:empty { display: none; }
+      .list-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin: 0 0 var(--sp-3); }
+      .list-bar-title { display: flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: 1.2rem; }
+      .list-bar .list-sort { margin: 0; }
+      .list-main .rotation-list { margin: 0; }
+      .rotation-list li.card-click { transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease; }
+      .rotation-list li.card-click:hover { background: var(--row-hover); border-color: var(--accent); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }
+      .list-sidebar { border: 1px solid var(--border); border-radius: 12px; background: var(--card); padding: var(--sp-3); margin-top: var(--sp-4); }
+      .side-head { display: none; }
+      .list-sidebar .fandles { margin-top: 0; }
+      .list-sidebar .fandles-head p { margin: 0 0 var(--sp-3); font-size: 0.88rem; }
+      .list-sidebar .fandles-head h2 { margin: 0 0 var(--sp-1); font-size: 1.15rem; }
+      .list-sidebar .fandles-body ul.games { margin-top: 0; }
+      .list-sidebar .suggest-panel { margin: 0; border: 0; background: none; }
+      .list-sidebar .suggest-panel > summary { padding: 0 0 var(--sp-2); font-size: 1.15rem; }
+      .list-sidebar .suggest-body { padding: 0; }
+      .suggest-list { gap: var(--sp-1); }
+      .suggest-item { padding: 0.4rem 0.55rem; gap: var(--sp-2); flex-wrap: nowrap; }
+      .suggest-item:has(.suggest-accept) { flex-wrap: wrap; }
+      .suggest-main { flex: 1 1 8rem; }
+      .suggest-sub { margin-top: 0.1rem; color: var(--muted); font-size: 0.82rem; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .suggest-more { display: block; width: 100%; min-height: 44px; margin-top: var(--sp-2); background: none; border: 1px dashed var(--border); color: var(--ink); font-weight: 700; }
+      .suggest-more:hover { background: var(--bg-soft); }
+      .suggest-empty { margin: 0; }
+      .list-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2) var(--sp-4); margin: var(--sp-5) 0 var(--sp-3); }
+      .list-head h1 { margin: 0; flex: 0 1 auto; min-width: 0; font-size: clamp(1.6rem, 1.1rem + 1.2vw, 2.25rem); line-height: 1.15; overflow-wrap: anywhere; }
+      .list-head .twitch-watch { margin: 0; flex: 1 1 100%; }
+      .list-head-actions { display: flex; align-items: center; gap: var(--sp-2); position: relative; }
+      .list-head-actions > button, .list-head-actions > .btn, .head-more > button { min-height: 44px; white-space: nowrap; }
+      .head-more { position: relative; }
+      .head-more-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 15rem; display: flex; flex-direction: column; gap: 2px; padding: 0.35rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); box-shadow: var(--shadow); }
+      .head-more-menu > * { display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: 44px; padding: 0.5rem 0.75rem; border: 0; border-radius: 6px; background: none; color: var(--ink); font: inherit; font-weight: 600; text-align: left; text-decoration: none; cursor: pointer; }
+      .head-more-menu > *:hover, .head-more-menu > *:focus-visible { background: var(--bg-soft); color: var(--ink); }
+      .list-desc-wrap { margin: 0 0 var(--sp-4); max-width: 75ch; }
+      .list-desc { margin: 0; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+      .list-desc.expanded { display: block; }
+      .list-desc-more { position: relative; padding: 0; margin-top: var(--sp-1); background: none; border: 0; color: var(--primary); font-weight: 700; cursor: pointer; text-decoration: underline; }
+      .list-desc-more::after { content: ""; position: absolute; inset: -12px -10px; }
+      .list-meta-line { margin: 0 0 var(--sp-3); color: var(--muted); font-size: 0.9rem; }
+      .stream-bar, .stream-exit { display: none; }
       @media (min-width: 900px) {
-        main.list-page { max-width: 1200px; }
-        .list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 270px; grid-template-rows: auto auto 1fr auto; column-gap: 1rem; row-gap: 0; align-items: start; }
-        /* The sort control, list and status line become grid items, so the panel (first in the page, so it sits above
-           the list on phones) can start level with the first card in the right-hand column. */
-        .list-main { display: contents; }
-        #list-sort-wrap { grid-column: 1; grid-row: 1; }
-        .list-layout #list-items { grid-column: 1; grid-row: 2 / span 2; }
-        .list-layout #list-reorder-status { grid-column: 1; grid-row: 4; }
-        .suggest-panel { grid-column: 2; grid-row: 3; margin: 1.5rem 0 0; }
-        /* Fan-dles sit in the right-hand column, above the suggestions (level with the first card). */
-        .list-layout > .fandles { display: contents; }
-        .list-layout .fandles-head { grid-column: 2; grid-row: 1; align-self: end; }
-        .list-layout .fandles-head h2 { margin: 0 0 0.15rem; font-size: 1.15rem; }
-        .list-layout .fandles-head p { margin: 0; font-size: 0.85rem; }
-        .list-layout .fandles-body { grid-column: 2; grid-row: 2; }
-        .list-layout .fandles-body ul.games { margin-top: 1em; } /* 1em: the list's own top margin */
-        .suggest-panel > summary { cursor: default; list-style: none; font-size: 1.05rem; }
-        .suggest-panel > summary::-webkit-details-marker { display: none; }
+        .list-head .twitch-watch { flex: 0 0 auto; }
+        .list-head-actions { margin-left: auto; flex-wrap: nowrap; }
+        main.list-page { max-width: 1180px; }
+        .list-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; column-gap: var(--sp-5); align-items: start; }
+        .list-sidebar { position: sticky; top: 5rem; max-height: calc(100vh - 6rem); overflow-y: auto; margin-top: 0; }
+        .side-head { display: flex; align-items: center; gap: var(--sp-2); margin: calc(var(--sp-1) * -1) 0 var(--sp-3); border-bottom: 1px solid var(--border); }
+        .side-tabs { display: flex; flex: 1; min-width: 0; gap: var(--sp-1); }
+        .side-tabs [role="tab"] { flex: 1 1 0; min-width: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.3rem; background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; font-size: 0.95rem; white-space: nowrap; cursor: pointer; }
+        .side-tabs [role="tab"]:hover { color: var(--ink); }
+        .side-tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand-blue); }
+        .side-ico { display: none; flex: none; }
+        html.dgl-sb-collapsed .side-ico { display: block; }
+        .side-toggle { flex: none; min-width: 44px; min-height: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: none; border: 0; color: var(--muted); border-radius: 8px; cursor: pointer; }
+        .side-toggle:hover { color: var(--ink); background: var(--bg-soft); }
+        .side-toggle svg { transition: transform 0.15s ease; }
+        .list-layout[data-side="fandles"] .suggest-panel, .list-layout[data-side="suggest"] .fandles { display: none; }
+        /* The tab names the section on desktop. */
+        .list-sidebar .suggest-panel > summary, .list-sidebar .fandles-head h2 { display: none; }
+        .list-main .rotation-list li { padding: 0.8rem 0.95rem; }
+        .list-main .game-title { font-size: 1.2rem; }
+        .rotation-list .item-main .meta { font-size: 0.9rem; }
+        /* Collapsed: a slim rail with the tab icons and their counts. */
+        html.dgl-sb-collapsed .list-layout { grid-template-columns: minmax(0, 1fr) 64px; }
+        html.dgl-sb-collapsed .list-sidebar { padding: var(--sp-2) 0; overflow: visible; }
+        html.dgl-sb-collapsed .list-sidebar .fandles, html.dgl-sb-collapsed .list-sidebar .suggest-panel { display: none !important; }
+        html.dgl-sb-collapsed .side-head { flex-direction: column; align-items: stretch; gap: var(--sp-1); margin: 0; border-bottom: 0; }
+        html.dgl-sb-collapsed .side-toggle { order: -1; align-self: center; }
+        html.dgl-sb-collapsed .side-toggle svg { transform: rotate(180deg); }
+        html.dgl-sb-collapsed .side-tabs { flex-direction: column; gap: var(--sp-1); }
+        html.dgl-sb-collapsed .side-tabs [role="tab"] { flex-direction: column; gap: 0.2rem; min-height: 56px; border-bottom: 0; border-left: 3px solid transparent; padding: 0.3rem 0; }
+        html.dgl-sb-collapsed .side-tabs [role="tab"][aria-selected="true"] { border-left-color: var(--brand-blue); }
+        html.dgl-sb-collapsed .side-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
       }
       @media (min-width: 1100px) {
-        .list-layout { grid-template-columns: minmax(0, 1fr) 320px; column-gap: 1.5rem; }
+        main.list-page { max-width: 1300px; }
+        .list-layout { grid-template-columns: minmax(0, 1fr) 340px; }
       }
-      /* Wide desktop with Fan-dles: three columns, Fan-dles on the left, the list in the middle with most of the room,
-         suggestions on the right. Narrower screens keep the two-column layout above. */
-      @media (min-width: 1200px) {
-        main.list-page:has(.list-layout.has-fandles:not(.no-suggest)) { max-width: 1440px; }
-        .list-layout.has-fandles:not(.no-suggest) { grid-template-columns: minmax(240px, 22%) minmax(0, 1fr) minmax(240px, 22%); column-gap: 1.5rem; }
-        .list-layout.has-fandles:not(.no-suggest) > .fandles ul.games .game-title { font-size: 1.05rem; }
-        .list-layout.has-fandles:not(.no-suggest) #list-sort-wrap { grid-column: 2; }
-        .list-layout.has-fandles:not(.no-suggest) #list-items { grid-column: 2; }
-        .list-layout.has-fandles:not(.no-suggest) #list-reorder-status { grid-column: 2; }
-        /* The heading sits level with the Sort control and the cards level with the list's first card. */
-        .list-layout.has-fandles:not(.no-suggest) .fandles-head { grid-column: 1; }
-        .list-layout.has-fandles:not(.no-suggest) .fandles-body { grid-column: 1; grid-row: 2 / span 2; }
-        .list-layout.has-fandles:not(.no-suggest) > .suggest-panel { grid-column: 3; grid-row: 2 / span 2; margin: 1em 0 0; }
+      @media (min-width: 1400px) {
+        main.list-page { max-width: 1480px; }
+        .list-layout { grid-template-columns: minmax(0, 1fr) 360px; }
+      }
+      @media (min-width: 1800px) {
+        main.list-page { max-width: 1680px; }
+        .list-main .rotation-list li { padding: 0.95rem 1.1rem; }
+        .list-main .game-title { font-size: 1.3rem; }
       }
       /* Phones: tabs for the list, Fan-dles and suggestions (the script sets data-tab; without it everything shows). */
       .list-tabs { display: flex; gap: 0.25rem; margin: 1rem 0 0.5rem; border-bottom: 1px solid var(--border); }
       .list-tabs [role="tab"] { flex: 1 1 0; min-width: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.2rem; background: none; border: 0; border-bottom: 3px solid transparent; border-radius: 0; color: var(--muted); font-weight: 700; font-size: 0.92rem; white-space: nowrap; cursor: pointer; }
       .list-tabs [role="tab"][aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand-blue); }
-      /* The count is a small pill; the selected tab's is filled in the accent colour. */
-      .list-tabs .tab-count { min-width: 1.5rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--border); color: var(--ink); font-size: 0.78rem; font-weight: 700; line-height: 1.35; text-align: center; font-variant-numeric: tabular-nums; }
-      .list-tabs [aria-selected="true"] .tab-count { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
-      .list-tabs .tab-count:empty { display: none; }
       /* Narrow phones: the count sits under the name so three tabs never run out of room. */
       @media (max-width: 419px) {
         .list-tabs [role="tab"] { flex-direction: column; gap: 0.15rem; min-height: 52px; padding: 0.35rem 0.1rem; }
@@ -11449,13 +11715,51 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       @media (max-width: 359px) { .list-tabs [role="tab"] { font-size: 0.8rem; } }
       @media (min-width: 900px) { .list-tabs { display: none; } }
       @media (max-width: 899px) {
-        .list-layout[data-tab="list"] > .fandles, .list-layout[data-tab="list"] > .suggest-panel,
-        .list-layout[data-tab="fandles"] > .list-main, .list-layout[data-tab="fandles"] > .suggest-panel,
-        .list-layout[data-tab="suggest"] > .list-main, .list-layout[data-tab="suggest"] > .fandles { display: none; }
-        .list-layout[data-tab] > .suggest-panel { margin-top: 0; }
-        .list-layout[data-tab] > .suggest-panel > summary { display: none; }
-        .list-layout[data-tab] > .fandles { margin-top: 0; }
+        .list-sidebar { display: contents; }
+        .list-layout[data-tab="list"] .fandles, .list-layout[data-tab="list"] .suggest-panel,
+        .list-layout[data-tab="fandles"] .list-main, .list-layout[data-tab="fandles"] .suggest-panel,
+        .list-layout[data-tab="suggest"] .list-main, .list-layout[data-tab="suggest"] .fandles { display: none; }
+        .list-layout[data-tab] .suggest-panel { margin-top: 0; }
+        .list-layout[data-tab] .suggest-panel > summary { display: none; }
+        .list-layout[data-tab] .fandles { margin-top: 0; }
+        .list-bar .list-bar-title { display: none; }
+        .list-bar { justify-content: flex-start; }
       }
+      /* Stream mode (?view=stream, or the header toggle): large type for a scaled-down capture. No site chrome, no
+         sidebar, numbered rows, prominent reset countdowns, and a footer bar with where to suggest and the top suggestions. */
+      html.dgl-stream body { background: var(--stream-bg); color: var(--stream-ink); padding-bottom: 5.5rem; }
+      html.dgl-stream header.site-header, html.dgl-stream body > footer, html.dgl-stream .skip-link, html.dgl-stream .list-head-actions,
+      html.dgl-stream .twitch-watch, html.dgl-stream .list-desc-wrap, html.dgl-stream .list-meta-line, html.dgl-stream .creator-note,
+      html.dgl-stream .list-tabs, html.dgl-stream .list-sidebar, html.dgl-stream .list-bar, html.dgl-stream .fandle-notice,
+      html.dgl-stream .rotation-list .card-actions, html.dgl-stream .rotation-list .category-pills, html.dgl-stream .rotation-list .meta [data-liked],
+      html.dgl-stream #list-reorder-status, html.dgl-stream #toast-stack { display: none !important; }
+      html.dgl-stream main, html.dgl-stream main.narrow, html.dgl-stream main.list-page { max-width: none; margin: 0; padding: 1rem clamp(1.25rem, 3vw, 3.5rem) 2rem; }
+      html.dgl-stream .list-layout { display: block; }
+      html.dgl-stream .list-head { margin: 0 0 0.9rem; }
+      html.dgl-stream .list-head h1 { font-size: clamp(2rem, min(3vw, 5vh), 3rem); color: var(--stream-ink); }
+      html.dgl-stream .list-head .verified-badge svg { width: 0.8em; height: 0.8em; }
+      html.dgl-stream .rotation-list { counter-reset: stream-row; gap: 0.7rem; }
+      @media (min-width: 1100px) {
+        html.dgl-stream .rotation-list:has(> li:nth-child(7)) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 1.5rem; }
+      }
+      html.dgl-stream .rotation-list li { counter-increment: stream-row; gap: 1.1rem; padding: clamp(0.5rem, 1.1vh, 0.9rem) 1.5rem; border: 3px solid var(--stream-sep); border-radius: 14px; background: var(--stream-row); box-shadow: none; }
+      html.dgl-stream .rotation-list li::before { content: counter(stream-row); flex: none; min-width: 2.2ch; font-size: clamp(1.7rem, 3.2vh, 2.2rem); font-weight: 800; line-height: 1; color: var(--stream-accent); font-variant-numeric: tabular-nums; text-align: center; }
+      html.dgl-stream .rotation-list li.card-click:hover { background: var(--stream-row); border-color: var(--stream-sep); box-shadow: none; }
+      html.dgl-stream .rotation-list li.played { opacity: 1; }
+      html.dgl-stream .rotation-list li.reset-bar::after { height: 6px; left: 1.5rem; bottom: 8px; width: calc((100% - 3rem) * var(--reset-left, 0)); }
+      html.dgl-stream .rotation-list li.reset-bar { padding-bottom: calc(clamp(0.5rem, 1.1vh, 0.9rem) + 10px); }
+      html.dgl-stream .rotation-list .game-title { font-size: clamp(1.5rem, min(2.1vw, 3.1vh), 2.4rem); line-height: 1.2; color: var(--stream-ink); text-decoration: none; }
+      html.dgl-stream .rotation-list .item-main .meta { margin-top: 0.15rem; font-size: clamp(1.15rem, min(1.4vw, 2.4vh), 1.6rem); font-weight: 800; color: var(--stream-reset); }
+      html.dgl-stream .rotation-list .meta > :not([hidden]) ~ :not([hidden])::before { content: none; }
+      html.dgl-stream .stream-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem 2.5rem; flex-wrap: wrap; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 0.7rem clamp(1.25rem, 3vw, 3.5rem); background: var(--stream-bar); border-top: 4px solid var(--stream-accent); color: var(--stream-ink); }
+      html.dgl-stream .stream-cta { margin: 0; color: var(--stream-ink); font-size: clamp(1.2rem, 1.8vw, 1.9rem); }
+      html.dgl-stream .stream-cta strong { color: var(--stream-accent); }
+      html.dgl-stream .stream-top { display: flex; flex-wrap: wrap; gap: 0.5rem 1.75rem; list-style: none; margin: 0; padding: 0; font-size: clamp(1.1rem, 1.5vw, 1.6rem); font-weight: 700; }
+      html.dgl-stream .stream-top:empty { display: none; }
+      html.dgl-stream .stream-top li { display: flex; gap: 0.6rem; align-items: baseline; }
+      html.dgl-stream .stream-top .st-votes { color: var(--stream-accent); font-variant-numeric: tabular-nums; }
+      html.dgl-stream .stream-exit { display: inline-flex; position: fixed; top: 0.75rem; right: 0.75rem; z-index: 50; min-height: 44px; opacity: 0; transition: opacity 0.15s ease; }
+      html.dgl-stream .stream-exit:hover, html.dgl-stream .stream-exit:focus-visible { opacity: 1; }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
       #toast-stack {

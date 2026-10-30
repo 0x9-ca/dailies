@@ -4,6 +4,16 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-31",
+    items: [
+      "Creator list pages are tidier on wide screens: the list gets most of the room, with Fan-dles and Suggestions as tabs in one sidebar.",
+      "The sidebar collapses to a slim rail so the list can take the full width. Your choice is remembered on this device.",
+      "Suggestions show the top 5 with a Show all button, in shorter rows.",
+      "List headers are calmer: title, Twitch button and actions on one row, extra actions in a ... menu, and long descriptions fold behind More.",
+      "Stream mode makes a list big and easy to read on a stream: large numbered rows, reset countdowns, and the top suggestions with where to send them. Turn it on from the list header, or add ?view=stream to the address for an OBS browser source. Esc exits.",
+    ]
+  },
+  {
     date: "2026-10-30",
     items: [
       "Game pages show a Players also play section with games that often share a rotation with it.",
