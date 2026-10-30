@@ -3445,6 +3445,8 @@ app.get("/lists/:slug", async (c) => {
         ${fandleSection}
       </aside></div>`}
       ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions)}
+      ${isAdminEditor ? "" : renderStreamSettings()}
+      ${isAdminEditor ? "" : renderOverlayPanel(list.title, suggestionsOn, suggestions)}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
     <script>${LIST_PAGE_SCRIPT}</script>
@@ -3587,8 +3589,11 @@ app.get("/lists/:slug", async (c) => {
             moreBtn.textContent = showAll ? "Show top " + TOP_N : "Show all (" + suggestions.length + ")";
             moreBtn.setAttribute("aria-expanded", showAll ? "true" : "false");
           }
-          if (streamTop) {
-            streamTop.replaceChildren(...suggestions.slice(0, 3).map((item) => {
+          // Stream bar (default 3) and overlay (default 5) show the leading suggestions; ?top=N overrides both.
+          const topN = window.DGL_STREAM && window.DGL_STREAM.top >= 0 ? window.DGL_STREAM.top : -1;
+          const fillTop = (el, n) => {
+            if (!el) return;
+            el.replaceChildren(...suggestions.slice(0, n).map((item) => {
               const li = document.createElement("li");
               const name = document.createElement("span");
               name.className = "st-title";
@@ -3599,7 +3604,9 @@ app.get("/lists/:slug", async (c) => {
               li.append(name, votes);
               return li;
             }));
-          }
+          };
+          fillTop(streamTop, topN < 0 ? 3 : topN);
+          fillTop(document.getElementById("ov-top"), topN < 0 ? 5 : topN);
           const rows = shown.map((item) => {
             const li = document.createElement("li");
             li.className = "suggest-item";
@@ -3752,6 +3759,9 @@ app.get("/lists/:slug", async (c) => {
         const hidePanel = () => {
           window.clearInterval(timer);
           document.removeEventListener("visibilitychange", refresh);
+          document.getElementById("ov-top")?.remove();
+          const ovLabel = document.getElementById("ov-label");
+          if (ovLabel) ovLabel.textContent = "";
           const layout = panel.closest(".list-layout");
           const main = layout?.querySelector(".list-main");
           if (layout && main) layout.replaceWith(...Array.from(main.childNodes));
@@ -10913,8 +10923,9 @@ function renderListSortControl(options: { votes?: boolean } = {}): string {
 
 // Curated list pages: set before first paint (no layout jump). The sidebar collapse is remembered per browser
 // (dgl_list_sidebar_v1); stream mode comes from ?view=stream (never remembered) or the remembered toggle (dgl_list_stream_v1).
+// Also parses the stream/overlay params (fit, scroll, top, cols, theme, pos) into window.DGL_STREAM.
 // Handled client-side because the edge-cached HTML is the same for every query string.
-const LIST_PAGE_HEAD_SCRIPT = `<script>(function(){var h=document.documentElement;try{if(localStorage.getItem("dgl_list_sidebar_v1")==="collapsed")h.classList.add("dgl-sb-collapsed")}catch(e){}try{if(new URLSearchParams(location.search).get("view")==="stream")h.classList.add("dgl-stream","dgl-stream-forced");else if(localStorage.getItem("dgl_list_stream_v1")==="1")h.classList.add("dgl-stream")}catch(e){}})()</script>`;
+const LIST_PAGE_HEAD_SCRIPT = `<script>(function(){var h=document.documentElement,P={view:"",fit:1,scroll:1,top:-1,cols:0,theme:"",pos:"bl"};try{if(localStorage.getItem("dgl_list_sidebar_v1")==="collapsed")h.classList.add("dgl-sb-collapsed")}catch(e){}try{var q=new URLSearchParams(location.search),v=q.get("view"),n=function(k,lo,hi){var x=parseInt(q.get(k),10);return isNaN(x)?-1:Math.max(lo,Math.min(hi,x))};P.fit=q.get("fit")==="0"?0:1;P.scroll=q.get("scroll")==="0"?0:1;P.top=n("top",0,10);P.cols=Math.max(0,n("cols",1,4));var t=q.get("theme");P.theme=t==="dark"||t==="light"?t:"";var ps=q.get("pos");P.pos=/^(br|bl|tr|tl)$/.test(ps)?ps:"bl";if(v==="stream"){P.view="stream";h.classList.add("dgl-stream","dgl-stream-forced")}else if(v==="overlay"){P.view="overlay";h.classList.add("dgl-overlay","dgl-pos-"+P.pos)}else if(localStorage.getItem("dgl_list_stream_v1")==="1")h.classList.add("dgl-stream");if(P.theme&&P.view){if(P.theme==="light")h.dataset.theme="light";else delete h.dataset.theme}}catch(e){}window.DGL_STREAM=P})()</script>`;
 
 const SIDE_ICON_FANDLES = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><circle cx="7.5" cy="6.5" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M2 16c0-3 2.4-5 5.5-5s5.5 2 5.5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="14.5" cy="7.5" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 11.3c2 .2 3.6 1.7 3.6 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
 const SIDE_ICON_SUGGEST = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 4.5h14v9H9l-4 3v-3H3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 7v4M8 9h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
@@ -10927,6 +10938,36 @@ function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, sug
     ${suggestionsOn ? `<ol class="stream-top" id="stream-top" aria-label="Top suggestions">${suggestions.slice(0, 3).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
   </div>
   <button type="button" class="stream-exit" id="stream-exit">Exit stream mode</button>`;
+}
+
+// OBS overlay (?view=overlay): a compact panel over a transparent page. The address is copied from the stream bar by
+// the list script, so it always matches; the suggestions are filled in by the suggestions script.
+function renderOverlayPanel(title: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
+  return `<div class="overlay-panel" id="overlay-panel">
+    <p class="ov-title">${escapeHtml(title)}</p>
+    <p class="ov-cta"><span id="ov-label">${suggestionsOn ? "Suggest a game: " : ""}</span><strong id="ov-addr"></strong></p>
+    ${suggestionsOn ? `<ol class="ov-top" id="ov-top" aria-label="Top suggestions">${suggestions.slice(0, 5).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
+    <p class="ov-new" id="ov-new" role="status" hidden></p>
+  </div>`;
+}
+
+// Stream settings popover (stream mode only): picks the URL params and builds copyable OBS links.
+function renderStreamSettings(): string {
+  return `<button type="button" class="stream-exit stream-settings-btn" id="stream-settings-btn" aria-expanded="false" aria-controls="stream-settings">Stream settings</button>
+  <div class="stream-settings" id="stream-settings" role="dialog" aria-label="Stream settings" hidden>
+    <h2>Stream settings</h2>
+    <p class="ss-note">Pick options, then copy the link into an OBS browser source. Link params: <code>fit=0</code> <code>scroll=0</code> <code>top=N</code> <code>cols=N</code> <code>theme=dark|light</code></p>
+    <label class="ss-check"><input type="checkbox" id="ss-fit" checked> Fit all rows to the screen</label>
+    <label class="ss-check"><input type="checkbox" id="ss-scroll" checked> Auto-scroll if they still don't fit</label>
+    <label>Columns <select id="ss-cols"><option value="">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+    <label>Suggestions shown <input type="number" id="ss-top" min="0" max="10" value="3"></label>
+    <label>Theme <select id="ss-theme"><option value="">Your setting</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
+    <div class="ss-url"><input type="text" id="ss-stream-url" readonly aria-label="Stream mode link"><button type="button" class="ss-copy" data-copy="ss-stream-url">Copy</button></div>
+    <h3>Overlay <span>(transparent, over gameplay)</span></h3>
+    <label>Position <select id="ss-pos"><option value="bl">Bottom left</option><option value="br">Bottom right</option><option value="tl">Top left</option><option value="tr">Top right</option></select></label>
+    <label>Suggestions shown <input type="number" id="ss-otop" min="0" max="10" value="5"></label>
+    <div class="ss-url"><input type="text" id="ss-overlay-url" readonly aria-label="Overlay link"><button type="button" class="ss-copy" data-copy="ss-overlay-url">Copy</button></div>
+  </div>`;
 }
 
 // Curated list header and modes: "⋯" overflow menu, clamped description, stream mode.
@@ -11040,6 +11081,204 @@ const LIST_PAGE_SCRIPT = `
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && root.classList.contains("dgl-stream") && !event.defaultPrevented) setStream(false);
     });
+
+    // Stream mode layout: fit every row above the bottom bar (columns + scale), auto-scroll what still overflows,
+    // highlight rows that join while the page is open, and the settings popover. Params: window.DGL_STREAM.
+    (() => {
+      const P = window.DGL_STREAM || { fit: 1, scroll: 1, top: -1, cols: 0, pos: "bl", theme: "" };
+      const list = document.getElementById("list-items");
+      const bar = document.getElementById("stream-bar");
+      if (!list) return;
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const isStream = () => root.classList.contains("dgl-stream");
+      const rowsOf = () => Array.from(list.children).filter((li) => li.hasAttribute("data-game-id") && !li.classList.contains("row-leave"));
+      const MIN_COL = 400, SPEED = 35, HOLD = 4000, FADE = 400, PAGE_MS = 8000;
+
+      // Auto-scroll of the rows container (never the page).
+      let hovered = false, sc = null;
+      list.addEventListener("pointerenter", (event) => { if (event.pointerType === "mouse") hovered = true; });
+      list.addEventListener("pointerleave", () => { hovered = false; });
+      const stopScroll = () => { if (sc) window.cancelAnimationFrame(sc.raf); sc = null; list.style.opacity = ""; };
+      const startScroll = () => {
+        const over = isStream() && P.scroll !== 0 && list.scrollHeight > list.clientHeight + 2;
+        if (!over) { stopScroll(); if (list.scrollTop) list.scrollTop = 0; return; }
+        if (sc) return;
+        const st = { phase: "top", t: 0, pos: list.scrollTop, last: performance.now(), raf: 0 };
+        sc = st;
+        const tick = (now) => {
+          st.raf = window.requestAnimationFrame(tick);
+          const dt = Math.min(100, now - st.last);
+          st.last = now;
+          if (hovered || document.hidden) { st.pos = list.scrollTop; return; }
+          const max = list.scrollHeight - list.clientHeight;
+          if (max <= 2) return;
+          st.t += dt;
+          if (reduce.matches) {
+            if (st.t >= PAGE_MS) { st.t = 0; st.pos = st.pos >= max - 1 ? 0 : Math.min(max, st.pos + list.clientHeight); list.scrollTop = st.pos; }
+            return;
+          }
+          if (st.phase === "top") { if (st.t >= HOLD) { st.phase = "scroll"; st.t = 0; } }
+          else if (st.phase === "scroll") {
+            st.pos = Math.min(max, st.pos + SPEED * dt / 1000);
+            list.scrollTop = st.pos;
+            if (st.pos >= max - 0.5) { st.phase = "bottom"; st.t = 0; }
+          } else if (st.phase === "bottom") { if (st.t >= HOLD) { st.phase = "out"; st.t = 0; } }
+          else if (st.phase === "out") {
+            list.style.opacity = String(Math.max(0, 1 - st.t / FADE));
+            if (st.t >= FADE) { st.pos = 0; list.scrollTop = 0; st.phase = "in"; st.t = 0; }
+          } else {
+            list.style.opacity = String(Math.min(1, st.t / FADE));
+            if (st.t >= FADE) { list.style.opacity = ""; st.phase = "top"; st.t = 0; }
+          }
+        };
+        st.raf = window.requestAnimationFrame(tick);
+      };
+
+      // One pass: pick columns and a scale so all rows fit above the bar. One read per column count at scale 1,
+      // then a short verify loop.
+      let raf = 0, timer = 0;
+      const pass = () => {
+        if (!isStream()) {
+          if (root.classList.contains("dgl-lock")) root.classList.remove("dgl-grid", "dgl-lock");
+          list.style.removeProperty("max-height");
+          stopScroll();
+          return;
+        }
+        const n = rowsOf().length;
+        if (n === 0) return;
+        // Only touch the class when needed: classList.add on a present class still fires the class observer below.
+        if (!root.classList.contains("dgl-lock")) { window.scrollTo(0, 0); root.classList.add("dgl-grid", "dgl-lock"); }
+        const setCols = (c) => { list.style.setProperty("--stream-cols", String(c)); list.style.setProperty("--stream-rows", String(Math.ceil(n / c))); };
+        const setScale = (v) => list.style.setProperty("--stream-scale", String(Math.round(v * 1000) / 1000));
+        list.style.maxHeight = "none";
+        setScale(1);
+        const width = list.getBoundingClientRect().width || window.innerWidth;
+        const avail = Math.max(120, Math.floor((bar ? bar.getBoundingClientRect().top : window.innerHeight) - list.getBoundingClientRect().top - 10));
+        list.style.setProperty("--stream-avail", avail + "px");
+        let cols = P.cols ? Math.min(P.cols, n) : (n >= 7 && width >= 1000 ? 2 : 1);
+        let scale = 1;
+        if (P.fit !== 0) {
+          const maxCols = Math.max(1, Math.min(4, Math.floor(width / MIN_COL), n));
+          const basePx = parseFloat(getComputedStyle(list).fontSize) || 32;
+          const minScale = Math.min(1, Math.max(14, 22 * window.innerHeight / 1080) / basePx);
+          const maxScale = 1.15;
+          const options = P.cols ? [cols] : Array.from({ length: maxCols }, (_, i) => i + 1);
+          let best = null;
+          for (const c of options) {
+            setCols(c);
+            const s = Math.min(maxScale, avail / list.scrollHeight);
+            if (!best || s > best.s + 0.001) best = { c, s };
+            if (!P.cols && s >= 0.85) { best = { c, s }; break; }
+          }
+          cols = best.c;
+          setCols(cols);
+          scale = Math.max(minScale, best.s);
+          // Verify (wrapping isn't linear): shrink until it fits, or grow a little when it fits with room to spare.
+          let fitted = 0;
+          for (let i = 0; i < 6; i += 1) {
+            setScale(scale);
+            const h = list.scrollHeight;
+            if (h <= avail + 1) {
+              fitted = scale;
+              if (h >= avail * 0.93 || scale >= maxScale - 0.001) break;
+              scale = Math.min(maxScale, scale * avail / h * 0.985);
+            } else {
+              if (scale <= minScale + 0.001) break;
+              scale = Math.max(minScale, scale * avail / h * 0.985);
+              if (fitted && scale <= fitted) { scale = fitted; break; }
+            }
+          }
+          if (fitted) scale = fitted;
+        } else setCols(cols);
+        setScale(scale);
+        list.style.maxHeight = avail + "px";
+        startScroll();
+      };
+      const schedule = () => { window.cancelAnimationFrame(raf); raf = window.requestAnimationFrame(pass); };
+      const debounced = () => { window.clearTimeout(timer); timer = window.setTimeout(schedule, 120); };
+      window.addEventListener("resize", debounced);
+      window.addEventListener("load", schedule);
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(schedule);
+      if (window.ResizeObserver && bar) new ResizeObserver(debounced).observe(bar);
+      new MutationObserver(schedule).observe(root, { attributes: true, attributeFilter: ["class"] });
+      if (reduce.addEventListener) reduce.addEventListener("change", () => { stopScroll(); schedule(); });
+
+      // Rows that join while the page is open (live refresh) glow briefly; the overlay shows a one-line notice.
+      const seen = new Set(rowsOf().map((li) => li.getAttribute("data-game-id")));
+      let sig = Array.from(seen).join(",");
+      const ovNew = document.getElementById("ov-new");
+      let ovTimer = 0;
+      new MutationObserver(() => {
+        const rows = rowsOf();
+        rows.forEach((li) => {
+          const id = li.getAttribute("data-game-id");
+          if (seen.has(id)) return;
+          seen.add(id);
+          li.classList.add("row-new");
+          window.setTimeout(() => li.classList.remove("row-new"), reduce.matches ? 10000 : 3000);
+          if (ovNew) {
+            ovNew.textContent = "New on the list: " + (li.getAttribute("data-game-title") || "");
+            ovNew.hidden = false;
+            window.clearTimeout(ovTimer);
+            ovTimer = window.setTimeout(() => { ovNew.hidden = true; }, reduce.matches ? 10000 : 6000);
+          }
+        });
+        const next = rows.map((li) => li.getAttribute("data-game-id")).join(",");
+        if (next !== sig) { sig = next; stopScroll(); schedule(); }
+      }).observe(list, { childList: true });
+
+      // Overlay: the address is the stream bar's (same value).
+      const addr = document.getElementById("ov-addr");
+      const barAddr = document.querySelector("#stream-bar .stream-cta strong");
+      if (addr && barAddr) addr.textContent = barAddr.textContent;
+
+      // Settings popover: builds the OBS links from the chosen params.
+      const pop = document.getElementById("stream-settings");
+      const btn = document.getElementById("stream-settings-btn");
+      if (pop && btn) {
+        const $ = (id) => document.getElementById(id);
+        const num = (el, def) => { const v = parseInt(el.value, 10); return isNaN(v) ? def : Math.max(0, Math.min(10, v)); };
+        $("ss-fit").checked = P.fit !== 0;
+        $("ss-scroll").checked = P.scroll !== 0;
+        $("ss-cols").value = P.cols ? String(P.cols) : "";
+        $("ss-theme").value = P.theme || "";
+        $("ss-pos").value = P.pos || "bl";
+        if (P.top >= 0) { $("ss-top").value = String(P.top); $("ss-otop").value = String(P.top); }
+        const build = () => {
+          const base = (window.DGL_SHORT_ORIGIN || window.location.origin) + window.location.pathname;
+          const a = ["view=stream"];
+          if (!$("ss-fit").checked) a.push("fit=0");
+          if (!$("ss-scroll").checked) a.push("scroll=0");
+          if ($("ss-cols").value) a.push("cols=" + $("ss-cols").value);
+          if (num($("ss-top"), 3) !== 3) a.push("top=" + num($("ss-top"), 3));
+          if ($("ss-theme").value) a.push("theme=" + $("ss-theme").value);
+          const o = ["view=overlay"];
+          if ($("ss-pos").value !== "bl") o.push("pos=" + $("ss-pos").value);
+          if (num($("ss-otop"), 5) !== 5) o.push("top=" + num($("ss-otop"), 5));
+          $("ss-stream-url").value = base + "?" + a.join("&");
+          $("ss-overlay-url").value = base + "?" + o.join("&");
+        };
+        pop.addEventListener("input", build);
+        pop.addEventListener("change", build);
+        build();
+        const setOpen = (open) => { pop.hidden = !open; btn.setAttribute("aria-expanded", open ? "true" : "false"); };
+        btn.addEventListener("click", () => setOpen(pop.hidden));
+        pop.querySelectorAll(".ss-copy").forEach((copy) => copy.addEventListener("click", async () => {
+          const input = $(copy.getAttribute("data-copy"));
+          try { await navigator.clipboard.writeText(input.value); }
+          catch { input.select(); try { document.execCommand("copy"); } catch {} }
+          const label = copy.textContent;
+          copy.textContent = "Copied";
+          window.setTimeout(() => { copy.textContent = label; }, 1500);
+        }));
+        pop.querySelectorAll(".ss-url input").forEach((input) => input.addEventListener("focus", () => input.select()));
+        // Capture phase so Esc closes the popover before the stream-mode Esc handler sees it.
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !pop.hidden) { event.preventDefault(); setOpen(false); btn.focus(); }
+        }, true);
+      }
+      schedule();
+    })();
   })();
 `;
 
@@ -11794,19 +12033,30 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       html.dgl-stream .list-head { margin: 0 0 0.9rem; }
       html.dgl-stream .list-head h1 { font-size: clamp(2rem, min(3vw, 5vh), 3rem); color: var(--stream-ink); }
       html.dgl-stream .list-head .verified-badge svg { width: 0.8em; height: 0.8em; }
-      html.dgl-stream .rotation-list { counter-reset: stream-row; gap: 0.7rem; }
+      html.dgl-stream .rotation-list { counter-reset: stream-row; gap: 0.33em; font-size: calc(clamp(1.5rem, min(2.1vw, 3.1vh), 2.4rem) * var(--stream-scale, 1)); }
       @media (min-width: 1100px) {
-        html.dgl-stream .rotation-list:has(> li:nth-child(7)) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.7rem 1.5rem; }
+        html.dgl-stream .rotation-list:has(> li:nth-child(7)) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.33em 0.7em; }
       }
-      html.dgl-stream .rotation-list li { counter-increment: stream-row; gap: 1.1rem; padding: clamp(0.5rem, 1.1vh, 0.9rem) 1.5rem; border: 3px solid var(--stream-sep); border-radius: 14px; background: var(--stream-row); box-shadow: none; }
-      html.dgl-stream .rotation-list li::before { content: counter(stream-row); flex: none; min-width: 2.2ch; font-size: clamp(1.7rem, 3.2vh, 2.2rem); font-weight: 800; line-height: 1; color: var(--stream-accent); font-variant-numeric: tabular-nums; text-align: center; }
+      /* JS layout (fit): column-major grid, rows container capped above the bar and scrolled by script, never the page. */
+      html.dgl-stream.dgl-grid .rotation-list#list-items { display: grid; grid-auto-flow: column; grid-template-columns: repeat(var(--stream-cols, 1), minmax(0, 1fr)); grid-template-rows: repeat(var(--stream-rows, 1), auto); align-content: start; gap: 0.33em 0.7em; overflow-y: auto; scrollbar-width: none; }
+      html.dgl-stream.dgl-grid .rotation-list#list-items::-webkit-scrollbar { display: none; }
+      html.dgl-stream.dgl-lock, html.dgl-stream.dgl-lock body { overflow: hidden; }
+      html.dgl-stream.dgl-lock body { padding-bottom: 0; }
+      html.dgl-stream.dgl-lock main { padding-bottom: 0; }
+      html.dgl-stream .rotation-list li { counter-increment: stream-row; gap: 0.5em; padding: 0.3em 0.7em; border: max(1.5px, 0.09em) solid var(--stream-sep); border-radius: 0.42em; background: var(--stream-row); box-shadow: none; }
+      html.dgl-stream .rotation-list li::before { content: counter(stream-row); flex: none; min-width: 2.2ch; font-size: 0.9em; font-weight: 800; line-height: 1; color: var(--stream-accent); font-variant-numeric: tabular-nums; text-align: center; }
       html.dgl-stream .rotation-list li.card-click:hover { background: var(--stream-row); border-color: var(--stream-sep); box-shadow: none; }
       html.dgl-stream .rotation-list li.played { opacity: 1; }
-      html.dgl-stream .rotation-list li.reset-bar::after { height: 6px; left: 1.5rem; bottom: 8px; width: calc((100% - 3rem) * var(--reset-left, 0)); }
-      html.dgl-stream .rotation-list li.reset-bar { padding-bottom: calc(clamp(0.5rem, 1.1vh, 0.9rem) + 10px); }
-      html.dgl-stream .rotation-list .game-title { font-size: clamp(1.5rem, min(2.1vw, 3.1vh), 2.4rem); line-height: 1.2; color: var(--stream-ink); text-decoration: none; }
-      html.dgl-stream .rotation-list .item-main .meta { margin-top: 0.15rem; font-size: clamp(1.15rem, min(1.4vw, 2.4vh), 1.6rem); font-weight: 800; color: var(--stream-reset); }
+      html.dgl-stream .rotation-list li.reset-bar::after { height: 6px; left: 0.7em; bottom: 0.25em; width: calc((100% - 1.4em) * var(--reset-left, 0)); }
+      html.dgl-stream .rotation-list li.reset-bar { padding-bottom: 0.55em; }
+      html.dgl-stream .rotation-list .game-title { font-size: 1em; line-height: 1.2; color: var(--stream-ink); text-decoration: none; }
+      html.dgl-stream .rotation-list .item-main .meta { margin-top: 0.1em; font-size: 0.75em; font-weight: 800; color: var(--stream-reset); }
       html.dgl-stream .rotation-list .meta > :not([hidden]) ~ :not([hidden])::before { content: none; }
+      @keyframes stream-new { 0%, 70% { box-shadow: 0 0 0 4px var(--stream-accent), 0 0 30px 8px var(--stream-accent); border-color: var(--stream-accent); } 100% { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; } }
+      html.dgl-stream .rotation-list li.row-new { animation: stream-new 3s ease-out; }
+      @media (prefers-reduced-motion: reduce) {
+        html.dgl-stream .rotation-list li.row-new { animation: none; border-color: var(--stream-accent); }
+      }
       html.dgl-stream .stream-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem 2.5rem; flex-wrap: wrap; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; padding: 0.7rem clamp(1.25rem, 3vw, 3.5rem); background: var(--stream-bar); border-top: 4px solid var(--stream-accent); color: var(--stream-ink); }
       html.dgl-stream .stream-cta { margin: 0; color: var(--stream-ink); font-size: clamp(1.2rem, 1.8vw, 1.9rem); }
       html.dgl-stream .stream-cta strong { color: var(--stream-accent); }
@@ -11816,6 +12066,38 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       html.dgl-stream .stream-top .st-votes { color: var(--stream-accent); font-variant-numeric: tabular-nums; }
       html.dgl-stream .stream-exit { display: inline-flex; position: fixed; top: 0.75rem; right: 0.75rem; z-index: 50; min-height: 44px; opacity: 0; transition: opacity 0.15s ease; }
       html.dgl-stream .stream-exit:hover, html.dgl-stream .stream-exit:focus-visible { opacity: 1; }
+      html.dgl-stream .stream-settings-btn { right: 11.5rem; white-space: nowrap; }
+      html.dgl-stream .stream-settings-btn[aria-expanded="true"] { opacity: 1; }
+      .stream-settings, .overlay-panel { display: none; }
+      html.dgl-stream .stream-settings:not([hidden]) { display: block; position: fixed; top: 3.6rem; right: 0.75rem; z-index: 55; width: min(26rem, calc(100vw - 1.5rem)); max-height: calc(100vh - 5rem); overflow: auto; padding: 1rem 1.1rem; border: 3px solid var(--stream-sep); border-radius: 14px; background: var(--stream-bar); color: var(--stream-ink); font-size: 1rem; line-height: 1.4; }
+      .stream-settings h2 { margin: 0 0 0.4rem; font-size: 1.2rem; }
+      .stream-settings h3 { margin: 1rem 0 0.4rem; font-size: 1.05rem; }
+      .stream-settings h3 span { font-weight: 400; opacity: 0.8; font-size: 0.9rem; }
+      .stream-settings .ss-note { margin: 0 0 0.7rem; font-size: 0.85rem; opacity: 0.85; }
+      .stream-settings label { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: 0.4rem 0; }
+      .stream-settings label.ss-check { justify-content: flex-start; }
+      .stream-settings select, .stream-settings input[type="number"] { width: 9.5rem; min-height: 2.2rem; }
+      .stream-settings .ss-url { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+      .stream-settings .ss-url input { flex: 1; min-width: 0; min-height: 2.4rem; font-size: 0.85rem; }
+      .stream-settings .ss-copy { min-height: 2.4rem; }
+      /* Overlay (?view=overlay): transparent page, one dark panel (same in both themes) readable on any background. */
+      html.dgl-overlay, html.dgl-overlay body { background: transparent !important; overflow: hidden; color-scheme: normal; }
+      html.dgl-overlay header.site-header, html.dgl-overlay body > footer, html.dgl-overlay .skip-link, html.dgl-overlay #toast-stack,
+      html.dgl-overlay main > *:not(.overlay-panel) { display: none !important; }
+      html.dgl-overlay main, html.dgl-overlay main.narrow, html.dgl-overlay main.list-page { background: transparent; max-width: none; margin: 0; padding: 0; }
+      html.dgl-overlay .overlay-panel { display: block; position: fixed; z-index: 60; width: max-content; max-width: min(36rem, calc(100vw - 2rem)); padding: 0.8rem 1.1rem; border: 2px solid rgba(255, 255, 255, 0.22); border-radius: 14px; background: rgba(10, 10, 14, 0.82); color: #fff; font-size: clamp(1.1rem, 1.7vw, 1.7rem); font-weight: 700; line-height: 1.3; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6); }
+      html.dgl-overlay.dgl-pos-bl .overlay-panel { left: 1rem; bottom: 1rem; }
+      html.dgl-overlay.dgl-pos-br .overlay-panel { right: 1rem; bottom: 1rem; }
+      html.dgl-overlay.dgl-pos-tl .overlay-panel { left: 1rem; top: 1rem; }
+      html.dgl-overlay.dgl-pos-tr .overlay-panel { right: 1rem; top: 1rem; }
+      .overlay-panel p, .overlay-panel li { margin: 0; color: #fff; }
+      .overlay-panel .ov-title { font-size: 0.8em; opacity: 0.85; text-transform: uppercase; letter-spacing: 0.04em; }
+      .overlay-panel .ov-cta strong { color: #38bdf8; }
+      .overlay-panel .ov-top { list-style: none; margin: 0.5rem 0 0; padding: 0; font-size: 0.85em; }
+      .overlay-panel .ov-top:empty { display: none; }
+      .overlay-panel .ov-top li { display: flex; justify-content: space-between; gap: 1.2rem; align-items: baseline; }
+      .overlay-panel .st-votes { color: #38bdf8; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
+      .overlay-panel .ov-new { margin-top: 0.5rem; padding: 0.3rem 0.6rem; border-radius: 8px; font-size: 0.85em; color: #fde047; box-shadow: 0 0 0 2px #38bdf8, 0 0 18px 2px #38bdf8; }
       .game-search-selected { margin-top: 0.4rem; font-size: 0.9rem; color: var(--muted); }
       .game-search-selected button { background: none; border: none; color: var(--accent); cursor: pointer; text-decoration: underline; font-size: inherit; padding: 0; }
       #toast-stack {

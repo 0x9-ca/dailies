@@ -6,6 +6,9 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
+      "Stream mode now fits the whole list on screen, and slowly scrolls it if it still doesn't fit.",
+      "A transparent overlay view for OBS shows where to suggest games and the top suggestions over your gameplay.",
+      "Stream settings pick columns, scrolling, theme and more, and give you links to copy into OBS.",
       "Animations are switched off when your device asks for reduced motion.",
       "Public profiles show the curated lists their owner has made, with game counts and verified checks.",
       "Copy as text on your rotation copies today's games as a plain list for Discord, with a check on the ones you've played.",
