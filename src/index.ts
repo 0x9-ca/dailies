@@ -36,7 +36,8 @@ app.use("*", async (c, next) => {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
   c.header("X-Frame-Options", "DENY");
-  c.header("Content-Security-Policy", "frame-ancestors 'none'");
+  // Routes such as the badge SVG set their own policy.
+  if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", "frame-ancestors 'none'");
 });
 
 // Session bootstrap for every request.
@@ -1204,7 +1205,7 @@ app.get("/games/:slug", async (c) => {
   const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
-      <h1>${escapeHtml(game.title)}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
+      <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
@@ -1215,6 +1216,7 @@ app.get("/games/:slug", async (c) => {
         ${user
           ? `<button type="button" id="favorite-toggle" data-favorited="${userFavorite ? "yes" : "no"}">${userFavorite ? "Remove favorite" : "Add favorite"}</button>`
           : `<button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>`}
+        <button type="button" data-share data-share-title="${escapeHtml(game.title)}">Share</button>
       </div>
       ${renderGameMeta(game.vote_up_count, game.vote_down_count, renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long")).replace('class="meta"', 'class="meta game-meta"')}
       <p class="game-actions-note">${user ? `Favorites are added to <a href="/me/rotation">your rotation</a>.` : `Favorites are added to <a href="/me/rotation">your rotation</a>, no account needed.`}${isAdminOrEditor ? ` Reports: ${game.report_count}.` : ""}</p>
@@ -3093,6 +3095,7 @@ app.get("/lists/:slug", async (c) => {
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
+      <button type="button" class="secondary" data-share data-share-title="${escapeHtml(list.title)}">Share</button>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       </div>
       <p>${escapeHtml(list.description || "")}</p>
@@ -4019,6 +4022,63 @@ ${urls
 
   return c.body(body, 200, {
     "Content-Type": "application/xml; charset=utf-8",
+    "Cache-Control": "public, max-age=3600"
+  });
+});
+
+// Atom feed of the newest approved games, same games and URLs as the sitemap (NSFW ones included, as there).
+app.get("/feed.xml", async (c) => {
+  const base = c.env.APP_URL;
+  const games = await c.env.DB.prepare(
+    "SELECT slug, title, description, COALESCE(approved_at, created_at) AS listed_at FROM games WHERE status = 'approved' ORDER BY COALESCE(approved_at, created_at) DESC LIMIT 50"
+  ).all<{ slug: string; title: string; description: string | null; listed_at: string }>();
+  const isoTime = (value: string) => new Date(utcMillis(value)).toISOString();
+  const entries = games.results.map((game) => {
+    const url = escapeHtml(`${base}/games/${encodeURIComponent(game.slug)}`);
+    return `  <entry>
+    <title>${xmlText(game.title)}</title>
+    <link rel="alternate" type="text/html" href="${url}" />
+    <id>${url}</id>
+    <updated>${isoTime(game.listed_at)}</updated>${game.description ? `\n    <summary>${xmlText(game.description)}</summary>` : ""}
+  </entry>`;
+  });
+  const updated = games.results[0] ? isoTime(games.results[0].listed_at) : new Date().toISOString();
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>New games on 0x9 dles</title>
+  <subtitle>The newest daily games listed on 0x9 dles.</subtitle>
+  <id>${escapeHtml(base)}/feed.xml</id>
+  <link rel="self" type="application/atom+xml" href="${escapeHtml(base)}/feed.xml" />
+  <link rel="alternate" type="text/html" href="${escapeHtml(base)}/games" />
+  <updated>${updated}</updated>
+  <author><name>0x9 dles</name></author>
+${entries.join("\n")}
+</feed>
+`;
+  return c.body(body, 200, {
+    "Content-Type": "application/atom+xml; charset=utf-8",
+    "Cache-Control": "public, max-age=600"
+  });
+});
+
+// Embeddable rating badge for game developers (the "Help players find your game" panel). Plain SVG, so it loads
+// as an <img> on any site. Unknown or unapproved slugs get a generic 404 image, not HTML.
+app.get("/badge/:file", async (c) => {
+  const slug = c.req.param("file").replace(/\.svg$/, "");
+  const game = await c.env.DB.prepare(
+    "SELECT title, vote_up_count, vote_down_count FROM games WHERE slug = ?1 AND status = 'approved'"
+  )
+    .bind(slug)
+    .first<{ title: string; vote_up_count: number; vote_down_count: number }>();
+  const headers = {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"
+  };
+  if (!game) {
+    return c.body(renderBadgeSvg(null), 404, { ...headers, "Cache-Control": "public, max-age=300" });
+  }
+  return c.body(renderBadgeSvg({ title: game.title, upVotes: game.vote_up_count, downVotes: game.vote_down_count }), 200, {
+    ...headers,
     "Cache-Control": "public, max-age=3600"
   });
 });
@@ -8304,6 +8364,7 @@ async function listGames(
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
     developer: GameDeveloper | null;
+    listedAt: string;
   }>
 > {
   // Server-time resets are stored in their own time zone; convert to UTC using each zone's current offset.
@@ -8375,7 +8436,8 @@ async function listGames(
   const sql = `
     SELECT DISTINCT games.id, games.title, games.slug, games.url, games.description,
            games.score, games.vote_up_count, games.vote_down_count,
-           games.reset_basis, games.reset_time_minutes, games.reset_timezone, games.paywall, games.nsfw
+           games.reset_basis, games.reset_time_minutes, games.reset_timezone, games.paywall, games.nsfw,
+           COALESCE(games.approved_at, games.created_at) AS listed_at
     FROM games
     LEFT JOIN game_categories ON games.id = game_categories.game_id
     LEFT JOIN categories ON categories.id = game_categories.category_id
@@ -8401,6 +8463,7 @@ async function listGames(
       reset_timezone: string | null;
       paywall: number;
       nsfw: number;
+      listed_at: string;
     }>();
 
   const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.id));
@@ -8421,7 +8484,8 @@ async function listGames(
     paywall: !!row.paywall,
     nsfw: !!row.nsfw,
     categories: categoriesByGameId.get(row.id) ?? [],
-    developer: developersByGameId.get(row.id) ?? null
+    developer: developersByGameId.get(row.id) ?? null,
+    listedAt: row.listed_at
   }));
 }
 
@@ -8767,6 +8831,47 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
 
 // "Not interested" control on browse-grid cards (see HIDDEN_GAMES_SCRIPT); the eye swaps when hidden cards are shown.
 const HIDE_BUTTON = `<button type="button" class="hide-btn" aria-label="Hide this game" title="Hide this game"><svg class="i-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c5 0 8.5 4 9.5 6a14 14 0 0 1-2.6 3.3M6.6 6.7C4.4 8.1 2.9 10.3 2.5 12c1 2 4.5 6 9.5 6 1.4 0 2.6-.3 3.7-.8"/></svg><svg class="i-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12C3.5 10 7 6 12 6s8.5 4 9.5 6c-1 2-4.5 6-9.5 6s-8.5-4-9.5-6z"/><circle cx="12" cy="12" r="2.8"/></svg></button>`;
+// SQLite's datetime() gives "YYYY-MM-DD HH:MM:SS" in UTC; rows written by the API are ISO strings.
+function utcMillis(value: string): number {
+  return Date.parse(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+}
+
+// Games listed in the last week get a "New" pill. Depends on the clock, not the visitor, so it is cache-safe.
+const NEW_GAME_MS = 7 * 24 * 60 * 60 * 1000;
+function isNewlyListed(listedAt: string): boolean {
+  const time = utcMillis(listedAt);
+  return !Number.isNaN(time) && Date.now() - time < NEW_GAME_MS;
+}
+
+function renderNewBadge(): string {
+  return `<span class="new-badge" title="Listed in the last 7 days">New</span>`;
+}
+
+// Text for XML: drops the characters XML 1.0 forbids, then escapes.
+function xmlText(value: string): string {
+  return escapeHtml(value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ""));
+}
+
+// Badge SVG: the brand on the left, the upvote share (or "Play daily" before any votes) on the brand blue.
+function renderBadgeSvg(game: { title: string; upVotes: number; downVotes: number } | null): string {
+  const total = game ? game.upVotes + game.downVotes : 0;
+  const value = !game || total === 0 ? "Play daily" : `${Math.round((game.upVotes / total) * 100)}% liked`;
+  const title = game ? `<title>${escapeHtml(`${game.title} on 0x9 dles: ${value}`)}</title>` : "<title>0x9 dles</title>";
+  const brandText = `<text x="${game ? 48 : 110}" y="25" fill="#f2f2f2">0x9 dles</text>`;
+  const valueSegment = game
+    ? `<rect x="96" width="124" height="40" fill="#00a4fc" /><text x="158" y="25" fill="#04121c">${escapeHtml(value)}</text>`
+    : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="40" viewBox="0 0 220 40" role="img">
+  ${title}
+  <clipPath id="b"><rect width="220" height="40" rx="6" /></clipPath>
+  <g clip-path="url(#b)" font-family="Verdana,DejaVu Sans,sans-serif" font-size="14" font-weight="bold" text-anchor="middle">
+    <rect width="${game ? 96 : 220}" height="40" fill="#1e1e1e" />
+    ${valueSegment}
+    ${brandText}
+  </g>
+</svg>
+`;
+}
 
 function renderCompactGameList(
   games: Array<{
@@ -8785,6 +8890,7 @@ function renderCompactGameList(
     nsfw: boolean;
     categories: Array<{ slug: string; name: string }>;
     developer?: GameDeveloper | null;
+    listedAt: string;
   }>,
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
@@ -8806,6 +8912,7 @@ function renderCompactGameList(
             <div class="game-top">
               <div class="game-name">
                 <a class="game-title card-link" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(gameAriaLabel(game))}">${escapeHtml(game.title)}</a>
+                ${isNewlyListed(game.listedAt) ? renderNewBadge() : ""}
                 ${game.paywall ? `<span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}
                 ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               </div>
@@ -9150,13 +9257,22 @@ function renderDeveloperSections(
     return hasDeveloper ? "" : `<p class="game-actions-note">Made this game? <a href="/login">Sign in</a> to claim it.</p>`;
   }
   if (claim?.status === "verified") {
-    const gamePageUrl = `${appUrl.replace(/\/$/, "")}/games/${encodeURIComponent(game.slug)}`;
-    const linkSnippet = `<a href="${gamePageUrl}">${game.title} on 0x9 dles</a>`;
+    const base = appUrl.replace(/\/$/, "");
+    const gamePageUrl = `${base}/games/${encodeURIComponent(game.slug)}`;
+    const badgeUrl = `${base}/badge/${encodeURIComponent(game.slug)}.svg`;
+    const badgeAlt = `${escapeHtml(game.title)} on 0x9 dles`;
+    const linkSnippet = `<a href="${gamePageUrl}">${escapeHtml(game.title)} on 0x9 dles</a>`;
+    const badgeSnippet = `<a href="${gamePageUrl}"><img src="${badgeUrl}" alt="${badgeAlt}" width="220" height="40"></a>`;
     return `<section class="panel" id="linkback">
       <h2>Help players find ${escapeHtml(game.title)}</h2>
       <p>If you like, link to this page from your game and from your social accounts. It's entirely optional, but links from the places people already find you help players, and search engines, discover the game.</p>
       <p><code>${escapeHtml(gamePageUrl)}</code></p>
       <p><button type="button" class="secondary" data-copy="${escapeHtml(gamePageUrl)}">Copy link</button> <button type="button" class="secondary" data-copy="${escapeHtml(linkSnippet)}">Copy HTML link</button></p>
+      <h3>Badge</h3>
+      <p>A small badge with the game's rating, for your site or README. It links back to this page.</p>
+      <p><img src="${escapeHtml(badgeUrl)}" width="220" height="40" alt="${badgeAlt}" /></p>
+      <p><input type="text" readonly value="${escapeHtml(badgeSnippet)}" aria-label="Badge HTML" /></p>
+      <p><button type="button" class="secondary" data-copy="${escapeHtml(badgeSnippet)}">Copy badge HTML</button></p>
     </section>
     <section class="panel">
       <h2>Edit your game</h2>
@@ -10139,6 +10255,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <link rel="icon" href="/favicon.ico" type="image/png" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="alternate" type="application/atom+xml" title="New games on 0x9 dles" href="/feed.xml" />
     <meta name="theme-color" content="#121212" />
     <meta name="apple-mobile-web-app-title" content="0x9 dles" />
     <meta name="app-version" content="${escapeHtml(appVersion(env))}" />
@@ -10197,6 +10314,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --vote-down-flash: #f87171;
         --badge-paywall: #4ade80;
         --badge-nsfw: #f87171;
+        --badge-new: #7dd3fc;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
         --reset-bar-soon: #f87171;
@@ -10222,6 +10340,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --vote-down-flash: #b91c1c;
         --badge-paywall: #166534;
         --badge-nsfw: #b91c1c;
+        --badge-new: #0369a1;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
         --reset-bar-soon: #dc2626;
@@ -10519,6 +10638,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
       .paywall-badge { color: var(--badge-paywall); font-weight:700; margin-left:0.3rem; font-size:1em; }
       .nsfw-badge { color: var(--badge-nsfw); font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
+      .new-badge { display: inline-block; margin-left: 0.3rem; padding: 0 0.4em; border: 1px solid var(--badge-new); border-radius: 999px; color: var(--badge-new); font-size: 0.7em; font-weight: 700; line-height: 1.6; letter-spacing: 0.03em; vertical-align: middle; white-space: nowrap; }
+      [data-share] { min-height: 44px; }
       .moderation-badge {
         display: inline-flex;
         align-items: center;
@@ -10882,6 +11003,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/mod-log">modlog</a>
         |
         <a href="/changelog">changelog</a>
+        |
+        <a href="/feed.xml">new games feed</a>
       </p>
     </footer>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
@@ -10991,6 +11114,29 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
           return originalFetch(input, { ...init, headers, credentials: "same-origin" });
         };
       })();
+    </script>
+    <script>
+      // Share buttons ([data-share], data-share-title): the native share sheet where there is one, otherwise the
+      // page link is copied. The URL is the canonical page URL (no query string).
+      document.addEventListener("click", async (event) => {
+        const button = event.target instanceof Element ? event.target.closest("[data-share]") : null;
+        if (!button) return;
+        const url = document.querySelector('link[rel="canonical"]')?.href || window.location.origin + window.location.pathname;
+        if (navigator.share) {
+          try {
+            await navigator.share({ title: button.getAttribute("data-share-title") || document.title, url });
+            return;
+          } catch (error) {
+            if (error && error.name === "AbortError") return;
+          }
+        }
+        try {
+          await navigator.clipboard.writeText(url);
+          window.appToast?.("Link copied");
+        } catch {
+          window.appToast?.("Could not copy the link.", "error");
+        }
+      });
     </script>
     <script>${RESET_LOCALIZE_SCRIPT}</script>
     <script>${APP_UPDATE_SCRIPT}</script>

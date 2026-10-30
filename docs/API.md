@@ -5,6 +5,8 @@
 - `GET /api/games?sort=top|new|trending|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
 - `GET /api/version` → `{ version }`, the deployed Worker version id (pages reload when it changes).
 - `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
+- `GET /feed.xml` → Atom feed of the 50 most recently listed approved games (`COALESCE(approved_at, created_at)`), `application/atom+xml`, cached 10 minutes.
+- `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
 - `GET /api/categories`
 - `GET /api/lists`
 - `GET /api/lists/:slug`
