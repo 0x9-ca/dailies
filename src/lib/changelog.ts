@@ -6,6 +6,8 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
+      "Search finds games even with a typo, and suggests what you might have meant.",
+      "Better contrast and screen reader labels across the site.",
       "Shorter links: d.0x9.ca works everywhere dailies.0x9.ca does, and lists, games and shared rotations have short addresses like d.0x9.ca/c/northernlion. Share buttons now copy the short link.",
       "Stream mode now fits the whole list on screen, and slowly scrolls it if it still doesn't fit.",
       "A transparent overlay view for OBS shows where to suggest games and the top suggestions over your gameplay.",
