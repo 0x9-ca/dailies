@@ -522,6 +522,7 @@ app.get("/", async (c) => {
           requestAnimationFrame(tick);
         })();
       </script>
+      ${HOME_ROTATION_MARKUP}
       <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -566,6 +567,12 @@ app.get("/", async (c) => {
       </section>
     </main>
     <script>
+      // Today's rotation strip: needs the visitor's own data, so it is filled in the browser (edge-cache safe).
+      (() => {
+        let rows = [];
+        const widget = window.dglProgressWidget(document.getElementById("daily-progress"), () => rows);
+        window.dglTodayRotation.get(0).then((items) => { rows = items || []; widget.update(); });
+      })();
       document.getElementById("feeling-auspicious-btn")?.addEventListener("click", async () => {
         // Open the tab synchronously (within the click handler) so browsers don't block it as a popup;
         // the fetch below happens after an await, by which point window.open would no longer count as user-initiated.
@@ -6809,6 +6816,10 @@ app.post("/api/games/:id/click", async (c) => {
 });
 
 
+// Whether this browser has a session. Always 200 (no 401 noise for logged-out visitors) and never cached, so
+// edge-cached pages can ask it from the client.
+app.get("/api/me/session", (c) => c.json({ signedIn: !!c.get("user") }, 200, { "Cache-Control": "no-store" }));
+
 app.get("/api/me/rotation", async (c) => {
   const auth = requireAuth(c);
   if (auth instanceof Response) {
@@ -8827,6 +8838,24 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
   <div class="daily-progress-bar" id="daily-progress-bar" role="progressbar" aria-valuemin="0" aria-label="Games played today"><span id="daily-progress-fill"></span></div>
   <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
   <span class="daily-done" id="daily-done" hidden>All done for today</span>
+</section>
+<section class="heatmap" id="play-heatmap" aria-labelledby="play-heatmap-title" hidden>
+  <h2 id="play-heatmap-title">Play history</h2>
+  <div class="heatmap-grid" id="play-heatmap-grid" role="img"></div>
+  <div class="heatmap-legend" aria-hidden="true"><span>Less</span><span class="heat-cell" data-level="0"></span><span class="heat-cell" data-level="1"></span><span class="heat-cell" data-level="2"></span><span class="heat-cell" data-level="3"></span><span class="heat-cell" data-level="4"></span><span>More</span></div>
+</section>
+<div class="reminder-opt" id="reminder-opt" hidden>
+  <label><input type="checkbox" id="reminder-toggle"> Remind me before resets</label>
+  <select id="reminder-minutes" aria-label="Minutes before reset"><option value="30">30 min before</option><option value="60">1 hour before</option><option value="120">2 hours before</option></select>
+</div>
+`;
+
+// Home page strip: same widget, filled client-side for everyone (the page is edge-cached).
+const HOME_ROTATION_MARKUP = `<section class="daily-progress daily-strip" id="daily-progress" aria-label="Today's rotation" hidden>
+  <div class="daily-progress-head"><span id="daily-progress-text"></span><span id="daily-progress-streak" class="daily-streak" hidden></span><a class="daily-strip-link" href="/me/rotation">Your rotation</a></div>
+  <div class="daily-progress-bar" id="daily-progress-bar" role="progressbar" aria-valuemin="0" aria-label="Games played today"><span id="daily-progress-fill"></span></div>
+  <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
+  <span class="daily-done" id="daily-done" hidden>All done for today</span>
 </section>`;
 
 // "Not interested" control on browse-grid cards (see HIDDEN_GAMES_SCRIPT); the eye swaps when hidden cards are shown.
@@ -9654,22 +9683,23 @@ const HIDDEN_GAMES_SCRIPT = `
   })();
 `;
 
-// Rotation page: "3 of 7 played today", a "Play next" button and a day streak (localStorage dgl_streak_v1,
-// { last: "YYYY-MM-DD", count }). Reads the rows of the list with the given id; recomputed whenever
-// RESET_LOCALIZE_SCRIPT recomputes played state (minute tick, focus, other tabs, dglMarkPlayed).
-const DAILY_PROGRESS_SCRIPT = `
-  window.dglDailyProgress = (listId) => {
-    const list = document.getElementById(listId);
-    const box = document.getElementById("daily-progress");
-    if (!list || !box) return;
-    const text = document.getElementById("daily-progress-text");
-    const streakNode = document.getElementById("daily-progress-streak");
-    const fill = document.getElementById("daily-progress-fill");
-    const bar = document.getElementById("daily-progress-bar");
-    const next = document.getElementById("daily-play-next");
-    const done = document.getElementById("daily-done");
+// Shared client helpers (loaded in <head> on every page). dglProgressWidget draws "N of M played today" with Play
+// next and the streak (localStorage dgl_streak_v1, { last: "YYYY-MM-DD", count }) for a box shaped like
+// DAILY_PROGRESS_MARKUP; getRows() gives today's games as { id, url, kind, min } (kind/min = reset, optional).
+// dglTodayRotation.get(maxAgeMs) fetches today's rotation for signed-in (GET /api/me/rotation) and logged-out
+// (local favorites) visitors alike plus links and resets from GET /api/games/rotation-info; the signed-in check is
+// GET /api/me/session, so it works on edge-cached pages. Reset reminders (dgl_reminders_v1) run from
+// dglPlayedHooks on every page, but only fetch while on.
+const ROTATION_TODAY_SCRIPT = `
+  window.dglDateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  window.dglProgressWidget = (box, getRows) => {
+    const text = box.querySelector("#daily-progress-text");
+    const streakNode = box.querySelector("#daily-progress-streak");
+    const fill = box.querySelector("#daily-progress-fill");
+    const bar = box.querySelector("#daily-progress-bar");
+    const next = box.querySelector("#daily-play-next");
+    const done = box.querySelector("#daily-done");
     const STREAK_KEY = "dgl_streak_v1";
-    const dateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
     const readStreak = () => {
       try {
         const parsed = JSON.parse(window.localStorage.getItem(STREAK_KEY) || "{}");
@@ -9681,15 +9711,10 @@ const DAILY_PROGRESS_SCRIPT = `
     let nextRow = null;
     const update = () => {
       if (!window.dglIsPlayed) return;
-      // Monday is bit 0 of a favorite's weekday mask; rows without a mask (local favorites) run every day.
-      const bit = 1 << ((new Date().getDay() + 6) % 7);
-      const rows = Array.from(list.querySelectorAll("li[data-game-id]")).filter((li) => {
-        const mask = li.getAttribute("data-weekday-mask");
-        return mask == null || mask === "" || (Number(mask) & bit) !== 0;
-      });
+      const rows = getRows();
       box.hidden = rows.length === 0;
       if (rows.length === 0) return;
-      const unplayed = rows.filter((li) => !window.dglIsPlayed(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin));
+      const unplayed = rows.filter((row) => !window.dglIsPlayed(row.id, row.kind, row.min));
       const played = rows.length - unplayed.length;
       text.textContent = played + " of " + rows.length + " played today";
       fill.style.width = Math.round((played / rows.length) * 100) + "%";
@@ -9700,15 +9725,14 @@ const DAILY_PROGRESS_SCRIPT = `
       done.hidden = !!nextRow;
       try {
         const now = new Date();
-        const today = dateKey(now);
+        const today = window.dglDateKey(now);
+        const yesterdayKey = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
         const streak = readStreak();
         if (!nextRow && streak.last !== today) {
-          const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-          streak.count = streak.last === dateKey(yesterday) ? streak.count + 1 : 1;
+          streak.count = streak.last === yesterdayKey ? streak.count + 1 : 1;
           streak.last = today;
           window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak));
         }
-        const yesterdayKey = dateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
         const live = streak.count >= 2 && (streak.last === today || streak.last === yesterdayKey);
         streakNode.hidden = !live;
         if (live) streakNode.textContent = streak.count + "-day streak";
@@ -9717,17 +9741,209 @@ const DAILY_PROGRESS_SCRIPT = `
       }
     };
     next.addEventListener("click", () => {
-      const link = nextRow && nextRow.querySelector("a.card-link");
-      const id = nextRow && nextRow.getAttribute("data-game-id");
-      if (!link || !id) return;
-      window.open(link.href, "_blank", "noopener");
+      if (!nextRow || !nextRow.url) return;
+      window.open(nextRow.url, "_blank", "noopener");
       // Only a game's own site counts; the details page (shown until the address loads) doesn't.
-      if (new URL(link.href).origin !== window.location.origin) window.dglMarkPlayed(id);
+      if (new URL(nextRow.url, window.location.href).origin !== window.location.origin) window.dglMarkPlayed(nextRow.id);
     });
     (window.dglPlayedHooks = window.dglPlayedHooks || []).push(update);
-    new MutationObserver(update).observe(list, { childList: true });
-    update();
-    return update;
+    return { update };
+  };
+
+  window.dglTodayRotation = (() => {
+    let cache = null;
+    let pending = null;
+    const load = async () => {
+      const weekday = ((new Date().getDay() + 6) % 7) + 1;
+      let base = [];
+      const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
+      if (!session) return null;
+      if (session.signedIn) {
+        const r = await fetch("/api/me/rotation?weekday=" + weekday);
+        if (!r.ok) return null;
+        base = (await r.json()).results || [];
+      } else {
+        base = window.dglGames.readLocalFavorites();
+      }
+      const ids = [...new Set(base.map((g) => g.id))];
+      const info = {};
+      for (let i = 0; i < ids.length; i += 50) {
+        const r = await fetch("/api/games/rotation-info?ids=" + ids.slice(i, i + 50).map(encodeURIComponent).join(","));
+        if (r.ok) Object.assign(info, await r.json());
+      }
+      // Games without info are no longer listed.
+      return base.filter((g) => info[g.id]).map((g) => ({
+        id: g.id, slug: g.slug, title: g.title, url: info[g.id].url,
+        kind: info[g.id].reset ? info[g.id].reset.kind : "", min: info[g.id].reset ? info[g.id].reset.min : ""
+      }));
+    };
+    // Resolves to today's games ([] when none, null when the request failed). Reuses the last answer if it is
+    // younger than maxAgeMs and from the same day.
+    const get = (maxAgeMs) => {
+      const day = window.dglDateKey(new Date());
+      if (cache && cache.day === day && Date.now() - cache.at < maxAgeMs) return Promise.resolve(cache.items);
+      if (!pending) {
+        pending = load().then((items) => { if (items) cache = { at: Date.now(), day, items }; return items; }, () => null).finally(() => { pending = null; });
+      }
+      return pending;
+    };
+    return { get };
+  })();
+
+  // Reset reminders: one browser notification per game per reset, from one open tab at a time.
+  window.dglReminders = (() => {
+    const KEY = "dgl_reminders_v1";
+    const REMINDED_KEY = "dgl_reminded_v1";
+    const LOCK_KEY = "dgl_reminder_lock_v1";
+    const tabId = Math.random().toString(36).slice(2);
+    const supported = () => "Notification" in window;
+    const read = () => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(KEY) || "{}");
+        const minutes = [30, 60, 120].includes(Number(parsed && parsed.minutes)) ? Number(parsed.minutes) : 60;
+        return { on: !!(parsed && parsed.on), minutes };
+      } catch {
+        return { on: false, minutes: 60 };
+      }
+    };
+    const write = (value) => { try { window.localStorage.setItem(KEY, JSON.stringify(value)); } catch {} };
+    const readJson = (key) => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(key) || "{}");
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    };
+    // Simple lock: the tab that wrote it last, within the past 2.5 minutes, is the one that notifies.
+    const holdsLock = () => {
+      try {
+        const lock = readJson(LOCK_KEY);
+        if (lock.id && lock.id !== tabId && Date.now() - Number(lock.at) < 150000) return false;
+        window.localStorage.setItem(LOCK_KEY, JSON.stringify({ id: tabId, at: Date.now() }));
+        return readJson(LOCK_KEY).id === tabId;
+      } catch {
+        return false;
+      }
+    };
+    let busy = false;
+    const check = async () => {
+      const settings = read();
+      if (!settings.on || !supported() || Notification.permission !== "granted" || !window.dglIsPlayed || busy || !holdsLock()) return;
+      busy = true;
+      try {
+        const items = await window.dglTodayRotation.get(10 * 60 * 1000);
+        const reminded = readJson(REMINDED_KEY);
+        const now = Date.now();
+        Object.keys(reminded).forEach((id) => { if (!(Number(reminded[id]) > now - 2 * 24 * 60 * 60 * 1000)) delete reminded[id]; });
+        (items || []).forEach((game) => {
+          if (game.kind === "" || game.min === "" || window.dglIsPlayed(game.id, game.kind, game.min)) return;
+          const reset = window.dglResetCountdown(game.kind, game.min);
+          if (!reset || reset.minutesLeft > settings.minutes) return;
+          const resetAt = reset.lastResetAt + 24 * 60 * 60 * 1000;
+          if (reminded[game.id] === resetAt) return;
+          reminded[game.id] = resetAt;
+          try {
+            const note = new Notification(game.title + " resets in " + reset.minutesLeft + " min", { body: "You haven't played it yet.", tag: "dgl-" + game.id });
+            note.onclick = () => { note.close(); window.focus(); window.location.href = "/games/" + encodeURIComponent(game.slug); };
+          } catch {}
+        });
+        try { window.localStorage.setItem(REMINDED_KEY, JSON.stringify(reminded)); } catch {}
+      } finally {
+        busy = false;
+      }
+    };
+    (window.dglPlayedHooks = window.dglPlayedHooks || []).push(check);
+    return { supported, read, write, check };
+  })();
+`;
+
+// Rotation page: wires the shared widget to the rows of the list with the given id, and draws the play history
+// heatmap (localStorage dgl_play_log_v1, { "YYYY-MM-DD": games played }) and the reminder toggle. Recomputed through
+// dglPlayedHooks (minute tick, focus, other tabs, dglMarkPlayed).
+const DAILY_PROGRESS_SCRIPT = `
+  window.dglDailyProgress = (listId) => {
+    const list = document.getElementById(listId);
+    const box = document.getElementById("daily-progress");
+    if (!list || !box) return;
+    const getRows = () => {
+      // Monday is bit 0 of a favorite's weekday mask; rows without a mask (local favorites) run every day.
+      const bit = 1 << ((new Date().getDay() + 6) % 7);
+      return Array.from(list.querySelectorAll("li[data-game-id]"))
+        .filter((li) => {
+          const mask = li.getAttribute("data-weekday-mask");
+          return mask == null || mask === "" || (Number(mask) & bit) !== 0;
+        })
+        .map((li) => {
+          const link = li.querySelector("a.card-link");
+          return { id: li.getAttribute("data-game-id"), url: link ? link.href : "", kind: li.dataset.resetKind, min: li.dataset.resetMin };
+        });
+    };
+    const widget = window.dglProgressWidget(box, getRows);
+    new MutationObserver(widget.update).observe(list, { childList: true });
+    widget.update();
+
+    // Play history: 12 week columns (Monday on top) ending with this week.
+    const heat = document.getElementById("play-heatmap");
+    const grid = document.getElementById("play-heatmap-grid");
+    const fmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+    const renderHeat = () => {
+      let log = {};
+      try { log = JSON.parse(window.localStorage.getItem("dgl_play_log_v1") || "{}") || {}; } catch {}
+      const now = new Date();
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7) - 77);
+      const cells = [];
+      let playedDays = 0;
+      let totalDays = 0;
+      for (let i = 0; i < 84; i++) {
+        const day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+        const cell = document.createElement("span");
+        cell.className = "heat-cell";
+        if (day > now) {
+          cell.classList.add("heat-future");
+        } else {
+          const count = Math.max(0, Math.floor(Number(log[window.dglDateKey(day)]) || 0));
+          totalDays++;
+          if (count > 0) playedDays++;
+          cell.dataset.level = String(count === 0 ? 0 : count === 1 ? 1 : count <= 3 ? 2 : count <= 5 ? 3 : 4);
+          cell.title = fmt.format(day) + ": " + count + (count === 1 ? " game" : " games");
+        }
+        cells.push(cell);
+      }
+      heat.hidden = playedDays === 0;
+      grid.setAttribute("aria-label", "Played on " + playedDays + " of the last " + totalDays + " days");
+      grid.replaceChildren(...cells);
+    };
+    if (heat && grid) {
+      renderHeat();
+      window.dglPlayedHooks.push(renderHeat);
+    }
+
+    // Reminder toggle (hidden where browser notifications don't exist).
+    const opt = document.getElementById("reminder-opt");
+    const toggle = document.getElementById("reminder-toggle");
+    const minutes = document.getElementById("reminder-minutes");
+    if (opt && toggle && minutes && window.dglReminders.supported()) {
+      opt.hidden = false;
+      const settings = window.dglReminders.read();
+      toggle.checked = settings.on && Notification.permission === "granted";
+      minutes.value = String(settings.minutes);
+      const save = () => { window.dglReminders.write({ on: toggle.checked, minutes: Number(minutes.value) }); if (toggle.checked) window.dglReminders.check(); };
+      toggle.addEventListener("change", async () => {
+        if (toggle.checked && Notification.permission !== "granted") {
+          let result = Notification.permission;
+          if (result === "default") {
+            try { result = await Notification.requestPermission(); } catch { result = "denied"; }
+          }
+          if (result !== "granted") {
+            toggle.checked = false;
+            if (window.appToast) window.appToast("Notifications are blocked. Allow them for this site in your browser settings to get reminders.", "error", 6000);
+          }
+        }
+        save();
+      });
+      minutes.addEventListener("change", save);
+    }
   };
 `;
 
@@ -9752,6 +9968,7 @@ const RESET_LOCALIZE_SCRIPT = `
   // When this browser last opened each game ({ gameId: epoch ms }), so cards played since the last reset can be
   // faded. Kept for 3 days; only the latest reset matters.
   const PLAYED_KEY = "dgl_played_v1";
+  const PLAY_LOG_KEY = "dgl_play_log_v1";
   const readPlayed = () => {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(PLAYED_KEY) || "{}");
@@ -9765,8 +9982,22 @@ const RESET_LOCALIZE_SCRIPT = `
     const played = readPlayed();
     const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
     Object.keys(played).forEach((id) => { if (!(played[id] > cutoff)) delete played[id]; });
-    played[gameId] = Date.now();
+    const prev = Number(played[gameId]) || 0;
+    const now = new Date();
+    played[gameId] = now.getTime();
     try { window.localStorage.setItem(PLAYED_KEY, JSON.stringify(played)); } catch {}
+    // Play history (dgl_play_log_v1, { "YYYY-MM-DD": games }): a game counts once per local day.
+    if (!prev || window.dglDateKey(new Date(prev)) !== window.dglDateKey(now)) {
+      try {
+        const log = JSON.parse(window.localStorage.getItem(PLAY_LOG_KEY) || "{}");
+        const days = log && typeof log === "object" && !Array.isArray(log) ? log : {};
+        const oldest = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 365));
+        Object.keys(days).forEach((day) => { if (day < oldest || !(Number(days[day]) > 0)) delete days[day]; });
+        const today = window.dglDateKey(now);
+        days[today] = (Number(days[today]) || 0) + 1;
+        window.localStorage.setItem(PLAY_LOG_KEY, JSON.stringify(days));
+      } catch {}
+    }
     window.dglLocalizeResets();
   };
   const cardGameId = (card) =>
@@ -9813,7 +10044,7 @@ const RESET_LOCALIZE_SCRIPT = `
   };
   document.addEventListener("click", onGameOpen, true);
   document.addEventListener("auxclick", onGameOpen, true);
-  window.addEventListener("storage", (event) => { if (event.key === PLAYED_KEY) window.dglLocalizeResets(); });
+  window.addEventListener("storage", (event) => { if (event.key === PLAYED_KEY || event.key === PLAY_LOG_KEY) window.dglLocalizeResets(); });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") window.dglLocalizeResets(); });
   window.dglLocalizeResets();
   window.setInterval(() => window.dglLocalizeResets(), 60 * 1000);
@@ -10245,6 +10476,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     <script>${GAME_ACTIONS_SCRIPT}</script>
     <script>${HIDDEN_GAMES_SCRIPT}</script>
+    <script>${ROTATION_TODAY_SCRIPT}</script>
     <title>${escapeHtml(fullTitle)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
@@ -10318,6 +10550,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
         --reset-bar-soon: #f87171;
+        --heat-0: #2a2a2a;
+        --heat-1: #0e4a6e;
+        --heat-2: #0b78ad;
+        --heat-3: #00a4fc;
+        --heat-4: #7dd3fc;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -10344,6 +10581,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
         --reset-bar-soon: #dc2626;
+        --heat-0: #e4e4ea;
+        --heat-1: #b6dcf2;
+        --heat-2: #6ab6e3;
+        --heat-3: #1f8fcf;
+        --heat-4: #005a94;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -10399,6 +10641,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .site-header.searching .header-search { display: flex; }
         .header-search input { flex: 1; width: auto; min-height: 44px; font-size: 1rem; padding-right: 2.6rem; }
         .header-search-go { right: calc(0.75rem + 44px + 0.5rem + 0.2rem); }
+        .header-search .search-suggest { left: 0.75rem; right: 0.75rem; width: auto; }
         .header-search-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border: 0; border-radius: 8px; background: none; color: var(--ink); font-size: 1.1rem; cursor: pointer; }
       }
       .nav-menu { display: none; position: relative; }
@@ -10796,6 +11039,32 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .daily-progress-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--brand-blue); transition: width 0.3s ease; }
       .daily-progress .btn { min-height: 44px; }
       .daily-done { color: var(--muted); font-weight: 600; }
+      .daily-strip { margin: 0 0 1.25rem; }
+      .daily-strip-link { position: relative; color: var(--brand-blue); font-weight: 700; margin-left: auto; }
+      .daily-strip-link::after { content: ""; position: absolute; inset: -0.8rem -0.4rem; }
+      .daily-strip .daily-progress-head { align-items: center; }
+      .heatmap { margin: 0 0 1rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+      .heatmap h2 { margin: 0 0 0.5rem; font-size: 1rem; }
+      .heatmap-grid { display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(7, auto); grid-auto-flow: column; gap: 3px; width: 100%; max-width: 300px; }
+      .heat-cell { aspect-ratio: 1; border-radius: 3px; background: var(--heat-0); }
+      .heat-cell[data-level="1"] { background: var(--heat-1); }
+      .heat-cell[data-level="2"] { background: var(--heat-2); }
+      .heat-cell[data-level="3"] { background: var(--heat-3); }
+      .heat-cell[data-level="4"] { background: var(--heat-4); }
+      .heat-cell.heat-future { visibility: hidden; }
+      .heatmap-legend { display: flex; align-items: center; gap: 3px; margin-top: 0.5rem; color: var(--muted); font-size: 0.8rem; }
+      .heatmap-legend .heat-cell { width: 12px; height: 12px; aspect-ratio: auto; }
+      .heatmap-legend span:first-child { margin-right: 0.3rem; }
+      .heatmap-legend span:last-child { margin-left: 0.3rem; }
+      .reminder-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; margin: 0 0 1rem; }
+      .reminder-opt label { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 44px; cursor: pointer; }
+      .reminder-opt input[type="checkbox"] { width: 1.15rem; height: 1.15rem; }
+      .reminder-opt select { min-height: 44px; padding: 0 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); color: var(--ink); font: inherit; }
+      .search-suggest { display: none; position: absolute; top: calc(100% + 4px); right: 0; width: max(100%, 300px); z-index: 20; max-height: 70vh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 0.25rem; }
+      .search-suggest.open { display: block; }
+      .search-suggest a { display: flex; align-items: center; min-height: 44px; padding: 0.35rem 0.65rem; border-radius: 8px; color: var(--ink); text-decoration: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .search-suggest a:hover, .search-suggest a.active { background: var(--bg-soft); }
+      .search-suggest a.active { outline: 2px solid var(--brand-blue); outline-offset: -2px; }
       @media (max-width: 480px) { .daily-progress { grid-template-columns: 1fr; } .daily-progress .btn { width: 100%; } }
       .hide-btn { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
       .hide-btn svg { width: 1.05rem; height: 1.05rem; }
@@ -10974,9 +11243,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <span class="nav-extra">${secondaryLinks}</span>
       </nav>
       <form class="header-search" id="header-search" role="search" action="/games" method="get">
-        <input type="search" name="q" id="header-search-input" placeholder="Search games" aria-label="Search games" autocomplete="off" enterkeyhint="search" maxlength="100" />
+        <input type="search" name="q" id="header-search-input" placeholder="Search games" aria-label="Search games" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="header-search-list" aria-haspopup="listbox" enterkeyhint="search" maxlength="100" />
         <button type="submit" class="header-search-go" aria-label="Search">${SEARCH_ICON}</button>
         <button type="button" class="header-search-close" id="header-search-close" aria-label="Close search">\u2715</button>
+        <div class="search-suggest" id="header-search-list" role="listbox" aria-label="Game suggestions"></div>
       </form>
       <div class="header-tools">
         <button type="button" class="search-toggle" id="search-toggle" aria-label="Search games" aria-expanded="false" aria-controls="header-search">${SEARCH_ICON}</button>
@@ -11035,6 +11305,95 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         if (searchInput && location.pathname === "/games") searchInput.value = new URLSearchParams(location.search).get("q") || "";
         searchToggle?.addEventListener("click", () => setSearch(true));
         document.getElementById("header-search-close")?.addEventListener("click", () => setSearch(false));
+        // Typeahead: from 2 characters, up to 8 matching games (prefix matches first) from GET /api/games/titles,
+        // fetched on first focus. Combobox pattern: arrows move, Enter opens the highlighted game, Escape closes.
+        const suggestBox = document.getElementById("header-search-list");
+        if (searchInput && suggestBox) {
+          let titles = null;
+          let loadingTitles = null;
+          let shown = [];
+          let active = -1;
+          let timer = 0;
+          const loadTitles = () => {
+            if (titles) return Promise.resolve();
+            try {
+              const saved = JSON.parse(sessionStorage.getItem("dgl_titles_v1") || "null");
+              if (saved && Array.isArray(saved.games)) { titles = saved.games; return Promise.resolve(); }
+            } catch (e) {}
+            if (!loadingTitles) {
+              loadingTitles = fetch("/api/games/titles").then((r) => (r.ok ? r.json() : Promise.reject())).then((data) => {
+                titles = (data.games || []).map((g) => ({ slug: g.slug, title: g.title, lower: String(g.title).toLowerCase() }));
+                try { sessionStorage.setItem("dgl_titles_v1", JSON.stringify({ games: titles })); } catch (e) {}
+              }).catch(() => { loadingTitles = null; });
+            }
+            return loadingTitles;
+          };
+          const closeSuggest = () => {
+            suggestBox.classList.remove("open");
+            suggestBox.replaceChildren();
+            shown = [];
+            active = -1;
+            searchInput.setAttribute("aria-expanded", "false");
+            searchInput.removeAttribute("aria-activedescendant");
+          };
+          const setActive = (index) => {
+            active = index;
+            shown.forEach((node, i) => {
+              node.classList.toggle("active", i === index);
+              node.setAttribute("aria-selected", String(i === index));
+            });
+            if (index >= 0) {
+              searchInput.setAttribute("aria-activedescendant", shown[index].id);
+              shown[index].scrollIntoView({ block: "nearest" });
+            } else searchInput.removeAttribute("aria-activedescendant");
+          };
+          const showSuggest = () => {
+            const q = searchInput.value.trim().toLowerCase();
+            if (q.length < 2 || !titles) { closeSuggest(); return; }
+            const starts = titles.filter((g) => g.lower.startsWith(q));
+            const rest = titles.filter((g) => !g.lower.startsWith(q) && g.lower.includes(q));
+            const matches = starts.concat(rest).slice(0, 8);
+            if (matches.length === 0) { closeSuggest(); return; }
+            shown = matches.map((game, i) => {
+              const a = document.createElement("a");
+              a.id = "header-search-opt-" + i;
+              a.setAttribute("role", "option");
+              a.setAttribute("aria-selected", "false");
+              a.href = "/games/" + encodeURIComponent(game.slug);
+              a.textContent = game.title;
+              return a;
+            });
+            suggestBox.replaceChildren(...shown);
+            suggestBox.classList.add("open");
+            searchInput.setAttribute("aria-expanded", "true");
+            active = -1;
+            searchInput.removeAttribute("aria-activedescendant");
+          };
+          searchInput.addEventListener("focus", () => { loadTitles().then(() => { if (document.activeElement === searchInput) showSuggest(); }); });
+          searchInput.addEventListener("input", () => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(() => { loadTitles().then(showSuggest); }, 120);
+          });
+          searchInput.addEventListener("keydown", (event) => {
+            const open = suggestBox.classList.contains("open");
+            if (event.key === "Escape" && open) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              closeSuggest();
+            } else if ((event.key === "ArrowDown" || event.key === "ArrowUp") && open) {
+              event.preventDefault();
+              const last = shown.length - 1;
+              setActive(event.key === "ArrowDown" ? (active >= last ? 0 : active + 1) : (active <= 0 ? last : active - 1));
+            } else if (event.key === "Enter" && open && active >= 0 && !event.isComposing) {
+              event.preventDefault();
+              window.location.href = shown[active].href;
+            }
+          });
+          // Keep focus in the field while tapping a suggestion; the link itself navigates on click.
+          suggestBox.addEventListener("mousedown", (event) => event.preventDefault());
+          searchInput.addEventListener("blur", () => window.setTimeout(closeSuggest, 100));
+          document.getElementById("header-search")?.addEventListener("submit", closeSuggest);
+        }
         searchInput?.addEventListener("keydown", (event) => { if (event.key === "Escape") setSearch(false); });
         document.getElementById("header-search")?.addEventListener("submit", (event) => {
           if (!searchInput.value.trim()) { event.preventDefault(); searchInput.focus(); }

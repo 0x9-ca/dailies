@@ -6,6 +6,10 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
+      "Start typing in the search box and matching games appear right under it. Use the arrow keys and Enter to jump straight to one.",
+      "The home page shows today's rotation at the top: how many games you've played, a Play next button and a link to your rotation.",
+      "Turn on Remind me before resets on your rotation page to get a browser notification when a game you haven't played is about to reset (while a 0x9 dles tab is open).",
+      "Your rotation page now shows a play history of the last 12 weeks, one square per day.",
       "Your rotation now shows how many of today's games you've played, a Play next button for the first one you haven't, and a day streak when you finish them all.",
       "Not interested in a game? Tap the eye on its card to hide it from the home page and Browse. You can undo it right away, or unhide games from the bottom of Browse or from Settings.",
       "Games listed in the last 7 days show a small New badge on their cards and their game page.",
