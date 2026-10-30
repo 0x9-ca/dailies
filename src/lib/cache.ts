@@ -10,8 +10,8 @@ export async function getCachedJson<T>(env: Env, key: string): Promise<T | null>
   return JSON.parse(value) as T;
 }
 
-export async function setCachedJson(env: Env, key: string, value: unknown): Promise<void> {
-  await env.CACHE.put(key, JSON.stringify(value), { expirationTtl: TTL_SECONDS });
+export async function setCachedJson(env: Env, key: string, value: unknown, ttlSeconds = TTL_SECONDS): Promise<void> {
+  await env.CACHE.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
 }
 
 export async function invalidateGameCaches(env: Env): Promise<void> {

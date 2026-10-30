@@ -1165,6 +1165,34 @@ app.get("/games/:slug", async (c) => {
   )
     .bind(game.id, game.nsfw)
     .all<{ slug: string; title: string }>();
+  // Games that most often share a rotation with this one. Not per-visitor; cached in KV (stale is fine, so
+  // invalidateGameCaches doesn't touch the "coplay:" prefix).
+  const coplayKey = `coplay:v1:${game.id}:${game.nsfw}`;
+  let alsoPlay = await getCachedJson<Array<{ slug: string; title: string }>>(c.env, coplayKey).catch(() => null);
+  if (!alsoPlay) {
+    const coplay = await c.env.DB.prepare(
+      `SELECT games.slug, games.title
+       FROM (
+         SELECT f2.game_id AS gid FROM favorites f1
+         JOIN favorites f2 ON f2.user_id = f1.user_id AND f2.game_id != f1.game_id
+         WHERE f1.game_id = ?1
+         UNION ALL
+         SELECT a2.game_id FROM anonymous_favorites a1
+         JOIN anonymous_favorites a2 ON a2.anon_id = a1.anon_id AND a2.game_id != a1.game_id
+         WHERE a1.game_id = ?1
+       ) co
+       JOIN games ON games.id = co.gid
+       WHERE games.status = 'approved' AND (games.nsfw = 0 OR ?2 = 1)
+       GROUP BY games.id
+       HAVING COUNT(*) >= 2
+       ORDER BY COUNT(*) DESC, games.score DESC
+       LIMIT 6`
+    )
+      .bind(game.id, game.nsfw)
+      .all<{ slug: string; title: string }>();
+    alsoPlay = coplay.results;
+    await setCachedJson(c.env, coplayKey, alsoPlay, 6 * 3600).catch(() => undefined);
+  }
   const relatedHeading = categories.results.length === 1 ? `More in ${categories.results[0].name}` : "Similar daily games";
 
   const gameLd = {
@@ -1232,6 +1260,10 @@ app.get("/games/:slug", async (c) => {
       <p class="game-actions-note">${user ? `Favorites are added to <a href="/me/rotation">your rotation</a>.` : `Favorites are added to <a href="/me/rotation">your rotation</a>, no account needed.`}${isAdminOrEditor ? ` Reports: ${game.report_count}.` : ""}</p>
       <p id="game-action-status" class="status" aria-live="polite"></p>
       ${gameFacts}
+      ${alsoPlay.length > 0 ? `<section class="related-games">
+        <h2>Players also play</h2>
+        <ul>${alsoPlay.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
+      </section>` : ""}
       ${related.results.length > 0 ? `<section class="related-games">
         <h2>${escapeHtml(relatedHeading)}</h2>
         <ul>${related.results.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
@@ -1843,6 +1875,7 @@ app.get("/rotation/:shareToken", async (c) => {
     <main class="narrow">
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
+      ${favorites.results.length > 0 && user?.id !== owner.id ? `<p><button type="button" id="copy-rotation-btn">Copy to my rotation</button></p>` : ""}
       ${favorites.results.length > 0 ? `
         ${renderListSortControl()}
         <ol class="rotation-list" id="shared-rotation-list">
@@ -1869,6 +1902,16 @@ app.get("/rotation/:shareToken", async (c) => {
     <script>
       ${LIST_SORT_SCRIPT}
       window.dglListSort.init(document.getElementById("shared-rotation-list"), document.getElementById("list-sort-select"));
+      (() => {
+        const button = document.getElementById("copy-rotation-btn");
+        if (!button) return;
+        const games = ${scriptJson(favorites.results.map((item) => ({ id: item.id, slug: item.slug, title: item.title })))};
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          await window.dglAddManyToRotation(games);
+          button.disabled = false;
+        });
+      })();
     </script>
   `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.`, noindex: true }));
 });
@@ -3105,7 +3148,10 @@ app.get("/lists/:slug", async (c) => {
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
-      <button type="button" class="secondary" data-share data-share-title="${escapeHtml(list.title)}">Share</button>
+      <span class="list-head-actions">
+        <button type="button" class="secondary" data-share data-share-title="${escapeHtml(list.title)}">Share</button>
+        ${isAdminEditor || items.results.length === 0 ? "" : `<button type="button" class="secondary" id="add-all-btn">Add all to my rotation</button>`}
+      </span>
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       </div>
       <p>${escapeHtml(list.description || "")}</p>
@@ -3271,6 +3317,23 @@ app.get("/lists/:slug", async (c) => {
       })();
     </script>` : ""}
     ${!isAdminEditor ? `<script>
+      (() => {
+        const button = document.getElementById("add-all-btn");
+        if (!button) return;
+        button.addEventListener("click", async () => {
+          const games = [...document.querySelectorAll("#list-items > li[data-game-id]")].map((row) => ({
+            id: row.getAttribute("data-game-id") || "",
+            slug: row.getAttribute("data-game-slug") || "",
+            title: row.getAttribute("data-game-title") || ""
+          }));
+          if (games.length > 10 && !window.confirm("Add all " + games.length + " games to your rotation?")) return;
+          button.disabled = true;
+          await window.dglAddManyToRotation(games);
+          button.disabled = false;
+        });
+      })();
+    </script>
+    <script>
       (() => {
         const panel = document.getElementById("suggest-panel");
         if (!panel) return;
@@ -10261,7 +10324,65 @@ const GAME_ACTIONS_SCRIPT = `
       window.localStorage.removeItem(FAVORITES_KEY);
       return "imported";
     };
-    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, refreshVoteCounts, importLocalFavorites, isReturningVisitor };
+    // Adds games ({ id, slug, title }) to the visitor's rotation: the account when signed in (additive import,
+    // duplicates skipped), else local favorites mirrored to /favorite-anon. Toasts the result. Resolves { ok, added }.
+    const addManyToRotation = async (games) => {
+      const seen = new Set();
+      const list = (games || [])
+        .filter((g) => g && typeof g.id === "string" && g.id && !seen.has(g.id) && seen.add(g.id))
+        .map((g) => ({ id: g.id, slug: String(g.slug || ""), title: String(g.title || "") }));
+      const toast = (message, level) => {
+        if (!window.appToast) return;
+        window.appToast(message, level, level === "error" ? 3500 : 6000, level === "error" ? undefined : { label: "My rotation", onClick: () => { window.location.href = "/me/rotation"; } });
+      };
+      if (list.length === 0) return { ok: true, added: 0 };
+      const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
+      let added = 0;
+      if (!session) {
+        toast("Could not add the games. Try again.", "error");
+        return { ok: false, added: 0 };
+      }
+      if (session.signedIn) {
+        for (let i = 0; i < list.length; i += 500) {
+          const response = await fetch("/api/me/favorites/import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ version: 1, items: list.slice(i, i + 500) })
+          }).catch(() => null);
+          const body = response && response.ok ? await response.json().catch(() => null) : null;
+          if (!body) {
+            toast("Could not add the games. Try again.", "error");
+            return { ok: false, added };
+          }
+          added += Number(body.imported) || 0;
+        }
+      } else {
+        const current = readLocalFavorites();
+        const have = new Set(current.map((row) => row.id));
+        const fresh = list.filter((g) => !have.has(g.id));
+        if (fresh.length > 0) {
+          try {
+            writeLocalFavorites(current.concat(fresh));
+          } catch {
+            toast("Could not save to this browser.", "error");
+            return { ok: false, added: 0 };
+          }
+          const anonId = getAnonId();
+          fresh.forEach((g) => {
+            fetch("/api/games/" + encodeURIComponent(g.id) + "/favorite-anon", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ anonId })
+            }).catch(() => undefined);
+          });
+        }
+        added = fresh.length;
+      }
+      toast(added > 0 ? "Added " + added + (added === 1 ? " game" : " games") + " to your rotation." : "Those games are already in your rotation.");
+      return { ok: true, added };
+    };
+    window.dglAddManyToRotation = addManyToRotation;
+    return { readLocalFavorites, writeLocalFavorites, isLocalFavorite, toggleLocalFavorite, setAccountFavorite, saveVote, shiftVoteCounts, refreshVoteCounts, importLocalFavorites, addManyToRotation, isReturningVisitor };
   })();
 `;
 
@@ -10774,6 +10895,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       @media (min-width: 900px) {
         .list-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; flex-wrap: wrap; margin: 1.34rem 0 1rem; }
         .list-head h1 { margin: 0; }
+        .list-head-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+        .list-head-actions button { min-height: 44px; }
         .list-head .twitch-watch { margin: 0; }
       }
       .btn:hover { background: var(--primary-strong); }
