@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
+      "Pages load faster: styles and scripts are now cached by your browser instead of downloaded with every page.",
       "Games added to a list in the last week get a New here pill.",
       "Lists have a panel badge for Twitch panels and socials. Copy the snippet from Stream settings.",
       "Search finds games even with a typo, and suggests what you might have meant.",
