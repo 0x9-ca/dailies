@@ -9,6 +9,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "Game pages show a Players also play section with games that often share a rotation with it.",
       "Found a rotation someone shared? Copy to my rotation adds all its games to yours, signed in or not.",
       "Curated lists have an Add all to my rotation button next to Share.",
+      "Game cards no longer run off the edge of very narrow phone screens.",
       "Start typing in the search box and matching games appear right under it. Use the arrow keys and Enter to jump straight to one.",
       "The home page shows today's rotation at the top: how many games you've played, a Play next button and a link to your rotation.",
       "Turn on Remind me before resets on your rotation page to get a browser notification when a game you haven't played is about to reset (while a 0x9 dles tab is open).",
