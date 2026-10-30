@@ -21,9 +21,9 @@ There is no test runner in the repo. Verify changes by running the app (see Test
 
 | Env | Worker | D1 | KV | URL |
 |---|---|---|---|---|
-| default (dev) | `wrangler dev` only, **never deploy** | `daily-game-list-staging` | staging KV | local |
-| staging | `daily-game-list-staging` | `daily-game-list-staging` | staging KV | dailies-stg.0x9.ca |
-| production | `daily-game-list-production` | `daily-game-list` | production KV | dailies.0x9.ca |
+| default (dev) | `wrangler dev` only, **never deploy** | `daily-game-list-staging` | staging KV | local (no short host) |
+| staging | `daily-game-list-staging` | `daily-game-list-staging` | staging KV | dailies-stg.0x9.ca, d-stg.0x9.ca |
+| production | `daily-game-list-production` | `daily-game-list` | production KV | dailies.0x9.ca, d.0x9.ca |
 
 - Production has its own D1 and KV. Staging holds a copy of the public catalog only (no users, votes or lists).
 - **Never run `wrangler deploy` without `--env`.** The default config has `APP_ENV=development`, which enables `/auth/mock-login/:role` (instant admin). The route also checks that the request host matches `APP_URL`, but don't rely on that.
@@ -32,6 +32,7 @@ There is no test runner in the repo. Verify changes by running the app (see Test
   npx wrangler d1 execute DB --env staging --remote --command "SELECT ..."
   npx wrangler d1 migrations apply DB --env production --remote
   ```
+- Each env serves its long host (`APP_URL`, canonical) and a short host (`SHORT_URL`), both custom domains in `routes`. Short paths `/c/<list>`, `/g/<game>`, `/r/<rotation token>` 301 to `/lists`, `/games`, `/rotation`. Cookies stay host-only.
 - workers.dev and preview URLs are disabled for staging and production (`workers_dev: false`).
 - `scripts/set-secrets.sh` only pushes secrets to staging and production. Per-env binding IDs: `D1_DATABASE_ID`/`KV_NAMESPACE_ID` (production) and `*_STAGING` (staging and dev).
 

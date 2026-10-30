@@ -7,6 +7,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
+import { isShortHost, requestOrigin, shortOrigin } from "./lib/origins";
 import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
@@ -48,8 +49,20 @@ app.use("*", async (c, next) => {
   await next();
   if (c.env.APP_ENV !== "production") {
     c.header("X-Robots-Tag", "noindex, nofollow");
+  } else if (isShortHost(c.env, c.req.url)) {
+    // Duplicate host: pages point their canonical at APP_URL, and this keeps the short host out of the index.
+    c.header("X-Robots-Tag", "noindex");
   }
 });
+
+// Short paths for sharing (no clash with the long routes): /c/<list>, /g/<game>, /r/<rotation token>. Relative
+// redirects keep the visitor on the host they used.
+for (const [short, long] of [["c", "lists"], ["g", "games"], ["r", "rotation"]] as const) {
+  app.get(`/${short}/:id`, (c) => {
+    const query = new URL(c.req.url).search;
+    return c.redirect(`/${long}/${encodeURIComponent(c.req.param("id"))}${query}`, 301);
+  });
+}
 
 // Logged-out views of public pages are served from Cloudflare's edge cache for a minute, so they cost no D1 reads.
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
@@ -1423,7 +1436,7 @@ app.get("/games/:slug", async (c) => {
         </form>
         <p id="report-status" class="status" aria-live="polite"></p>
       </details>
-      ${renderDeveloperSections(game, user, ownClaim, !!developer, c.env.APP_ENV, c.env.APP_URL)}
+      ${renderDeveloperSections(game, user, ownClaim, !!developer, c.env.APP_ENV, c.env.APP_URL, shortOrigin(c.env) ?? c.env.APP_URL)}
       ${
         user && (user.role === "admin" || user.role === "editor")
           ? `<section class="panel">
@@ -2448,7 +2461,7 @@ app.get("/me/rotation", async (c) => {
     .first<{ rotation_share_token: string | null }>();
 
   const shareToken = userWithToken?.rotation_share_token;
-  const shareUrl = shareToken ? `${c.env.APP_URL}/rotation/${shareToken}` : null;
+  const shareUrl = shareToken ? `${shortOrigin(c.env) ?? requestOrigin(c.env, c.req.url)}/r/${shareToken}` : null;
 
   return c.html(await layout("My Rotation", user, `
     <main class="narrow">
@@ -3310,7 +3323,8 @@ app.get("/lists/:slug", async (c) => {
           <p class="suggest-empty" id="suggest-empty"${suggestions.length > 0 ? " hidden" : ""}>No suggestions yet. Know a game that belongs here? Suggest it.</p>
         </div>
       </details>` : "";
-  const streamHost = new URL(c.env.APP_URL).host;
+  // Shown on stream: the short host (the shortest address), falling back to APP_URL's host.
+  const streamHost = new URL(shortOrigin(c.env) ?? c.env.APP_URL).host;
   // The side-by-side / tabbed layout applies whenever there is a second section: suggestions, Fan-dles, or both.
   const layoutOn = suggestionsOn || !!fandleSection;
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
@@ -9636,7 +9650,8 @@ function renderDeveloperSections(
   claim: ClaimRow | null,
   hasDeveloper: boolean,
   appEnv: string,
-  appUrl: string
+  appUrl: string,
+  shareOrigin: string
 ): string {
   const isStaff = !!user && (user.role === "admin" || user.role === "editor");
   if (isStaff && claim?.status === "verified") {
@@ -9651,7 +9666,7 @@ function renderDeveloperSections(
   }
   if (claim?.status === "verified") {
     const base = appUrl.replace(/\/$/, "");
-    const gamePageUrl = `${base}/games/${encodeURIComponent(game.slug)}`;
+    const gamePageUrl = `${shareOrigin.replace(/\/$/, "")}/g/${encodeURIComponent(game.slug)}`;
     const badgeUrl = `${base}/badge/${encodeURIComponent(game.slug)}.svg`;
     const badgeAlt = `${escapeHtml(game.title)} on 0x9 dles`;
     const linkSnippet = `<a href="${gamePageUrl}">${escapeHtml(game.title)} on 0x9 dles</a>`;
@@ -10254,7 +10269,7 @@ const DAILY_PROGRESS_SCRIPT = `
       const day = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
       const lines = rows.map((li, index) => {
         const played = window.dglIsPlayed ? window.dglIsPlayed(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin) : false;
-        const url = window.location.origin + "/games/" + encodeURIComponent(li.getAttribute("data-game-slug") || "");
+        const url = (window.DGL_SHORT_ORIGIN || window.location.origin) + "/g/" + encodeURIComponent(li.getAttribute("data-game-slug") || "");
         return (index + 1) + ". " + (li.getAttribute("data-game-title") || "") + (played ? " ✓" : "") + " — " + url;
       });
       const text = ["My dailies for " + day + ":"].concat(lines).join("\\n");
@@ -10921,7 +10936,7 @@ const SIDE_ICON_SUGGEST = `<svg class="side-ico" viewBox="0 0 20 20" width="20" 
 
 // Stream mode footer: where to suggest, and the three leading suggestions (the suggestions script keeps them current).
 function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
-  const address = `${host}/lists/${slug}`;
+  const address = `${host}/c/${slug}`;
   return `<div class="stream-bar" id="stream-bar">
     <p class="stream-cta">${suggestionsOn ? "Suggest games at " : ""}<strong>${escapeHtml(address)}</strong></p>
     ${suggestionsOn ? `<ol class="stream-top" id="stream-top" aria-label="Top suggestions">${suggestions.slice(0, 3).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
@@ -11172,6 +11187,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     ${opts?.headHtml ?? ""}
+    <script>window.DGL_SHORT_ORIGIN = ${scriptJson(shortOrigin(env))} || window.location.origin;</script>
     <script>${GAME_ACTIONS_SCRIPT}</script>
     <script>${HIDDEN_GAMES_SCRIPT}</script>
     <script>${ROTATION_TODAY_SCRIPT}</script>
@@ -12356,7 +12372,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       document.addEventListener("click", async (event) => {
         const button = event.target instanceof Element ? event.target.closest("[data-share]") : null;
         if (!button) return;
-        const url = document.querySelector('link[rel="canonical"]')?.href || window.location.origin + window.location.pathname;
+        // Short address: /games/x -> /g/x, /lists/x -> /c/x (the canonical link itself stays on the long host).
+        const path = window.location.pathname.startsWith("/games/") ? "/g/" + window.location.pathname.slice(7) : window.location.pathname.startsWith("/lists/") ? "/c/" + window.location.pathname.slice(7) : window.location.pathname;
+        const url = (window.DGL_SHORT_ORIGIN || window.location.origin) + path;
         if (navigator.share) {
           try {
             await navigator.share({ title: button.getAttribute("data-share-title") || document.title, url });
@@ -12399,8 +12417,9 @@ function escapeHtml(value: string): string {
 
 type OAuthProvider = "discord" | "twitch";
 
-function oauthRedirectUri(env: Env, provider: OAuthProvider): string {
-  return `${env.APP_URL}/auth/${provider}/callback`;
+// Sent to the provider and again at the token exchange: the flow stays on one host, so both derive from the request.
+function oauthRedirectUri(env: Env, requestUrl: string, provider: OAuthProvider): string {
+  return `${requestOrigin(env, requestUrl)}/auth/${provider}/callback`;
 }
 
 const OAUTH_AUTHORIZE: Record<OAuthProvider, { url: string; scope: string }> = {
@@ -12435,7 +12454,7 @@ function beginOAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>,
   }
   const url = new URL(OAUTH_AUTHORIZE[provider].url);
   url.searchParams.set("client_id", oauthClientId(c.env, provider) ?? "");
-  url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, provider));
+  url.searchParams.set("redirect_uri", oauthRedirectUri(c.env, c.req.url, provider));
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", scope ?? OAUTH_AUTHORIZE[provider].scope);
   url.searchParams.set("state", state);
@@ -12648,7 +12667,7 @@ async function exchangeOAuthCode(
       client_secret: clientSecret,
       grant_type: "authorization_code",
       code,
-      redirect_uri: oauthRedirectUri(c.env, provider)
+      redirect_uri: oauthRedirectUri(c.env, c.req.url, provider)
     })
   });
   if (!res.ok) {

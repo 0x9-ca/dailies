@@ -8,6 +8,8 @@ export interface Env {
   NOTIFY_EMAIL_TO?: string;
   NOTIFY_EMAIL_FROM?: string;
   APP_URL: string;
+  /** Short public origin (e.g. https://d.0x9.ca) serving the same site. Empty/unset = no short host. */
+  SHORT_URL?: string;
   SESSION_COOKIE_NAME: string;
   OAUTH_DISCORD_CLIENT_ID: string;
   OAUTH_DISCORD_CLIENT_SECRET: string;

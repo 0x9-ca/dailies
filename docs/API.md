@@ -3,6 +3,7 @@
 ## Public
 
 - `GET /api/games?sort=top|new|trending|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
+- `GET /c/:slug`, `/g/:slug`, `/r/:token` → 301 (relative `Location`, query string kept) to `/lists/:slug`, `/games/:slug`, `/rotation/:token`. Same on `SHORT_URL`'s host (e.g. `d.0x9.ca`), which serves the whole site.
 - `GET /api/version` → `{ version }`, the deployed Worker version id (pages reload when it changes).
 - `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
 - `GET /feed.xml` → Atom feed of the 50 most recently listed approved games (`COALESCE(approved_at, created_at)`), `application/atom+xml`, cached 10 minutes.

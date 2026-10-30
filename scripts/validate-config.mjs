@@ -74,6 +74,26 @@ for (const envUrl of envUrls) {
   }
 }
 
+for (const name of ["staging", "production"]) {
+  const appUrl = get(config, `env.${name}.vars.APP_URL`);
+  const shortUrl = get(config, `env.${name}.vars.SHORT_URL`);
+  if (!isNonEmptyString(shortUrl)) {
+    failures.push(`Missing or empty env.${name}.vars.SHORT_URL`);
+    continue;
+  }
+  try {
+    const parsed = new URL(shortUrl);
+    if (parsed.protocol !== "https:") failures.push(`SHORT_URL for ${name} must use https`);
+    if (isNonEmptyString(appUrl) && parsed.host === new URL(appUrl).host) failures.push(`SHORT_URL for ${name} must differ from APP_URL`);
+    const patterns = (get(config, `env.${name}.routes`) ?? []).map((r) => r.pattern);
+    for (const host of [new URL(appUrl).host, parsed.host]) {
+      if (!patterns.includes(host)) failures.push(`env.${name}.routes is missing a custom domain for ${host}`);
+    }
+  } catch {
+    failures.push(`SHORT_URL for ${name} is not a valid URL`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("wrangler.jsonc validation failed:");
   for (const failure of failures) {
