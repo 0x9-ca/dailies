@@ -66,6 +66,10 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 - Every page's header has a game search (`form.header-search`, GET `/games?q=`, same search as the games page; no per-visitor state, so it is safe in cached pages). At 1200px and below it is hidden behind an icon (`#search-toggle`) that opens it over the whole header (`.site-header.searching`); Escape or the close button dismisses it, and "/" focuses it. The script in `layout()` prefills it from `?q=` on `/games`.
 - `/admin/stats` (admins only, `src/lib/stats.ts`) shows live counts from existing tables: accounts, new and signed-in users, linked providers, signed-in vs anonymous voters and rotations (anonymous = hashed IP / local id, approximate), votes, favorites, clicks (a running total only), games by status, lists, Fan-dles, claims, reports, a 14-day chart and top-10 games. Page views and total visitors are not recorded anywhere. It adds no tables and is not edge-cached.
 - `/changelog` lists visitor-facing feature updates by day from `CHANGELOG` in `src/lib/changelog.ts`; add an entry with every user-visible change.
+- Games listed in the last 7 days (`COALESCE(approved_at, created_at)`, `listedAt` from `listGames()`) show a "New" pill (`renderNewBadge()`) on cards and the game page header. The clock decides, not the visitor, so it is cache-safe.
+- `GET /feed.xml` is an Atom feed of the 50 newest approved games (same games as the sitemap, NSFW included). Linked from `layout()`'s head and the footer.
+- `GET /badge/:slug.svg` is the developer badge (`renderBadgeSvg()`, shown with its HTML snippet in the "Help players find your game" panel). It sets its own CSP, which the global middleware leaves alone.
+- Share buttons (`data-share`, `data-share-title`) on game and list pages use `navigator.share` with the canonical URL, else copy it and toast "Link copied". Per-visitor state: none.
 - `/llms.txt` is a generated Markdown overview (categories, public lists, top 30 games) for AI assistants.
 
 ## Scoring

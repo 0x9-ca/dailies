@@ -4,6 +4,15 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-30",
+    items: [
+      "Games listed in the last 7 days show a small New badge on their cards and their game page.",
+      "A Share button on game pages and lists opens your device's share sheet, or copies the link where there isn't one.",
+      "A new games feed at /feed.xml lists the 50 most recently added games, for any feed reader.",
+      "Verified developers can add a badge with their game's rating to their own site, from the Help players find your game section.",
+    ]
+  },
+  {
     date: "2026-10-21",
     items: [
       "Search from any page: a search box in the header on wide screens, and a search icon on phones and tablets that opens the full search bar. Press / to jump to it.",
