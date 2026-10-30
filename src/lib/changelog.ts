@@ -9,6 +9,8 @@ export const CHANGELOG: ChangelogDay[] = [
       "Streamers can mark games as played on a list: tap a row in stream mode (or press its number key), or use Mark played in the normal view. Everyone sees a Played on stream check, and stream mode and the overlay show how many are done today.",
       "Games added to a list in the last week get a New here pill.",
       "Lists have a panel badge for Twitch panels and socials. Copy the snippet from Stream settings.",
+      "Search finds games even with a typo, and suggests what you might have meant.",
+      "Better contrast and screen reader labels across the site.",
       "Shorter links: d.0x9.ca works everywhere dailies.0x9.ca does, and lists, games and shared rotations have short addresses like d.0x9.ca/c/northernlion. Share buttons now copy the short link.",
       "Stream mode now fits the whole list on screen, and slowly scrolls it if it still doesn't fit.",
       "A transparent overlay view for OBS shows where to suggest games and the top suggestions over your gameplay.",

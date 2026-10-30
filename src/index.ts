@@ -13,6 +13,7 @@ import { createSession, destroySession, hashToken, randomToken, requireAuth, req
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, secondsUntilNextUtcDay, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
+import { fuzzyTitleMatch } from "./lib/search";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
@@ -1052,12 +1053,42 @@ app.get("/games", async (c) => {
   if (page > 1 && games.length === 0) {
     return notFoundPage(c);
   }
-  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
+
+  // Typo fallback: on page 1, when the plain search finds fewer than 3 games, add the closest titles (max 12).
+  const fuzzyQuery = q?.trim() ?? "";
+  let similarGames: Awaited<ReturnType<typeof listGames>> = [];
+  let similarStrong = false;
+  if (page === 1 && fuzzyQuery.length >= 3 && games.length < 3) {
+    const similar = await findSimilarGameIds(c.env, fuzzyQuery, { category, hidePaywall, hideNsfw }, new Set(games.map((game) => game.id)));
+    if (similar.ids.length > 0) {
+      const rows = await listGames(c.env, { sort: "top", ids: similar.ids, limit: similar.ids.length });
+      const order = new Map(similar.ids.map((id, index) => [id, index]));
+      similarGames = rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+      similarStrong = similar.strongest;
+    }
+  }
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...games, ...similarGames].map((game) => game.id));
 
   // Render games as flat list
-  const gamesMarkup = games.length > 0 
+  const gamesMarkup = games.length > 0
     ? renderCompactGameList(games, user, userVotes, userFavorites, { hideable: true })
     : "<p>No games found.</p>";
+  // Search links keep the current filters.
+  const searchHref = (term: string) => {
+    const params = new URLSearchParams({ q: term });
+    if (sort !== "top") params.set("sort", sort);
+    if (category) params.set("category", category);
+    if (hidePaywall) params.set("hidePaywall", "1");
+    if (hideNsfw) params.set("hideNsfw", "1");
+    return `/games?${params.toString()}`;
+  };
+  const similarMarkup = similarGames.length > 0
+    ? `<section class="similar-results" aria-labelledby="similar-title">
+        ${games.length === 0 && similarStrong ? `<p class="did-you-mean">Did you mean <a href="${escapeHtml(searchHref(similarGames[0].title))}">${escapeHtml(similarGames[0].title)}</a>?</p>` : ""}
+        <h2 id="similar-title" class="similar-title">${games.length === 0 && !similarStrong ? "Did you mean" : "Similar titles"}</h2>
+        ${renderCompactGameList(similarGames, user, userVotes, userFavorites, { hideable: true })}
+      </section>`
+    : "";
 
   // Build pagination links
   const buildPageUrl = (newPage: number) => {
@@ -1179,7 +1210,8 @@ app.get("/games", async (c) => {
               results.replaceChildren(...[...next.childNodes].map((node) => document.importNode(node, true)));
               window.dglBindGameRows?.(results);
               window.dglLocalizeResets?.(results);
-              const found = results.querySelectorAll("[data-game-row]").length;
+              // Typo-fallback games sit in .similar-results and are not counted.
+              const found = [...results.querySelectorAll("[data-game-row]")].filter((row) => !row.closest(".similar-results")).length;
               const status = document.getElementById("search-status");
               if (status) status.textContent = found === 0 ? "No games found" : found + (results.querySelector(".pagination a[href*='page=']") ? "+" : "") + " games found";
               window.history.replaceState(null, "", url);
@@ -1199,6 +1231,7 @@ app.get("/games", async (c) => {
       <div id="game-results">
         ${gamesMarkup}
         ${paginationMarkup}
+        ${similarMarkup}
       </div>
       <p class="hidden-toggle" id="hidden-toggle" hidden><button type="button" id="hidden-toggle-btn" aria-pressed="false"></button></p>
       <script>
@@ -8788,6 +8821,66 @@ function renderCategoryPill(cat: { slug: string; name: string }, count?: number)
   return `<a href="/games?category=${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}${count === undefined ? "" : ` <span class="pill-count">${count}</span>`}</a>`;
 }
 
+// Typo-tolerant search fallback (src/lib/search.ts): every approved title with its filter fields, cached in KV.
+const FUZZY_TITLES_KEY = "games:fuzzy-titles:v1";
+const FUZZY_MAX_RESULTS = 12;
+type FuzzyTitleEntry = { id: string; title: string; paywall: boolean; nsfw: boolean; categories: string[] };
+
+async function loadFuzzyTitleIndex(env: Env): Promise<FuzzyTitleEntry[]> {
+  const cached = await getCachedJson<FuzzyTitleEntry[]>(env, FUZZY_TITLES_KEY);
+  if (cached) return cached;
+  const games = await env.DB.prepare("SELECT id, title, paywall, nsfw FROM games WHERE status = 'approved'").all<{
+    id: string;
+    title: string;
+    paywall: number;
+    nsfw: number;
+  }>();
+  const links = await env.DB.prepare(
+    `SELECT game_categories.game_id AS game_id, categories.slug AS slug
+     FROM game_categories
+     JOIN categories ON categories.id = game_categories.category_id
+     JOIN games ON games.id = game_categories.game_id
+     WHERE games.status = 'approved'`
+  ).all<{ game_id: string; slug: string }>();
+  const slugsByGame = new Map<string, string[]>();
+  for (const link of links.results) {
+    const list = slugsByGame.get(link.game_id) ?? [];
+    list.push(link.slug);
+    slugsByGame.set(link.game_id, list);
+  }
+  const index = games.results.map((row) => ({
+    id: row.id,
+    title: row.title,
+    paywall: !!row.paywall,
+    nsfw: !!row.nsfw,
+    categories: slugsByGame.get(row.id) ?? []
+  }));
+  await setCachedJson(env, FUZZY_TITLES_KEY, index, 600);
+  return index;
+}
+
+/** Best fuzzy title matches for a search, skipping exact results and applying the same filters as the search. */
+async function findSimilarGameIds(
+  env: Env,
+  query: string,
+  filters: { category?: string; hidePaywall: boolean; hideNsfw: boolean },
+  exactIds: Set<string>
+): Promise<{ ids: string[]; strongest: boolean }> {
+  const index = await loadFuzzyTitleIndex(env);
+  const scored: Array<{ id: string; title: string; score: number; strong: boolean }> = [];
+  for (const entry of index) {
+    if (exactIds.has(entry.id)) continue;
+    if (filters.category && !entry.categories.includes(filters.category)) continue;
+    if (filters.hidePaywall && entry.paywall) continue;
+    if (filters.hideNsfw && entry.nsfw) continue;
+    const match = fuzzyTitleMatch(query, entry.title);
+    if (match) scored.push({ id: entry.id, title: entry.title, score: match.score, strong: match.strong });
+  }
+  scored.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title));
+  const top = scored.slice(0, FUZZY_MAX_RESULTS);
+  return { ids: top.map((match) => match.id), strongest: top[0]?.strong ?? false };
+}
+
 async function listGames(
   env: Env,
   opts: {
@@ -8800,6 +8893,8 @@ async function listGames(
     hideNsfw?: boolean;
     /** Only games this user is the verified developer of. */
     developerUserId?: string;
+    /** Only these games (at most ~50; used for the typo-tolerant search results). */
+    ids?: string[];
     /** Only the Fan-dles of this creator list: games of its current members, a few per developer, minus hidden ones. */
     fandleListId?: string;
     /** With fandleListId: most games per developer (none = no limit). */
@@ -8876,6 +8971,11 @@ async function listGames(
   if (opts.developerUserId) {
     whereSql += " AND games.id IN (SELECT game_id FROM game_claims WHERE user_id = ? AND status = 'verified')";
     params.push(opts.developerUserId);
+  }
+  if (opts.ids) {
+    if (opts.ids.length === 0) return [];
+    whereSql += ` AND games.id IN (${opts.ids.map(() => "?").join(", ")})`;
+    params.push(...opts.ids);
   }
   if (opts.fandleListId) {
     whereSql += ` AND games.id IN (
@@ -10619,6 +10719,21 @@ const SHORTCUTS_SCRIPT = `
     const isTyping = (node) => node instanceof HTMLElement && (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName));
     const openDialog = () => { if (!dialog.open) dialog.showModal(); };
     document.querySelectorAll("[data-shortcuts-open]").forEach((button) => button.addEventListener("click", openDialog));
+    // Keep Tab inside the modal: a browser can move focus out to its own UI past the last control, which leaves the page.
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const controls = [...dialog.querySelectorAll("button, [href], input, select, textarea")].filter((el) => !el.disabled);
+      if (controls.length === 0) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
     const go = (path) => { window.location.href = path; };
     const randomGame = async () => {
       const game = await window.dglRandomGame();
@@ -11676,6 +11791,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --bg-soft: #1a1a1a;
         --ink: #E0E0E0;
         --muted: #B0B0B0;
+        --placeholder: #8a8a8a;
+        /* Borders of inputs and buttons: 3:1 against the page, so the control is visible (WCAG 1.4.11). */
+        --control-border: #6e6e6e;
         --accent: #888888;
         --accent-strong: #777777;
         --card: #1e1e1e;
@@ -11723,6 +11841,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --bg-soft: #ececf0;
         --ink: #1c1c1e;
         --muted: #5c5c63;
+        --placeholder: #66666d;
+        --control-border: #7b7b83;
         --accent: #4b5563;
         --accent-strong: #374151;
         --card: #ffffff;
@@ -11796,7 +11916,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .logout-form button { background: none; border: none; padding: 0; color: var(--accent); text-decoration: underline; font: inherit; cursor: pointer; }
       /* Search: an inline field on wide screens; at 1200px and below an icon that opens the field over the whole header. */
       .header-search { position: relative; display: flex; align-items: center; flex: 0 1 260px; min-width: 120px; margin-left: auto; }
-      .header-search input { width: 100%; min-width: 0; padding: 0.45rem 2.1rem 0.45rem 0.7rem; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-soft); color: var(--ink); font-size: 0.92rem; }
+      .header-search input { width: 100%; min-width: 0; padding: 0.45rem 2.1rem 0.45rem 0.7rem; border-radius: 999px; border: 1px solid var(--control-border); background: var(--bg-soft); color: var(--ink); font-size: 0.92rem; }
       .header-search input::-webkit-search-cancel-button { display: none; }
       .header-search-go { position: absolute; right: 0.15rem; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
       .header-search-go:hover { color: var(--ink); }
@@ -11804,7 +11924,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .header-search-close, .search-toggle { display: none; }
       .header-search + .header-tools { margin-left: 0; }
       @media (min-width: 1201px) { .site-header > .site-nav { flex: none; } }
-      .search-toggle { align-items: center; justify-content: center; min-width: 44px; min-height: 40px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: none; color: var(--ink); cursor: pointer; }
+      .search-toggle { align-items: center; justify-content: center; min-width: 44px; min-height: 40px; padding: 0; border: 1px solid var(--control-border); border-radius: 8px; background: none; color: var(--ink); cursor: pointer; }
       .search-toggle svg { width: 1.2rem; height: 1.2rem; }
       @media (max-width: 1200px) {
         .search-toggle { display: inline-flex; }
@@ -11816,7 +11936,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .header-search-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 44px; height: 44px; border: 0; border-radius: 8px; background: none; color: var(--ink); font-size: 1.1rem; cursor: pointer; }
       }
       .nav-menu { display: none; position: relative; }
-      .nav-menu > summary { list-style: none; cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 40px; border: 1px solid var(--border); border-radius: 8px; font-size: 1.15rem; color: var(--ink); }
+      .nav-menu > summary { list-style: none; cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; min-width: 44px; min-height: 40px; border: 1px solid var(--control-border); border-radius: 8px; font-size: 1.15rem; color: var(--ink); }
       .nav-menu > summary::-webkit-details-marker { display: none; }
       .menu-dot { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: #dc2626; }
       .nav-menu-panel { position: absolute; right: 0; top: calc(100% + 0.5rem); min-width: 230px; display: flex; flex-direction: column; padding: 0.4rem; background: var(--card); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); z-index: 30; white-space: normal; }
@@ -11848,7 +11968,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .fandle-form { display: inline; margin: 0; }
       .fandle-join .actions { margin-top: 0.5rem; }
       .category-pills [hidden] { display: none !important; }
-      button.tag.pill-more { cursor: pointer; font-family: inherit; line-height: inherit; font-weight: 700; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+      button.tag.pill-more { cursor: pointer; font-family: inherit; line-height: inherit; font-weight: 700; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--control-border); }
       button.tag.pill-more:hover { color: var(--ink); }
       .tag.dev-pill { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--brand-blue); background: transparent; border-color: var(--brand-blue); font-weight: 700; text-decoration: none; }
       /* A developer without a public profile: same look, but plain text. Taps pass through to the card behind it. */
@@ -11856,7 +11976,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .dev-pill-static::after { display: none; }
       .tag.dev-pill svg { width: 0.95em; height: 0.95em; flex: none; }
       .tag.dev-pill .dev-pill-name { display: block; max-width: 11ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .pill-count { font-weight: 600; opacity: 0.75; font-variant-numeric: tabular-nums; margin-left: 0.15rem; }
+      .pill-count { font-weight: 600; opacity: 0.9; font-variant-numeric: tabular-nums; margin-left: 0.15rem; }
       /* Shared by links and <button>s, so both get the same font, height and text position. */
       .btn {
         display: inline-flex;
@@ -12023,7 +12143,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .stack-form fieldset { min-width: 0; max-width: 100%; }
       .stack-form [data-reset-group] { min-width: 0; }
       .stack-form [data-reset-group] > label { display: flex; flex-direction: column; gap: 0.25rem; }
-      textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--border); background:var(--bg-soft); color:var(--ink); }
+      textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--control-border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
       .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
       .status { min-height: 1.2rem; color:var(--accent); font-weight: 600; }
@@ -12050,6 +12170,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .paywall-badge { color: var(--badge-paywall); font-weight:700; margin-left:0.3rem; font-size:1em; }
       .nsfw-badge { color: var(--badge-nsfw); font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
       .feed-link { margin: 0 0 0.5rem; font-size: 0.9em; }
+      .similar-results { margin-top: 1.5rem; }
+      .similar-title { font-size: 1rem; margin: 0 0 0.5rem; color: var(--muted); }
+      .did-you-mean { margin: 0.5rem 0 0; font-weight: 600; }
       @media (max-width: 700px) { .feed-link a { display: inline-flex; align-items: center; min-height: 44px; } }
       .duplicate-warning { color: var(--warn); font-weight: 600; }
       .played-pill { display: inline-block; margin-left: 0.3rem; padding: 0 0.45em; border: 1px solid var(--played-ok); border-radius: 999px; color: var(--played-ok); font-size: 0.7em; font-weight: 700; line-height: 1.6; letter-spacing: 0.02em; vertical-align: middle; white-space: nowrap; }
@@ -12079,7 +12202,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         vertical-align: middle;
       }
       .moderation-badge-submissions { background: #16a34a; }
-      button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--border); }
+      button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--control-border); }
       button.danger { background: #dc2626; border-color: #dc2626; color: #fff; }
       .rotation-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.7rem; }
       .rotation-list li { display:flex; align-items:center; gap:0.75rem; border:1px solid var(--border); border-radius:10px; padding:0.65rem; background:var(--card); }
@@ -12386,7 +12509,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .reminder-opt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.9rem; margin: 0 0 1rem; }
       .reminder-opt label { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 44px; cursor: pointer; }
       .reminder-opt input[type="checkbox"] { width: 1.15rem; height: 1.15rem; }
-      .reminder-opt select { min-height: 44px; padding: 0 0.5rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-soft); color: var(--ink); font: inherit; }
+      .reminder-opt select { min-height: 44px; padding: 0 0.5rem; border: 1px solid var(--control-border); border-radius: 8px; background: var(--bg-soft); color: var(--ink); font: inherit; }
       .search-suggest { display: none; position: absolute; top: calc(100% + 4px); right: 0; width: max(100%, 300px); z-index: 20; max-height: 70vh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 0.25rem; }
       .search-suggest.open { display: block; }
       .search-suggest a { display: flex; align-items: center; min-height: 44px; padding: 0.35rem 0.65rem; border-radius: 8px; color: var(--ink); text-decoration: none; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -12419,15 +12542,15 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       input, select, button {
         padding: 0.5rem;
         border-radius: 7px;
-        border: 1px solid var(--border);
+        border: 1px solid var(--control-border);
         background: var(--bg-soft);
         color: var(--ink);
       }
-      input::placeholder, textarea::placeholder { color: #777777; }
+      input::placeholder, textarea::placeholder { color: var(--placeholder); }
       button {
         background: var(--bg-soft);
         color: var(--ink);
-        border: 1px solid var(--border);
+        border: 1px solid var(--control-border);
         cursor: pointer;
       }
       a { color: var(--accent); }
@@ -12605,7 +12728,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <span class="nav-extra">${secondaryLinks}</span>
       </nav>
       <form class="header-search" id="header-search" role="search" action="/games" method="get">
-        <input type="search" name="q" id="header-search-input" placeholder="Search games" aria-label="Search games" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="header-search-list" aria-haspopup="listbox" enterkeyhint="search" maxlength="100" />
+        <input type="search" name="q" id="header-search-input" placeholder="Search games" aria-label="Search games" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="header-search-list" enterkeyhint="search" maxlength="100" />
         <button type="submit" class="header-search-go" aria-label="Search">${SEARCH_ICON}</button>
         <button type="button" class="header-search-close" id="header-search-close" aria-label="Close search">\u2715</button>
         <div class="search-suggest" id="header-search-list" role="listbox" aria-label="Game suggestions"></div>
@@ -12728,12 +12851,53 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
               shown[index].scrollIntoView({ block: "nearest" });
             } else searchInput.removeAttribute("aria-activedescendant");
           };
+          // Typo fallback (same rule as the server's search): optimal string alignment distance on the title and its words.
+          const editDistance = (a, b) => {
+            const rows = [];
+            for (let j = 0; j <= b.length; j++) rows[j] = j;
+            let prev2 = null;
+            let prev = rows;
+            for (let i = 1; i <= a.length; i++) {
+              const cur = [i];
+              for (let j = 1; j <= b.length; j++) {
+                let best = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+                if (prev2 && i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) best = Math.min(best, prev2[j - 2] + 1);
+                cur[j] = best;
+              }
+              prev2 = prev;
+              prev = cur;
+            }
+            return prev[b.length];
+          };
+          const similarTitles = (q, list, skip) => {
+            const query = q.replace(/[^a-z0-9\\u0080-\\uffff]+/g, "");
+            const found = [];
+            if (query.length < 3) return found;
+            for (const game of list) {
+              if (skip.includes(game)) continue;
+              if (!game.compact) {
+                game.compact = game.lower.replace(/[^a-z0-9\\u0080-\\uffff]+/g, "");
+                game.words = game.lower.split(/[^a-z0-9\\u0080-\\uffff]+/).filter(Boolean);
+              }
+              const t = game.compact;
+              // Only titles of a similar length or with the same first letter are worth the distance check.
+              if (!t || (Math.abs(t.length - query.length) > 3 && t[0] !== query[0])) continue;
+              const limit = Math.max(1, Math.floor(t.length / 4));
+              let distance = editDistance(query, t);
+              for (const word of game.words) if (distance > limit) distance = Math.min(distance, editDistance(query, word));
+              if (distance <= limit) found.push({ game, distance });
+            }
+            found.sort((a, b) => a.distance - b.distance || a.game.title.localeCompare(b.game.title));
+            return found.map((entry) => entry.game);
+          };
           const showSuggest = () => {
             const q = searchInput.value.trim().toLowerCase();
             if (q.length < 2 || !titles) { closeSuggest(); return; }
             const starts = titles.filter((g) => g.lower.startsWith(q));
             const rest = titles.filter((g) => !g.lower.startsWith(q) && g.lower.includes(q));
-            const matches = starts.concat(rest).slice(0, 8);
+            let matches = starts.concat(rest);
+            if (matches.length < 3) matches = matches.concat(similarTitles(q, titles, matches));
+            matches = matches.slice(0, 8);
             if (matches.length === 0) { closeSuggest(); return; }
             shown = matches.map((game, i) => {
               const a = document.createElement("a");
