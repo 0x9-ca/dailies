@@ -10,7 +10,7 @@ import { computeGameScore } from "./lib/ranking";
 import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
-import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
+import { getCachedJson, invalidateGameCaches, secondsUntilNextUtcDay, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
@@ -468,6 +468,127 @@ app.get("/login", async (c) => {
     </main>
   `, c.env, { path: "/login", description: "Sign in to 0x9 dles to save your rotation and manage curated lists." }));
 });
+// Game of the day: one game per UTC date, the same for every visitor. Picked from well-liked games (or the top 50 by
+// score when too few qualify), skipping the picks of the previous 14 dates. The pick is cached in KV until the next
+// UTC midnight under its own key (not games:, so catalogue edits don't reshuffle the day).
+const GOTD_MIN_VOTES = 5;
+const GOTD_MIN_POOL = 10;
+const GOTD_FALLBACK_POOL = 50;
+const GOTD_REPEAT_DAYS = 14;
+
+type GameOfTheDay = {
+  id: string;
+  slug: string;
+  url: string;
+  title: string;
+  description: string | null;
+  vote_up_count: number;
+  vote_down_count: number;
+  paywall: number;
+  categories: Array<{ slug: string; name: string }>;
+};
+
+function utcDateKey(time: number): string {
+  return new Date(time).toISOString().slice(0, 10);
+}
+
+// FNV-1a: a stable 32-bit hash of a date key.
+function dateHash(dateKey: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < dateKey.length; i++) {
+    hash = Math.imul(hash ^ dateKey.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return hash;
+}
+
+function gameOfTheDayIndex(dateKey: string, poolSize: number): number {
+  const dayMs = 86_400_000;
+  const today = Date.parse(`${dateKey}T00:00:00Z`);
+  const recent = new Set<number>();
+  for (let back = 1; back <= GOTD_REPEAT_DAYS; back++) {
+    recent.add(dateHash(utcDateKey(today - back * dayMs)) % poolSize);
+  }
+  let index = dateHash(dateKey) % poolSize;
+  // Step past indices the recent days would have used, as long as the pool has an unused one.
+  if (recent.size < poolSize) {
+    while (recent.has(index)) index = (index + 1) % poolSize;
+  }
+  return index;
+}
+
+async function gameOfTheDayPool(env: Env): Promise<string[]> {
+  const qualified = await env.DB.prepare(
+    `SELECT id FROM games
+     WHERE status = 'approved' AND nsfw = 0
+       AND vote_up_count + vote_down_count >= ?1
+       AND vote_up_count * 10 >= (vote_up_count + vote_down_count) * 7
+     ORDER BY id`
+  )
+    .bind(GOTD_MIN_VOTES)
+    .all<{ id: string }>();
+  if (qualified.results.length >= GOTD_MIN_POOL) {
+    return qualified.results.map((row) => row.id);
+  }
+  const top = await env.DB.prepare(
+    `SELECT id FROM (SELECT id FROM games WHERE status = 'approved' AND nsfw = 0 ORDER BY score DESC, vote_up_count DESC, id LIMIT ?1)
+     ORDER BY id`
+  )
+    .bind(GOTD_FALLBACK_POOL)
+    .all<{ id: string }>();
+  return top.results.map((row) => row.id);
+}
+
+async function loadGameOfTheDay(env: Env, id: string): Promise<GameOfTheDay | null> {
+  const game = await env.DB.prepare(
+    `SELECT id, slug, url, title, description, vote_up_count, vote_down_count, paywall
+     FROM games WHERE id = ?1 AND status = 'approved' AND nsfw = 0`
+  )
+    .bind(id)
+    .first<Omit<GameOfTheDay, "categories">>();
+  if (!game) {
+    return null;
+  }
+  const categories = await getCategoriesForGames(env, [id]);
+  return { ...game, categories: categories.get(id) ?? [] };
+}
+
+/** The game of the day for the UTC date of `now`, or null when no game is listed. */
+async function getGameOfTheDay(env: Env, now: number = Date.now()): Promise<GameOfTheDay | null> {
+  const dateKey = utcDateKey(now);
+  const cacheKey = `gotd:v1:${dateKey}`;
+  const cachedId = await getCachedJson<string>(env, cacheKey);
+  const cached = cachedId ? await loadGameOfTheDay(env, cachedId) : null;
+  if (cached) {
+    return cached;
+  }
+  const pool = await gameOfTheDayPool(env);
+  if (pool.length === 0) {
+    return null;
+  }
+  const id = pool[gameOfTheDayIndex(dateKey, pool.length)];
+  await setCachedJson(env, cacheKey, id, secondsUntilNextUtcDay(now));
+  return loadGameOfTheDay(env, id);
+}
+
+function gameOfTheDaySnippet(description: string | null): string {
+  const text = (description ?? "").replace(/\s+/g, " ").trim();
+  return text.length <= 140 ? text : `${text.slice(0, 139).trimEnd()}…`;
+}
+
+function renderGameOfTheDay(game: GameOfTheDay): string {
+  const snippet = gameOfTheDaySnippet(game.description);
+  return `<section class="game-of-the-day" aria-labelledby="game-of-the-day-title" data-vote-counts="${escapeHtml(game.id)}">
+        <p class="gotd-kicker">Game of the day</p>
+        <h2 id="game-of-the-day-title" class="gotd-title"><a href="/games/${encodeURIComponent(game.slug)}">${escapeHtml(game.title)}</a>${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</h2>
+        ${snippet ? `<p class="gotd-desc">${escapeHtml(snippet)}</p>` : ""}
+        ${renderCategoryPills(game.categories)}
+        <div class="gotd-foot">
+          <div class="meta gotd-meta">${renderLikedLabel(game.vote_up_count, game.vote_down_count)}</div>
+          <a class="btn btn-play gotd-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${escapeHtml(game.id)}">Play<span class="visually-hidden"> ${escapeHtml(game.title)}</span> ↗</a>
+        </div>
+      </section>`;
+}
+
 app.get("/", async (c) => {
   const user = c.get("user");
   const shouldPromptImport = c.req.query("importLocal") === "1";
@@ -499,6 +620,7 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites, { hideable: true });
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites, { hideable: true });
+  const gameOfTheDay = await getGameOfTheDay(c.env);
   return c.html(await layout(`0x9 dles – ${roundedCount} Free Daily Games like Wordle & Connections`, user, `
     <main>
       ${user ? "" : `<p class="intro" id="home-intro">0x9 dles collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
@@ -523,6 +645,7 @@ app.get("/", async (c) => {
         })();
       </script>
       ${HOME_ROTATION_MARKUP}
+      ${gameOfTheDay ? renderGameOfTheDay(gameOfTheDay) : ""}
       <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -578,13 +701,12 @@ app.get("/", async (c) => {
         // the fetch below happens after an await, by which point window.open would no longer count as user-initiated.
         const newTab = window.open("", "_blank");
         if (newTab) newTab.opener = null;
-        const response = await fetch("/api/games/random");
-        if (!response.ok) {
+        const game = await window.dglRandomGame();
+        if (!game) {
           if (newTab) newTab.close();
           if (window.appToast) window.appToast("No games available.", "error");
           return;
         }
-        const game = await response.json();
         if (newTab) newTab.location = game.url;
         fetch("/api/games/" + game.id + "/click", { method: "POST" }).catch(() => {});
         window.dglMarkPlayed?.(game.id);
@@ -974,6 +1096,7 @@ app.get("/games", async (c) => {
         <div class="search-row">
           <input type="search" name="q" placeholder="Search games" aria-label="Search games" value="${escapeHtml(q || "")}" />
           <button type="submit">Search</button>
+          <button type="button" id="surprise-btn" title="Open a random game from these filters">Surprise me</button>
         </div>
         <details class="filters" id="filters-panel" ${activeFilterCount > 0 ? "open" : ""}>
           <summary>Filters${activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</summary>
@@ -1002,6 +1125,20 @@ app.get("/games", async (c) => {
           if (panel && window.matchMedia("(min-width: 701px)").matches) panel.open = true;
           form?.querySelectorAll("select, input[type=checkbox]").forEach((control) => {
             control.addEventListener("change", () => form.requestSubmit());
+          });
+          // Surprise me: a random game matching the current category and paywall filter (hidden games are skipped).
+          document.getElementById("surprise-btn")?.addEventListener("click", async () => {
+            const values = new FormData(form);
+            const game = await window.dglRandomGame({
+              category: values.get("category") || "",
+              hidePaywall: values.get("hidePaywall") === "1",
+              hideNsfw: values.get("hideNsfw") === "1"
+            });
+            if (!game) {
+              window.appToast?.("No games match these filters.", "error");
+              return;
+            }
+            window.location.href = "/games/" + encodeURIComponent(game.slug);
           });
 
           // Live search: as the user types, fetch this page for the new query and swap in its results (all games,
@@ -1241,13 +1378,15 @@ app.get("/games/:slug", async (c) => {
   const metaDescription = [baseDescription, ...extraDescription].join(" ");
   // Changes whenever something drawn on the social image changes, so shares pick up edits.
   const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
+  // The reset the "Mark as played" toggle checks against (same as dglIsPlayed; none = since local midnight).
+  const playReset = getResetSortData(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
       <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
-      <p><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a></p>
+      <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
         <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}" title="Vote up"><span class="visually-hidden">Vote up, </span>▲ <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
         <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}" title="Vote down"><span class="visually-hidden">Vote down, </span>▼ <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
@@ -5809,10 +5948,36 @@ app.get("/api/categories", async (c) => {
   return c.json(rows);
 });
 
+// Random picks: optional filters from /games (category, hidePaywall) and the visitor's hidden games (exclude).
+// NSFW games are never picked, so hideNsfw=1 changes nothing; it is accepted so /games can pass its filters on.
+const RANDOM_EXCLUDE_MAX = 200;
 app.get("/api/games/random", async (c) => {
+  const category = c.req.query("category") || "";
+  const hidePaywall = c.req.query("hidePaywall") === "1";
+  const excludeParam = c.req.query("exclude") || "";
+  const exclude = excludeParam ? excludeParam.split(",").map((id) => id.trim()).filter(Boolean) : [];
+  if (exclude.length > RANDOM_EXCLUDE_MAX || exclude.some((id) => !/^[A-Za-z0-9_-]{1,64}$/.test(id))) {
+    return c.json({ error: `exclude takes up to ${RANDOM_EXCLUDE_MAX} comma-separated game ids` }, 400);
+  }
+  const where = ["games.status = 'approved'", "games.nsfw = 0"];
+  const params: string[] = [];
+  if (category) {
+    where.push("EXISTS (SELECT 1 FROM game_categories JOIN categories ON categories.id = game_categories.category_id WHERE game_categories.game_id = games.id AND categories.slug = ?)");
+    params.push(category);
+  }
+  if (hidePaywall) {
+    where.push("games.paywall = 0");
+  }
+  if (exclude.length > 0) {
+    where.push("games.id NOT IN (SELECT value FROM json_each(?))");
+    params.push(JSON.stringify(exclude));
+  }
   const game = await c.env.DB.prepare(
-    "SELECT id, slug, url FROM games WHERE status = 'approved' AND nsfw = 0 ORDER BY RANDOM() LIMIT 1"
-  ).first<{ id: string; slug: string; url: string }>();
+    `SELECT games.id, games.slug, games.url FROM games WHERE ${where.join(" AND ")} ORDER BY RANDOM() LIMIT 1`
+  )
+    .bind(...params)
+    .first<{ id: string; slug: string; url: string }>();
+  c.header("Cache-Control", "no-store");
   if (!game) {
     return c.json({ error: "No games available" }, 404);
   }
@@ -10115,6 +10280,37 @@ const RESET_LOCALIZE_SCRIPT = `
     }
     window.dglLocalizeResets();
   };
+  // Undoes a play for today (dgl_played_v1 only; the play log keeps the day's count).
+  window.dglUnmarkPlayed = (gameId) => {
+    if (!gameId) return;
+    const played = readPlayed();
+    delete played[gameId];
+    try { window.localStorage.setItem(PLAYED_KEY, JSON.stringify(played)); } catch {}
+    window.dglLocalizeResets();
+  };
+  // "Mark as played" buttons ([data-played-toggle] = game id, data-played-kind/min = reset, game pages). Hidden
+  // until their state is known, so a no-JS visitor never sees one.
+  const isPlayedFor = (button) => window.dglIsPlayed(
+    button.getAttribute("data-played-toggle") || "",
+    button.getAttribute("data-played-kind") || "",
+    button.getAttribute("data-played-min") || ""
+  );
+  const syncPlayedToggles = () => {
+    document.querySelectorAll("[data-played-toggle]").forEach((button) => {
+      const played = isPlayedFor(button);
+      button.textContent = played ? "Played today ✓ · Undo" : "Mark as played";
+      button.classList.toggle("is-played", played);
+      button.hidden = false;
+    });
+  };
+  (window.dglPlayedHooks = window.dglPlayedHooks || []).push(syncPlayedToggles);
+  document.addEventListener("click", (event) => {
+    const button = event.target instanceof Element ? event.target.closest("[data-played-toggle]") : null;
+    if (!button) return;
+    const id = button.getAttribute("data-played-toggle") || "";
+    if (isPlayedFor(button)) window.dglUnmarkPlayed(id);
+    else window.dglMarkPlayed(id);
+  });
   const cardGameId = (card) =>
     card.getAttribute("data-game-id") || card.querySelector("[data-game-row]")?.getAttribute("data-game-row") || "";
   // Played since the game's last reset (no reset time: since local midnight). Same rule as the .played card class.
@@ -10163,6 +10359,73 @@ const RESET_LOCALIZE_SCRIPT = `
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") window.dglLocalizeResets(); });
   window.dglLocalizeResets();
   window.setInterval(() => window.dglLocalizeResets(), 60 * 1000);
+`;
+
+// window.dglRandomGame(filters): a random approved game from GET /api/games/random, skipping the visitor's hidden games
+// (sent as exclude). Resolves to null when none match. Keyboard shortcuts (listed in the "?" dialog in layout()):
+// ignored while typing or with Ctrl/Meta/Alt. "/" is handled by layout()'s search script.
+const SHORTCUTS_SCRIPT = `
+  window.dglRandomGame = async (filters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.category) params.set("category", filters.category);
+    if (filters.hidePaywall) params.set("hidePaywall", "1");
+    if (filters.hideNsfw) params.set("hideNsfw", "1");
+    const hidden = window.dglHidden ? window.dglHidden.read().slice(-200) : [];
+    if (hidden.length > 0) params.set("exclude", hidden.join(","));
+    const query = params.toString();
+    try {
+      const response = await fetch("/api/games/random" + (query ? "?" + query : ""));
+      return response.ok ? await response.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  (() => {
+    const dialog = document.getElementById("shortcuts-dialog");
+    if (!dialog) return;
+    const isTyping = (node) => node instanceof HTMLElement && (node.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName));
+    const openDialog = () => { if (!dialog.open) dialog.showModal(); };
+    document.querySelectorAll("[data-shortcuts-open]").forEach((button) => button.addEventListener("click", openDialog));
+    const go = (path) => { window.location.href = path; };
+    const randomGame = async () => {
+      const game = await window.dglRandomGame();
+      if (game) go("/games/" + encodeURIComponent(game.slug));
+      else window.appToast?.("No games available.", "error");
+    };
+    // The first unplayed game of today's rotation opens in a new tab and counts as played (like its Play next button).
+    const playNext = async () => {
+      const rows = await window.dglTodayRotation.get(60 * 1000);
+      if (rows === null) { window.appToast?.("Could not load today's rotation.", "error"); return; }
+      if (rows.length === 0) { window.appToast?.("No rotation games today.", "success"); return; }
+      const next = rows.find((row) => !window.dglIsPlayed(row.id, row.kind, row.min));
+      if (!next) { window.appToast?.("Nothing left to play today.", "success"); return; }
+      window.open(next.url, "_blank", "noopener");
+      if (new URL(next.url, window.location.href).origin !== window.location.origin) window.dglMarkPlayed(next.id);
+    };
+    const DESTINATIONS = { h: "/", b: "/games", r: "/me/rotation" };
+    let gPressedAt = 0;
+    document.addEventListener("keydown", (event) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat) return;
+      if (dialog.open || isTyping(event.target)) return;
+      const pendingG = gPressedAt > 0 && Date.now() - gPressedAt < 1000;
+      gPressedAt = 0;
+      if (pendingG && Object.prototype.hasOwnProperty.call(DESTINATIONS, event.key)) {
+        event.preventDefault();
+        go(DESTINATIONS[event.key]);
+      } else if (event.key === "?") {
+        event.preventDefault();
+        openDialog();
+      } else if (event.key === "r") {
+        event.preventDefault();
+        randomGame();
+      } else if (event.key === "n") {
+        event.preventDefault();
+        playNext();
+      } else if (event.key === "g") {
+        gPressedAt = Date.now();
+      }
+    });
+  })();
 `;
 
 // Shared client-side vote/favorite actions, loaded on every page by layout(). Logged-out favorites live in
@@ -11230,6 +11493,18 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .daily-strip-link { position: relative; color: var(--brand-blue); font-weight: 700; margin-left: auto; }
       .daily-strip-link::after { content: ""; position: absolute; inset: -0.8rem -0.4rem; }
       .daily-strip .daily-progress-head { align-items: center; }
+      /* Home page game of the day, below the rotation strip. */
+      .game-of-the-day { margin: 0 0 1.25rem; padding: 0.9rem 1rem; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+      .gotd-kicker { margin: 0; color: var(--brand-blue); font-size: 0.8rem; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+      .game-of-the-day h2.gotd-title { margin: 0.25rem 0 0.35rem; font-size: 1.35rem; overflow-wrap: anywhere; }
+      .gotd-title a { color: var(--title-ink); text-decoration: none; }
+      .gotd-title a:hover { text-decoration: underline; }
+      .gotd-desc { margin: 0 0 0.5rem; color: var(--muted); }
+      .game-of-the-day .category-pills { margin: 0 0 0.25rem; }
+      .gotd-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; margin-top: 0.6rem; }
+      .gotd-meta { color: var(--muted); font-size: 0.95rem; }
+      .game-of-the-day .btn-play { font-size: 1rem; padding: 0.6rem 1rem; }
+      @media (max-width: 480px) { .gotd-foot .btn-play { width: 100%; } }
       .heatmap { margin: 0 0 1rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
       .heatmap h2 { margin: 0 0 0.5rem; font-size: 1rem; }
       .heatmap-grid { display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(7, auto); grid-auto-flow: column; gap: 3px; width: 100%; max-width: 300px; }
@@ -11253,6 +11528,17 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .search-suggest a:hover, .search-suggest a.active { background: var(--bg-soft); }
       .search-suggest a.active { outline: 2px solid var(--brand-blue); outline-offset: -2px; }
       @media (max-width: 480px) { .daily-progress { grid-template-columns: 1fr; } .daily-progress .btn { width: 100%; } }
+      /* Keyboard shortcuts dialog (layout()) and the footer button that opens it. */
+      .shortcuts-dialog { width: min(26rem, calc(100vw - 2rem)); max-width: calc(100vw - 2rem); padding: 1.1rem 1.2rem; border: 1px solid var(--border); border-radius: 14px; background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+      .shortcuts-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+      .shortcuts-dialog h2 { margin: 0 0 0.6rem; font-size: 1.2rem; }
+      .shortcut-list { margin: 0; }
+      .shortcut-list > div { display: grid; grid-template-columns: minmax(7.5rem, max-content) minmax(0, 1fr); gap: 0.4rem 0.8rem; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+      .shortcut-list dt, .shortcut-list dd { margin: 0; }
+      .shortcut-note { color: var(--muted); font-size: 0.9rem; margin: 0.75rem 0 0; }
+      .shortcuts-dialog kbd { display: inline-block; min-width: 1.6rem; padding: 0.1rem 0.4rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--bg-soft); color: var(--ink); font: 700 0.9rem/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; text-align: center; }
+      .shortcuts-dialog .actions { margin-top: 0.9rem; display: flex; justify-content: flex-end; }
+      .footer-button { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
       .hide-btn { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
       .hide-btn svg { width: 1.05rem; height: 1.05rem; }
       .hide-btn .i-show { display: none; }
@@ -11311,6 +11597,10 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       /* The long "Resets daily at 4:00 PM · next in 15h 54m" must be able to wrap, or it pushes the page wider than a phone. */
       .game-meta > * { white-space: normal; }
       .game-actions-note { color: var(--muted); font-size: 0.9rem; margin: 0.25rem 0 0; }
+      /* Game page: Play and the "Mark as played" toggle share a row (the toggle drops below Play on phones). */
+      .play-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin: 0 0 0.5rem; }
+      .played-toggle { min-height: 44px; font-size: 1rem; background: var(--bg-soft); color: var(--ink); border-color: var(--border); }
+      .played-toggle.is-played { color: var(--brand-blue); border-color: var(--brand-blue); }
       #game-action-status:empty { margin: 0; }
       .report-panel > summary { cursor: pointer; font-weight: 700; }
       .report-panel[open] > summary { margin-bottom: 0.75rem; }
@@ -11327,6 +11617,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       form.game-filters { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
       .search-row { display: flex; gap: 0.5rem; }
       .search-row input { flex: 1; min-width: 0; max-width: 420px; }
+      /* Phones: the field gets its own row, and Search and Surprise me share the next. */
+      @media (max-width: 480px) { .search-row { flex-wrap: wrap; } .search-row input { flex-basis: 100%; max-width: none; } .search-row button { flex: 1 1 0; } }
       .filters > summary { display: none; }
       .filters-body { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
       @media (max-width: 700px) {
@@ -11362,6 +11654,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .actions button, .actions .btn { min-height: 44px; }
         .home-actions .btn { font-size: 0.85rem; padding: 0.55rem 0.3rem; }
         .btn-play { display: block; text-align: center; }
+        .play-row .btn-play, .play-row .played-toggle { flex: 1 1 100%; }
         .related-games ul { columns: 1; }
         .filters > summary { display: list-item; cursor: pointer; font-weight: 600; padding: 0.4rem 0; }
         .filters-body select { flex: 1 1 45%; }
@@ -11402,6 +11695,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .nav-menu-panel > a, .nav-menu-panel button { min-height: 44px; display: flex; align-items: center; }
         footer a { position: relative; }
         footer a::after { content: ""; position: absolute; inset: -1.15rem -0.5rem; }
+        footer .footer-button { position: relative; }
+        footer .footer-button::after { content: ""; position: absolute; inset: -1.15rem -0.5rem; }
         /* Fields: 44px tall, and 16px text so iOS doesn't zoom the page on focus. */
         input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { min-height: 44px; font-size: 16px; }
         textarea { min-height: 5.5rem; }
@@ -11467,8 +11762,27 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/changelog">changelog</a>
         |
         <a href="/feed.xml">new games feed</a>
+        |
+        <button type="button" class="footer-button" data-shortcuts-open>Keyboard shortcuts</button>
       </p>
     </footer>
+    <dialog id="shortcuts-dialog" class="shortcuts-dialog" aria-labelledby="shortcuts-title">
+      <form method="dialog">
+        <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <dl class="shortcut-list">
+          <div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div>
+          <div><dt><kbd>/</kbd></dt><dd>Search games</dd></div>
+          <div><dt><kbd>r</kbd></dt><dd>Open a random game</dd></div>
+          <div><dt><kbd>n</kbd></dt><dd>Play the next unplayed game in today's rotation</dd></div>
+          <div><dt><kbd>g</kbd> then <kbd>h</kbd></dt><dd>Go to Home</dd></div>
+          <div><dt><kbd>g</kbd> then <kbd>b</kbd></dt><dd>Go to Browse</dd></div>
+          <div><dt><kbd>g</kbd> then <kbd>r</kbd></dt><dd>Go to Rotation</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Close this list</dd></div>
+        </dl>
+        <p class="shortcut-note">Shortcuts are off while you type in a field.</p>
+        <div class="actions"><button type="submit" class="btn">Close</button></div>
+      </form>
+    </dialog>
     <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
     <script>
       (() => {
@@ -11690,6 +12004,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       });
     </script>
     <script>${RESET_LOCALIZE_SCRIPT}</script>
+    <script>${SHORTCUTS_SCRIPT}</script>
     <script>${APP_UPDATE_SCRIPT}</script>
     <script>${PILL_FIT_SCRIPT}</script>
   </body>
