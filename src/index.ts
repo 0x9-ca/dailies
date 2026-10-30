@@ -496,8 +496,8 @@ app.get("/", async (c) => {
      ORDER BY n DESC, categories.name ASC`
   ).all<{ slug: string; name: string; n: number }>()).results;
 
-  const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites);
-  const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites);
+  const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites, { hideable: true });
+  const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites, { hideable: true });
   return c.html(await layout(`0x9 dles – ${roundedCount} Free Daily Games like Wordle & Connections`, user, `
     <main>
       ${user ? "" : `<p class="intro" id="home-intro">0x9 dles collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
@@ -913,7 +913,7 @@ app.get("/games", async (c) => {
 
   // Render games as flat list
   const gamesMarkup = games.length > 0 
-    ? renderCompactGameList(games, user, userVotes, userFavorites)
+    ? renderCompactGameList(games, user, userVotes, userFavorites, { hideable: true })
     : "<p>No games found.</p>";
 
   // Build pagination links
@@ -1040,6 +1040,26 @@ app.get("/games", async (c) => {
         ${gamesMarkup}
         ${paginationMarkup}
       </div>
+      <p class="hidden-toggle" id="hidden-toggle" hidden><button type="button" id="hidden-toggle-btn" aria-pressed="false"></button></p>
+      <script>
+        (() => {
+          const root = document.documentElement;
+          const box = document.getElementById("hidden-toggle");
+          const button = document.getElementById("hidden-toggle-btn");
+          if (!box || !button || !window.dglHidden) return;
+          const refresh = () => {
+            const count = window.dglHidden.read().length;
+            if (count === 0) root.classList.remove("dgl-show-hidden");
+            const showing = root.classList.contains("dgl-show-hidden");
+            box.hidden = count === 0;
+            button.textContent = "Hidden games (" + count + ") · " + (showing ? "Hide" : "Show");
+            button.setAttribute("aria-pressed", showing ? "true" : "false");
+          };
+          button.addEventListener("click", () => { root.classList.toggle("dgl-show-hidden"); refresh(); });
+          window.addEventListener("dglhiddenchange", refresh);
+          refresh();
+        })();
+      </script>
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
   `, c.env, {
@@ -1855,6 +1875,7 @@ app.get("/me/rotation", async (c) => {
           <input type="file" id="import-file" accept=".json" hidden>
         </div>
         <p id="import-status" class="status" aria-live="polite"></p>
+        ${DAILY_PROGRESS_MARKUP}
         ${renderListSortControl()}
         <ol id="local-rotation-list" class="rotation-list"></ol>
         <p id="rotation-status" class="status" aria-live="polite"></p>
@@ -2068,6 +2089,7 @@ app.get("/me/rotation", async (c) => {
             }
           });
           listSorter.apply();
+          window.dglLocalizeResets?.();
         };
 
         const loadGameInfo = async (gameIds) => {
@@ -2191,18 +2213,22 @@ app.get("/me/rotation", async (c) => {
 
         render();
       </script>
+      <script>
+        ${DAILY_PROGRESS_SCRIPT}
+        window.dglDailyProgress("local-rotation-list");
+      </script>
     `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
   }
 
   const favorites = await c.env.DB.prepare(
-    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, favorites.position
+    `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, favorites.position, favorites.weekday_mask
      FROM favorites
      JOIN games ON games.id = favorites.game_id
      WHERE favorites.user_id = ?1
      ORDER BY favorites.position ASC`
   )
     .bind(user.id)
-    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number }>();
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number; weekday_mask: number }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
   const developersByGameId = await getDevelopersForGames(c.env, favorites.results.map((item) => item.id));
@@ -2246,13 +2272,13 @@ app.get("/me/rotation", async (c) => {
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
       <p id="import-status" class="status" aria-live="polite"></p>
-      ${favorites.results.length > 0 ? renderListSortControl() : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
+      ${favorites.results.length > 0 ? DAILY_PROGRESS_MARKUP + renderListSortControl() : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
             (item) => {
               const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              return `<li class="card-click" data-game-id="${item.id}" ${reset.attrs}>
+              return `<li class="card-click" data-game-id="${item.id}" data-weekday-mask="${item.weekday_mask}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
                 <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
@@ -2277,6 +2303,10 @@ app.get("/me/rotation", async (c) => {
     <script>
       ${LIST_SORT_SCRIPT}
       window.dglListSort.init(document.getElementById("rotation-list"), document.getElementById("list-sort-select"));
+    </script>
+    <script>
+      ${DAILY_PROGRESS_SCRIPT}
+      window.dglDailyProgress("rotation-list");
     </script>
     <script>
       const list = document.getElementById("rotation-list");
@@ -2658,8 +2688,50 @@ app.get("/me/settings", async (c) => {
             .join("")}
         </ul>
       </section>
+      <section class="panel" id="hidden-games-panel" hidden>
+        <h2>Hidden games</h2>
+        <p>Games you hid from the home page and Browse. This is saved in this browser only.</p>
+        <ul id="hidden-games-list" class="hidden-games-list"></ul>
+        <div class="actions"><button type="button" id="hidden-games-clear">Unhide all</button></div>
+      </section>
       <p id="me-settings-status" class="status" aria-live="polite"></p>
     </main>
+    <script>
+      (() => {
+        const panel = document.getElementById("hidden-games-panel");
+        const list = document.getElementById("hidden-games-list");
+        if (!panel || !list || !window.dglHidden) return;
+        let titles = null;
+        const render = () => {
+          const ids = window.dglHidden.read();
+          panel.hidden = ids.length === 0;
+          list.replaceChildren();
+          ids.forEach((id) => {
+            const game = titles && titles.get(id);
+            const li = document.createElement("li");
+            const name = document.createElement(game ? "a" : "span");
+            if (game) name.href = "/games/" + encodeURIComponent(game.slug);
+            name.textContent = game ? game.title : "Unknown game";
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = "Unhide";
+            button.setAttribute("aria-label", "Unhide " + (game ? game.title : "game"));
+            button.addEventListener("click", () => window.dglHidden.unhide(id));
+            li.append(name, button);
+            list.appendChild(li);
+          });
+        };
+        document.getElementById("hidden-games-clear")?.addEventListener("click", () => window.dglHidden.clear());
+        window.addEventListener("dglhiddenchange", render);
+        render();
+        if (window.dglHidden.read().length > 0) {
+          fetch("/api/games/titles").then((r) => r.json()).then((data) => {
+            titles = new Map((data.games || []).map((g) => [g.id, g]));
+            render();
+          }).catch(() => undefined);
+        }
+      })();
+    </script>
     <script>
       const statusNode = document.getElementById("me-settings-status");
       const setStatus = (text) => {
@@ -8686,6 +8758,16 @@ function gameAriaLabel(game: { title: string; description: string | null; voteUp
   return total === 0 ? `${sentence} No votes yet.` : `${sentence} ${Math.round((game.voteUpCount / total) * 100)}% of ${total} vote${total === 1 ? "" : "s"} are upvotes.`;
 }
 
+const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progress" aria-label="Today's progress" hidden>
+  <div class="daily-progress-head"><span id="daily-progress-text"></span><span id="daily-progress-streak" class="daily-streak" hidden></span></div>
+  <div class="daily-progress-bar" id="daily-progress-bar" role="progressbar" aria-valuemin="0" aria-label="Games played today"><span id="daily-progress-fill"></span></div>
+  <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
+  <span class="daily-done" id="daily-done" hidden>All done for today</span>
+</section>`;
+
+// "Not interested" control on browse-grid cards (see HIDDEN_GAMES_SCRIPT); the eye swaps when hidden cards are shown.
+const HIDE_BUTTON = `<button type="button" class="hide-btn" aria-label="Hide this game" title="Hide this game"><svg class="i-hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c5 0 8.5 4 9.5 6a14 14 0 0 1-2.6 3.3M6.6 6.7C4.4 8.1 2.9 10.3 2.5 12c1 2 4.5 6 9.5 6 1.4 0 2.6-.3 3.7-.8"/></svg><svg class="i-show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12C3.5 10 7 6 12 6s8.5 4 9.5 6c-1 2-4.5 6-9.5 6s-8.5-4-9.5-6z"/><circle cx="12" cy="12" r="2.8"/></svg></button>`;
+
 function renderCompactGameList(
   games: Array<{
     id: string;
@@ -8707,7 +8789,7 @@ function renderCompactGameList(
   user: AppUser | null,
   userVotes: Map<string, -1 | 1>,
   userFavorites: Set<string>,
-  opts: { showVotes?: boolean; extraActions?: (game: { id: string; title: string; slug: string }) => string } = {}
+  opts: { showVotes?: boolean; hideable?: boolean; extraActions?: (game: { id: string; title: string; slug: string }) => string } = {}
 ): string {
   if (games.length === 0) {
     return "<p>No games found.</p>";
@@ -8719,7 +8801,7 @@ function renderCompactGameList(
       .map((game) => {
         const currentVote = userVotes.get(game.id) || 0;
         const currentFavorite = userFavorites.has(game.id);
-        return `<li class="card-click">
+        return `<li class="card-click"${opts.hideable ? ` data-hide-id="${escapeHtml(game.id)}"` : ""}>
           <div class="game-row" data-game-row="${game.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(game.slug)}" data-game-title="${escapeHtml(game.title)}">
             <div class="game-top">
               <div class="game-name">
@@ -8738,6 +8820,7 @@ function renderCompactGameList(
                     : `<button type="button" data-local-favorite="no" aria-label="Favorite">☆</button>`
                 }
                 ${renderDetailsLink(game.slug, game.title)}
+                ${opts.hideable ? HIDE_BUTTON : ""}
               </div>
             </div>
             <div class="game-sub">
@@ -9406,6 +9489,132 @@ const PILL_FIT_SCRIPT = `
   })();
 `;
 
+// Per-browser "not interested" list (localStorage dgl_hidden_v1, game ids). Runs in <head>: a generated stylesheet hides
+// every [data-hide-id] card (browse grids only) before first paint. html.dgl-show-hidden reveals them with an unhide eye.
+const HIDDEN_GAMES_SCRIPT = `
+  window.dglHidden = (() => {
+    const KEY = "dgl_hidden_v1";
+    const read = () => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(KEY) || "[]");
+        return Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string" && /^[\\w-]{1,64}$/.test(id)) : [];
+      } catch {
+        return [];
+      }
+    };
+    const style = document.createElement("style");
+    document.head.appendChild(style);
+    const paint = () => {
+      style.textContent = read().map((id) => {
+        const card = 'html.dgl-show-hidden [data-hide-id="' + id + '"]';
+        return 'html:not(.dgl-show-hidden) [data-hide-id="' + id + '"]{display:none}'
+          + card + '{opacity:.55}' + card + ' .hide-btn .i-hide{display:none}' + card + ' .hide-btn .i-show{display:inline}';
+      }).join("");
+      window.dispatchEvent(new Event("dglhiddenchange"));
+    };
+    const write = (ids) => {
+      try { window.localStorage.setItem(KEY, JSON.stringify(ids.slice(-2000))); } catch {}
+      paint();
+    };
+    const hide = (id) => { const ids = read(); if (!ids.includes(id)) write(ids.concat([id])); };
+    const unhide = (id) => write(read().filter((x) => x !== id));
+    window.addEventListener("storage", (event) => { if (event.key === KEY) paint(); });
+    document.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest(".hide-btn") : null;
+      const card = button ? button.closest("[data-hide-id]") : null;
+      const id = card ? card.getAttribute("data-hide-id") : "";
+      if (!button || !card || !id) return;
+      event.preventDefault();
+      if (read().includes(id)) { unhide(id); return; }
+      card.classList.add("hiding");
+      window.setTimeout(() => {
+        hide(id);
+        card.classList.remove("hiding");
+        if (window.appToast) window.appToast("Game hidden", "success", 6000, { label: "Undo", onClick: () => unhide(id) });
+      }, 250);
+    });
+    paint();
+    return { read, hide, unhide, clear: () => write([]) };
+  })();
+`;
+
+// Rotation page: "3 of 7 played today", a "Play next" button and a day streak (localStorage dgl_streak_v1,
+// { last: "YYYY-MM-DD", count }). Reads the rows of the list with the given id; recomputed whenever
+// RESET_LOCALIZE_SCRIPT recomputes played state (minute tick, focus, other tabs, dglMarkPlayed).
+const DAILY_PROGRESS_SCRIPT = `
+  window.dglDailyProgress = (listId) => {
+    const list = document.getElementById(listId);
+    const box = document.getElementById("daily-progress");
+    if (!list || !box) return;
+    const text = document.getElementById("daily-progress-text");
+    const streakNode = document.getElementById("daily-progress-streak");
+    const fill = document.getElementById("daily-progress-fill");
+    const bar = document.getElementById("daily-progress-bar");
+    const next = document.getElementById("daily-play-next");
+    const done = document.getElementById("daily-done");
+    const STREAK_KEY = "dgl_streak_v1";
+    const dateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const readStreak = () => {
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(STREAK_KEY) || "{}");
+        return parsed && typeof parsed.last === "string" && Number(parsed.count) > 0 ? { last: parsed.last, count: Math.floor(Number(parsed.count)) } : { last: "", count: 0 };
+      } catch {
+        return { last: "", count: 0 };
+      }
+    };
+    let nextRow = null;
+    const update = () => {
+      if (!window.dglIsPlayed) return;
+      // Monday is bit 0 of a favorite's weekday mask; rows without a mask (local favorites) run every day.
+      const bit = 1 << ((new Date().getDay() + 6) % 7);
+      const rows = Array.from(list.querySelectorAll("li[data-game-id]")).filter((li) => {
+        const mask = li.getAttribute("data-weekday-mask");
+        return mask == null || mask === "" || (Number(mask) & bit) !== 0;
+      });
+      box.hidden = rows.length === 0;
+      if (rows.length === 0) return;
+      const unplayed = rows.filter((li) => !window.dglIsPlayed(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin));
+      const played = rows.length - unplayed.length;
+      text.textContent = played + " of " + rows.length + " played today";
+      fill.style.width = Math.round((played / rows.length) * 100) + "%";
+      bar.setAttribute("aria-valuenow", String(played));
+      bar.setAttribute("aria-valuemax", String(rows.length));
+      nextRow = unplayed[0] || null;
+      next.hidden = !nextRow;
+      done.hidden = !!nextRow;
+      try {
+        const now = new Date();
+        const today = dateKey(now);
+        const streak = readStreak();
+        if (!nextRow && streak.last !== today) {
+          const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+          streak.count = streak.last === dateKey(yesterday) ? streak.count + 1 : 1;
+          streak.last = today;
+          window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak));
+        }
+        const yesterdayKey = dateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+        const live = streak.count >= 2 && (streak.last === today || streak.last === yesterdayKey);
+        streakNode.hidden = !live;
+        if (live) streakNode.textContent = streak.count + "-day streak";
+      } catch {
+        streakNode.hidden = true;
+      }
+    };
+    next.addEventListener("click", () => {
+      const link = nextRow && nextRow.querySelector("a.card-link");
+      const id = nextRow && nextRow.getAttribute("data-game-id");
+      if (!link || !id) return;
+      window.open(link.href, "_blank", "noopener");
+      // Only a game's own site counts; the details page (shown until the address loads) doesn't.
+      if (new URL(link.href).origin !== window.location.origin) window.dglMarkPlayed(id);
+    });
+    (window.dglPlayedHooks = window.dglPlayedHooks || []).push(update);
+    new MutationObserver(update).observe(list, { childList: true });
+    update();
+    return update;
+  };
+`;
+
 const RESET_LOCALIZE_SCRIPT = `
   window.dglResetCountdown = (kind, min) => {
     const m = Number(min);
@@ -9446,7 +9655,16 @@ const RESET_LOCALIZE_SCRIPT = `
   };
   const cardGameId = (card) =>
     card.getAttribute("data-game-id") || card.querySelector("[data-game-row]")?.getAttribute("data-game-row") || "";
+  // Played since the game's last reset (no reset time: since local midnight). Same rule as the .played card class.
+  window.dglIsPlayed = (gameId, kind, min) => {
+    const playedAt = Number(readPlayed()[gameId]) || 0;
+    const reset = kind && min != null && min !== "" ? window.dglResetCountdown(kind, min) : null;
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    return playedAt > (reset ? reset.lastResetAt : since.getTime());
+  };
   window.dglLocalizeResets = (root) => {
+    (window.dglPlayedHooks || []).forEach((hook) => { try { hook(); } catch {} });
     const played = readPlayed();
     (root || document).querySelectorAll("[data-reset-at]").forEach((el) => {
       const reset = window.dglResetCountdown(el.getAttribute("data-reset-at-kind"), el.getAttribute("data-reset-at"));
@@ -9910,6 +10128,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     <script>${GAME_ACTIONS_SCRIPT}</script>
+    <script>${HIDDEN_GAMES_SCRIPT}</script>
     <title>${escapeHtml(fullTitle)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
@@ -10445,6 +10664,27 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         color: var(--ink);
         font-weight: 600;
       }
+      .toast { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+      .toast-action { background: none; border: 0; padding: 0.35rem 0.5rem; margin: -0.35rem -0.4rem -0.35rem 0; min-height: 44px; color: var(--brand-blue); font: inherit; font-weight: 800; cursor: pointer; }
+      li[data-hide-id] { transition: opacity 0.25s ease, transform 0.25s ease; }
+      li[data-hide-id].hiding { opacity: 0; transform: scale(0.97); pointer-events: none; }
+      .daily-progress { margin: 0 0 1rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); display: grid; grid-template-columns: 1fr auto; gap: 0.5rem 0.75rem; align-items: center; }
+      .daily-progress-head { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: baseline; font-weight: 700; color: var(--ink); }
+      .daily-streak { color: var(--brand-blue); font-weight: 800; }
+      .daily-progress-bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
+      .daily-progress-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--brand-blue); transition: width 0.3s ease; }
+      .daily-progress .btn { min-height: 44px; }
+      .daily-done { color: var(--muted); font-weight: 600; }
+      @media (max-width: 480px) { .daily-progress { grid-template-columns: 1fr; } .daily-progress .btn { width: 100%; } }
+      .hide-btn { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
+      .hide-btn svg { width: 1.05rem; height: 1.05rem; }
+      .hide-btn .i-show { display: none; }
+      .game-row .compact-actions > .hide-btn { min-width: 2.15rem; padding-left: 0.5rem; padding-right: 0.5rem; }
+      .hidden-games-list { list-style: none; padding: 0; margin: 0 0 0.8rem; display: flex; flex-direction: column; gap: 0.4rem; }
+      .hidden-games-list li { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+      .hidden-games-list button { min-height: 44px; padding: 0.4rem 0.8rem; }
+      .hidden-toggle { text-align: center; margin: 1.5rem 0 0; }
+      .hidden-toggle button { background: none; border: 0; padding: 0.6rem 0.8rem; min-height: 44px; color: var(--muted); font: inherit; text-decoration: underline; cursor: pointer; }
       .toast.success { border-color: #666666; }
       .toast.error { border-color: #cc6666; }
       form { display:flex; gap: 0.6rem; flex-wrap:wrap; margin-bottom: 1rem; }
@@ -10522,6 +10762,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         /* Small buttons in cards and rows get an invisible margin that makes the tap target about 46px tall. */
         .compact-actions button, .compact-actions .btn-details, .card-actions button, .card-actions .btn-details { position: relative; min-height: 30px; }
         .compact-actions button::after, .compact-actions .btn-details::after, .card-actions button::after, .card-actions .btn-details::after { content: ""; position: absolute; inset: -9px -2px; }
+        .compact-actions .hide-btn { padding-left: 0.6rem; padding-right: 0.6rem; }
+        .compact-actions .hide-btn::after { inset: -9px -5px; }
         .compact-actions, .card-actions { gap: 0.3rem; }
         /* List and rotation rows on phones: the name, then "% liked · Resets in" across the full width, then the
            category pills with the buttons beside them (the buttons drop below the pills only if both don't fit). */
@@ -10699,11 +10941,19 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <script>
       (() => {
         const stack = document.getElementById("toast-stack");
-        const showToast = (message, level = "success", durationMs = 2500) => {
+        const showToast = (message, level = "success", durationMs = 2500, action) => {
           if (!stack || !message) return;
           const node = document.createElement("div");
           node.className = "toast " + level;
           node.textContent = message;
+          if (action && action.label && action.onClick) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "toast-action";
+            button.textContent = action.label;
+            button.addEventListener("click", () => { node.remove(); action.onClick(); });
+            node.appendChild(button);
+          }
           stack.appendChild(node);
           window.setTimeout(() => {
             node.remove();

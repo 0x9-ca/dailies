@@ -4,6 +4,13 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-30",
+    items: [
+      "Your rotation now shows how many of today's games you've played, a Play next button for the first one you haven't, and a day streak when you finish them all.",
+      "Not interested in a game? Tap the eye on its card to hide it from the home page and Browse. You can undo it right away, or unhide games from the bottom of Browse or from Settings.",
+    ]
+  },
+  {
     date: "2026-10-21",
     items: [
       "Search from any page: a search box in the header on wide screens, and a search icon on phones and tablets that opens the full search bar. Press / to jump to it.",
