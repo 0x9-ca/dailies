@@ -3161,14 +3161,15 @@ app.get("/lists/:slug", async (c) => {
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
   const items = await c.env.DB.prepare(
     `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone,
-            games.vote_up_count, games.vote_down_count, curated_list_items.position
+            games.vote_up_count, games.vote_down_count, curated_list_items.position,
+            curated_list_items.last_played_at, curated_list_items.created_at AS added_at
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
      ORDER BY curated_list_items.position ASC`
   )
     .bind(list.id)
-    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number }>();
+    .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number; last_played_at: string | null; added_at: string }>();
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
   const developersByGameId = await getDevelopersForGames(c.env, items.results.map((item) => item.id));
@@ -3331,6 +3332,7 @@ app.get("/lists/:slug", async (c) => {
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
+      ${isAdminEditor ? "" : `<p class="played-count" id="played-count" hidden></p>`}
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <div class="list-head-actions" id="head-actions">
         <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
@@ -3412,14 +3414,14 @@ app.get("/lists/:slug", async (c) => {
       </div>
       <div class="list-main">`}
       ${isAdminEditor ? "" : `<div class="list-bar"><h2 class="list-bar-title">Games <span class="tab-count" id="list-count" data-list-count>${items.results.length}</span></h2><div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div></div>`}
-      <ol class="rotation-list" id="list-items">
+      <ol class="rotation-list" id="list-items"${canEdit && !isAdminEditor ? ` data-can-mark-played data-list-id="${escapeHtml(list.id)}"` : ""}>
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
           const currentFavorite = userFavorites.has(item.id);
-          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
+          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-last-played-at="${escapeHtml(item.last_played_at || "")}" data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}${isNewlyListed(item.added_at) ? renderNewHereBadge() : ""}${isAdminEditor ? "" : `<span class="played-pill" hidden><span class="pp-check" aria-hidden="true">✓</span><span class="pp-text"> Played on stream</span></span>`}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id), developersByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
@@ -3439,6 +3441,7 @@ app.get("/lists/:slug", async (c) => {
                 <button type="button" data-move="down">↓</button>
               </div>
             ` : ""}
+            ${canEdit && !isAdminEditor ? `<button type="button" class="list-played-btn" data-played-toggle-list aria-pressed="false" hidden>Mark played</button>` : ""}
             ${renderDetailsLink(item.slug, item.title)}
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
@@ -3459,7 +3462,7 @@ app.get("/lists/:slug", async (c) => {
         ${fandleSection}
       </aside></div>`}
       ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions)}
-      ${isAdminEditor ? "" : renderStreamSettings()}
+      ${isAdminEditor ? "" : renderStreamSettings(canEdit, list.visibility === "public" ? { slug: list.slug, title: list.title, appUrl: c.env.APP_URL.replace(/\/$/, ""), shortUrl: (shortOrigin(c.env) ?? c.env.APP_URL).replace(/\/$/, "") } : null)}
       ${isAdminEditor ? "" : renderOverlayPanel(list.title, suggestionsOn, suggestions)}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
@@ -3910,8 +3913,20 @@ app.get("/lists/:slug", async (c) => {
           try {
             const response = await fetch("/api/lists/" + encodeURIComponent(${scriptJson(list.slug)}), { cache: "no-store" });
             if (!response.ok) return;
-            const ids = ((await response.json()).items || []).map((item) => item.id);
-            if (ids.join(",") === manualIds.join(",")) return;
+            const apiItems = (await response.json()).items || [];
+            const ids = apiItems.map((item) => item.id);
+            // Played-on-stream marks: patch the rows' data-last-played-at in place (skipped while this page is saving one).
+            const patchPlayed = () => {
+              if (window.dglPlayedBusy && window.dglPlayedBusy()) return;
+              const marks = new Map(apiItems.map((item) => [item.id, item.lastPlayedAt || ""]));
+              let changed = false;
+              rows().forEach((li) => {
+                const mark = marks.get(li.getAttribute("data-game-id"));
+                if (mark !== undefined && li.getAttribute("data-last-played-at") !== mark) { li.setAttribute("data-last-played-at", mark); changed = true; }
+              });
+              if (changed && window.dglApplyPlayed) window.dglApplyPlayed();
+            };
+            if (ids.join(",") === manualIds.join(",")) { patchPlayed(); return; }
             // A unique query string skips the edge page cache, which can be up to a minute behind the API.
             const page = await fetch(window.location.pathname + "?live=" + Date.now(), { cache: "no-store" });
             if (!page.ok) return;
@@ -3937,6 +3952,8 @@ app.get("/lists/:slug", async (c) => {
               ids.forEach((id) => list.appendChild(current.get(id) || added.get(id)));
               sorter.refresh();
               manualIds = ids;
+              patchPlayed();
+              if (window.dglApplyPlayed) window.dglApplyPlayed();
               if (sortWrap) sortWrap.hidden = ids.length < 2;
               document.querySelectorAll("[data-list-count]").forEach((node) => { node.textContent = String(ids.length); });
             }, removed.length > 0 ? 350 : 0);
@@ -4419,6 +4436,28 @@ app.get("/badge/:file", async (c) => {
     ...headers,
     "Cache-Control": "public, max-age=3600"
   });
+});
+
+// Panel badge for a public list (Twitch panels, socials): list size and its short address. Same headers as the game badge.
+app.get("/badge/c/:file", async (c) => {
+  const slug = c.req.param("file").replace(/\.svg$/, "");
+  const list = await c.env.DB.prepare(
+    `SELECT curated_lists.title,
+            (SELECT COUNT(*) FROM curated_list_items JOIN games ON games.id = curated_list_items.game_id
+             WHERE curated_list_items.curated_list_id = curated_lists.id AND games.status = 'approved') AS games
+     FROM curated_lists WHERE curated_lists.slug = ?1 AND curated_lists.visibility = 'public'`
+  )
+    .bind(slug)
+    .first<{ title: string; games: number }>();
+  const headers = {
+    "Content-Type": "image/svg+xml; charset=utf-8",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"
+  };
+  if (!list || list.games === 0) {
+    return c.body(renderListBadgeSvg(null, "", 0, ""), 404, { ...headers, "Cache-Control": "public, max-age=300" });
+  }
+  const host = new URL(shortOrigin(c.env) ?? c.env.APP_URL).host;
+  return c.body(renderListBadgeSvg(list.title, slug, list.games, host), 200, { ...headers, "Cache-Control": "public, max-age=3600" });
 });
 
 const IMMUTABLE_ASSET_CACHE = "public, max-age=86400";
@@ -7250,7 +7289,7 @@ app.get("/api/lists/:slug", async (c) => {
     return c.json({ error: "Not found" }, 404);
   }
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, curated_list_items.position
+    `SELECT games.id, games.slug, games.title, curated_list_items.position, curated_list_items.last_played_at AS lastPlayedAt
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
@@ -7662,6 +7701,28 @@ async function blockListGame(env: Env, listId: string, gameId: string, reason: "
  * Drops this data centre's cached logged-out copy of a list page (and the lists index) after a change, so a visitor
  * nearby sees it on their next load. Other data centres catch up within PUBLIC_CACHE_SECONDS.
  */
+// Marks a game on a list as played on stream (now) or clears it. Not in the mod log: it happens during every stream.
+app.put("/api/lists/:id/items/:gameId/played", async (c) => {
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ played: z.boolean() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const lastPlayedAt = parsed.data.played ? new Date().toISOString() : null;
+  const result = await c.env.DB.prepare("UPDATE curated_list_items SET last_played_at = ?1 WHERE curated_list_id = ?2 AND game_id = ?3")
+    .bind(lastPlayedAt, listId, c.req.param("gameId"))
+    .run();
+  if (!result.meta.changes) {
+    return c.json({ error: "Game not on this list" }, 404);
+  }
+  await purgeListPageCache(c, listId);
+  return c.json({ ok: true, lastPlayedAt });
+});
+
 async function purgeListPageCache(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<void> {
   if (isDevEnv(c.env)) return;
   const row = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE id = ?1").bind(listId).first<{ slug: string }>();
@@ -9260,6 +9321,32 @@ function isNewlyListed(listedAt: string): boolean {
   return !Number.isNaN(time) && Date.now() - time < NEW_GAME_MS;
 }
 
+function renderNewHereBadge(): string {
+  return `<span class="new-badge" title="Added to this list in the last 7 days">New here</span>`;
+}
+
+// 320x60 list badge: brand block on the left, game count and short address on the right. A null title is the 404 image.
+function renderListBadgeSvg(title: string | null, slug: string, games: number, host: string): string {
+  const count = `${games} ${games === 1 ? "daily" : "dailies"}`;
+  const label = title ? escapeHtml(`${title} on 0x9 dles: ${count}`) : "0x9 dles";
+  const address = `${host}/c/${slug}`;
+  const right = title
+    ? `<text x="124" y="27" fill="#04121c" font-size="18" text-anchor="start">${escapeHtml(count)}</text>
+    <text x="124" y="46" fill="#04121c" font-size="11" font-weight="normal" text-anchor="start"${address.length > 30 ? ` textLength="184" lengthAdjust="spacingAndGlyphs"` : ""}>${escapeHtml(address)}</text>`
+    : "";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="60" viewBox="0 0 320 60" role="img">
+  <title>${label}</title>
+  <clipPath id="b"><rect width="320" height="60" rx="8" /></clipPath>
+  <g clip-path="url(#b)" font-family="Verdana,DejaVu Sans,sans-serif" font-weight="bold">
+    <rect width="${title ? 112 : 320}" height="60" fill="#1e1e1e" />
+    ${title ? `<rect x="112" width="208" height="60" fill="#00a4fc" />` : ""}
+    <text x="${title ? 56 : 160}" y="36" fill="#f2f2f2" font-size="16" text-anchor="middle">0x9 dles</text>
+    ${right}
+  </g>
+</svg>
+`;
+}
+
 function renderNewBadge(): string {
   return `<span class="new-badge" title="Listed in the last 7 days">New</span>`;
 }
@@ -10459,13 +10546,14 @@ const RESET_LOCALIZE_SCRIPT = `
   const cardGameId = (card) =>
     card.getAttribute("data-game-id") || card.querySelector("[data-game-row]")?.getAttribute("data-game-row") || "";
   // Played since the game's last reset (no reset time: since local midnight). Same rule as the .played card class.
-  window.dglIsPlayed = (gameId, kind, min) => {
-    const playedAt = Number(readPlayed()[gameId]) || 0;
+  // True when epoch ms "at" is after the game's most recent reset (kind/min = its reset data; none = viewer's local midnight).
+  window.dglPlayedSince = (kind, min, at) => {
     const reset = kind && min != null && min !== "" ? window.dglResetCountdown(kind, min) : null;
     const since = new Date();
     since.setHours(0, 0, 0, 0);
-    return playedAt > (reset ? reset.lastResetAt : since.getTime());
+    return (Number(at) || 0) > (reset ? reset.lastResetAt : since.getTime());
   };
+  window.dglIsPlayed = (gameId, kind, min) => window.dglPlayedSince(kind, min, readPlayed()[gameId]);
   window.dglLocalizeResets = (root) => {
     (window.dglPlayedHooks || []).forEach((hook) => { try { hook(); } catch {} });
     const played = readPlayed();
@@ -10960,6 +11048,7 @@ function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, sug
 function renderOverlayPanel(title: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
   return `<div class="overlay-panel" id="overlay-panel">
     <p class="ov-title">${escapeHtml(title)}</p>
+    <p class="ov-played" id="ov-played" hidden></p>
     <p class="ov-cta"><span id="ov-label">${suggestionsOn ? "Suggest a game: " : ""}</span><strong id="ov-addr"></strong></p>
     ${suggestionsOn ? `<ol class="ov-top" id="ov-top" aria-label="Top suggestions">${suggestions.slice(0, 5).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
     <p class="ov-new" id="ov-new" role="status" hidden></p>
@@ -10967,10 +11056,22 @@ function renderOverlayPanel(title: string, suggestionsOn: boolean, suggestions: 
 }
 
 // Stream settings popover (stream mode only): picks the URL params and builds copyable OBS links.
-function renderStreamSettings(): string {
+function renderStreamSettings(canMark: boolean, badge: { slug: string; title: string; appUrl: string; shortUrl: string } | null): string {
+  let badgeSection = "";
+  if (badge) {
+    const link = `${badge.shortUrl}/c/${badge.slug}`;
+    const img = `${badge.appUrl}/badge/c/${badge.slug}.svg`;
+    const html = `<a href="${escapeHtml(link)}"><img src="${escapeHtml(img)}" alt="${escapeHtml(`${badge.title} on 0x9 dles`)}"></a>`;
+    const markdown = `[![${badge.title.replace(/[\[\]\\]/g, "")} on 0x9 dles](${img})](${link})`;
+    badgeSection = `<h3>Panel badge <span>(Twitch panel or socials)</span></h3>
+    <img class="ss-badge-preview" src="/badge/c/${encodeURIComponent(badge.slug)}.svg" width="320" height="60" alt="Panel badge preview">
+    <div class="ss-url"><textarea id="ss-badge-md" rows="2" readonly aria-label="Markdown snippet">${escapeHtml(markdown)}</textarea><button type="button" class="ss-copy" data-copy="ss-badge-md">Copy</button></div>
+    <div class="ss-url"><textarea id="ss-badge-html" rows="2" readonly aria-label="HTML snippet">${escapeHtml(html)}</textarea><button type="button" class="ss-copy" data-copy="ss-badge-html">Copy</button></div>`;
+  }
   return `<button type="button" class="stream-exit stream-settings-btn" id="stream-settings-btn" aria-expanded="false" aria-controls="stream-settings">Stream settings</button>
   <div class="stream-settings" id="stream-settings" role="dialog" aria-label="Stream settings" hidden>
     <h2>Stream settings</h2>
+    ${canMark ? `<p class="ss-note">Click a row, or press its number (1-9), to mark it played on stream. Click again to undo.</p>` : ""}
     <p class="ss-note">Pick options, then copy the link into an OBS browser source. Link params: <code>fit=0</code> <code>scroll=0</code> <code>top=N</code> <code>cols=N</code> <code>theme=dark|light</code></p>
     <label class="ss-check"><input type="checkbox" id="ss-fit" checked> Fit all rows to the screen</label>
     <label class="ss-check"><input type="checkbox" id="ss-scroll" checked> Auto-scroll if they still don't fit</label>
@@ -10982,6 +11083,7 @@ function renderStreamSettings(): string {
     <label>Position <select id="ss-pos"><option value="bl">Bottom left</option><option value="br">Bottom right</option><option value="tl">Top left</option><option value="tr">Top right</option></select></label>
     <label>Suggestions shown <input type="number" id="ss-otop" min="0" max="10" value="5"></label>
     <div class="ss-url"><input type="text" id="ss-overlay-url" readonly aria-label="Overlay link"><button type="button" class="ss-copy" data-copy="ss-overlay-url">Copy</button></div>
+    ${badgeSection}
   </div>`;
 }
 
@@ -11286,12 +11388,101 @@ const LIST_PAGE_SCRIPT = `
           copy.textContent = "Copied";
           window.setTimeout(() => { copy.textContent = label; }, 1500);
         }));
-        pop.querySelectorAll(".ss-url input").forEach((input) => input.addEventListener("focus", () => input.select()));
+        pop.querySelectorAll(".ss-url input, .ss-url textarea").forEach((input) => input.addEventListener("focus", () => input.select()));
         // Capture phase so Esc closes the popover before the stream-mode Esc handler sees it.
         document.addEventListener("keydown", (event) => {
           if (event.key === "Escape" && !pop.hidden) { event.preventDefault(); setOpen(false); btn.focus(); }
         }, true);
       }
+      // Played on stream: rows carry data-last-played-at (UTC ISO). Played = after the game's last reset, or, for games
+      // without a reset time, since the viewer's local midnight (window.dglPlayedSince, same rule as dglIsPlayed).
+      const counter = document.getElementById("played-count");
+      const ovPlayed = document.getElementById("ov-played");
+      const canMark = list.hasAttribute("data-can-mark-played");
+      const isPlayedRow = (li) => {
+        const at = Date.parse(li.getAttribute("data-last-played-at") || "");
+        return !isNaN(at) && !!window.dglPlayedSince && window.dglPlayedSince(li.dataset.resetKind || "", li.dataset.resetMin, at);
+      };
+      let playedSig = "";
+      const applyPlayed = () => {
+        let done = 0, total = 0;
+        rowsOf().forEach((li) => {
+          total += 1;
+          const played = isPlayedRow(li);
+          if (played) done += 1;
+          li.classList.toggle("stream-played", played);
+          if (canMark) li.classList.add("can-mark");
+          const pill = li.querySelector(".played-pill");
+          if (pill) pill.hidden = !played;
+          const btn = li.querySelector("[data-played-toggle-list]");
+          if (btn) {
+            btn.hidden = false;
+            btn.textContent = played ? "Played ✓" : "Mark played";
+            btn.setAttribute("aria-pressed", played ? "true" : "false");
+            btn.classList.toggle("is-played", played);
+          }
+        });
+        const text = done + " / " + total + " played today";
+        const show = total > 0 && (done > 0 || canMark);
+        if (counter) { counter.textContent = text; counter.hidden = !show; }
+        if (ovPlayed) { ovPlayed.textContent = text; ovPlayed.hidden = !(total > 0 && done > 0); }
+        const sig = done + "/" + total;
+        if (sig !== playedSig) { playedSig = sig; schedule(); }
+      };
+      (window.dglPlayedHooks = window.dglPlayedHooks || []).push(applyPlayed);
+      window.dglApplyPlayed = applyPlayed;
+      let marking = 0;
+      window.dglPlayedBusy = () => marking > 0;
+      const markToast = (message) => { if (window.appToast) window.appToast(message, "error", 3500); };
+      const togglePlayed = async (li) => {
+        if (!canMark || li.dataset.busy) return;
+        const prev = li.getAttribute("data-last-played-at") || "";
+        const next = isPlayedRow(li) ? "" : new Date().toISOString();
+        li.dataset.busy = "1";
+        marking += 1;
+        li.setAttribute("data-last-played-at", next);
+        applyPlayed();
+        try {
+          const res = await fetch("/api/lists/" + encodeURIComponent(list.getAttribute("data-list-id")) + "/items/" + encodeURIComponent(li.getAttribute("data-game-id")) + "/played", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ played: !!next })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || "Could not save that.");
+          li.setAttribute("data-last-played-at", data.lastPlayedAt || "");
+        } catch (error) {
+          li.setAttribute("data-last-played-at", prev);
+          markToast(error && error.message ? error.message : "Could not save that.");
+        } finally {
+          delete li.dataset.busy;
+          marking -= 1;
+          applyPlayed();
+        }
+      };
+      if (canMark) {
+        list.addEventListener("click", (event) => {
+          if (!isStream() || event.button) return;
+          const li = event.target instanceof Element ? event.target.closest("li[data-game-id]") : null;
+          if (!li) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void togglePlayed(li);
+        }, true);
+        list.addEventListener("click", (event) => {
+          const btn = event.target instanceof Element ? event.target.closest("[data-played-toggle-list]") : null;
+          const li = btn ? btn.closest("li[data-game-id]") : null;
+          if (li) void togglePlayed(li);
+        });
+        document.addEventListener("keydown", (event) => {
+          if (!isStream() || event.ctrlKey || event.metaKey || event.altKey || !/^[1-9]$/.test(event.key)) return;
+          const target = event.target;
+          if (target instanceof Element && target.closest("input, textarea, select, [contenteditable]")) return;
+          const li = rowsOf()[Number(event.key) - 1];
+          if (li) { event.preventDefault(); void togglePlayed(li); }
+        });
+      }
+      applyPlayed();
       schedule();
     })();
   })();
@@ -11501,6 +11692,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-paywall: #4ade80;
         --badge-nsfw: #f87171;
         --badge-new: #7dd3fc;
+        --played-ok: #4ade80;
         --warn: #fbbf24;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
@@ -11547,6 +11739,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-paywall: #166534;
         --badge-nsfw: #b91c1c;
         --badge-new: #0369a1;
+        --played-ok: #166534;
         --warn: #92400e;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
@@ -11859,6 +12052,14 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .feed-link { margin: 0 0 0.5rem; font-size: 0.9em; }
       @media (max-width: 700px) { .feed-link a { display: inline-flex; align-items: center; min-height: 44px; } }
       .duplicate-warning { color: var(--warn); font-weight: 600; }
+      .played-pill { display: inline-block; margin-left: 0.3rem; padding: 0 0.45em; border: 1px solid var(--played-ok); border-radius: 999px; color: var(--played-ok); font-size: 0.7em; font-weight: 700; line-height: 1.6; letter-spacing: 0.02em; vertical-align: middle; white-space: nowrap; }
+      .played-pill[hidden] { display: none; }
+      .list-played-btn.is-played { color: var(--played-ok); border-color: var(--played-ok); }
+      .played-count, .ov-played { margin: 0; font-weight: 800; font-variant-numeric: tabular-nums; }
+      html:not(.dgl-stream) .played-count { display: none; }
+      .played-count[hidden], .ov-played[hidden] { display: none !important; }
+      .stream-settings textarea { flex: 1; min-width: 0; font: inherit; font-size: 0.8rem; resize: none; }
+      .stream-settings .ss-badge-preview { display: block; max-width: 100%; height: auto; margin: 0.4rem 0; border-radius: 8px; }
       .new-badge { display: inline-block; margin-left: 0.3rem; padding: 0 0.4em; border: 1px solid var(--badge-new); border-radius: 999px; color: var(--badge-new); font-size: 0.7em; font-weight: 700; line-height: 1.6; letter-spacing: 0.03em; vertical-align: middle; white-space: nowrap; }
       [data-share] { min-height: 44px; }
       .moderation-badge {
@@ -12063,6 +12264,12 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       html.dgl-stream .rotation-list li::before { content: counter(stream-row); flex: none; min-width: 2.2ch; font-size: 0.9em; font-weight: 800; line-height: 1; color: var(--stream-accent); font-variant-numeric: tabular-nums; text-align: center; }
       html.dgl-stream .rotation-list li.card-click:hover { background: var(--stream-row); border-color: var(--stream-sep); box-shadow: none; }
       html.dgl-stream .rotation-list li.played { opacity: 1; }
+      html.dgl-stream .played-count { display: inline-block; align-self: center; padding: 0.15em 0.7em; border: max(1.5px, 0.09em) solid var(--played-ok); border-radius: 999px; color: var(--played-ok); font-size: clamp(1.1rem, min(1.8vw, 3vh), 1.8rem); }
+      html.dgl-stream .rotation-list li.stream-played .title-text, html.dgl-stream .rotation-list li.stream-played .item-main .meta { opacity: 0.4; }
+      html.dgl-stream .rotation-list li.stream-played { border-color: var(--played-ok); }
+      html.dgl-stream .rotation-list li.stream-played .played-pill { margin: 0 0 0 0.35em; padding: 0; border: 0; font-size: 1.3em; line-height: 1; color: var(--played-ok); }
+      html.dgl-stream .rotation-list li.stream-played .pp-text { display: none; }
+      html.dgl-stream .rotation-list li.can-mark { cursor: pointer; }
       html.dgl-stream .rotation-list li.reset-bar::after { height: 6px; left: 0.7em; bottom: 0.25em; width: calc((100% - 1.4em) * var(--reset-left, 0)); }
       html.dgl-stream .rotation-list li.reset-bar { padding-bottom: 0.55em; }
       html.dgl-stream .rotation-list .game-title { font-size: 1em; line-height: 1.2; color: var(--stream-ink); text-decoration: none; }

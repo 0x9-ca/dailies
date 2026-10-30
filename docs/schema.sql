@@ -63,7 +63,7 @@ CREATE TABLE curated_list_items (
   game_id TEXT NOT NULL,
   position INTEGER NOT NULL,
   added_by_user_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')), last_played_at TEXT,
   PRIMARY KEY (curated_list_id, game_id),
   FOREIGN KEY (curated_list_id) REFERENCES curated_lists(id) ON DELETE CASCADE,
   FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,

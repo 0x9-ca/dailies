@@ -8,10 +8,11 @@
 - `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
 - `GET /feed.xml` → Atom feed of the 50 most recently listed approved games (`COALESCE(approved_at, created_at)`), `application/atom+xml`, cached 10 minutes.
 - `GET /feed.xml?category=<slug>` → the same feed limited to approved games in that active category. Unknown or inactive slugs get a 404 `application/xml` error.
+- `GET /badge/c/:slug.svg` → 320×60 SVG for a public list with games: "0x9 dles", "N dailies" and the list's short address (`<short host>/c/<slug>`). Private, unknown or empty lists get a 404 SVG. Cached an hour; for Twitch panels and socials (snippets in the list's Stream settings).
 - `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
 - `GET /api/categories`
 - `GET /api/lists`
-- `GET /api/lists/:slug`
+- `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
 - `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, url, paywall, nsfw, categories: [{ slug, name, hue }], votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
@@ -99,6 +100,7 @@
 - `DELETE /api/lists/:id`
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
+- `PUT /api/lists/:id/items/:gameId/played` (`{ played: boolean }`; the list's editors, same as the item routes. Sets or clears `last_played_at`; returns `{ ok, lastPlayedAt }`; 404 when the game isn't on the list. Not in the mod log)
 - `PATCH /api/lists/:id/items/reorder`
 - `POST /api/lists/:id/suggestions/:gameId/accept` (moves a suggestion to the end of the list)
 - `DELETE /api/lists/:id/suggestions/:gameId` (dismisses a suggestion; the game can't be suggested for that list again)
