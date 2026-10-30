@@ -1936,15 +1936,20 @@ app.get("/u/:handle", async (c) => {
         .all<{ title: string; slug: string; paywall: number; nsfw: number }>()).results
     : [];
 
-  const creatorList = owner.creator_type
-    ? await c.env.DB.prepare(
-        `SELECT slug, title FROM curated_lists
-         WHERE owner_user_id = ?1 AND kind = 'creator' AND (visibility = 'public' OR owner_user_id = ?2)
-           AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id)`
-      )
-        .bind(owner.id, user?.id ?? null)
-        .first<{ slug: string; title: string }>()
-    : null;
+  // Public lists the owner made (their creator list included), with games, same verified check as /lists.
+  const ownedLists = (
+    await c.env.DB.prepare(
+      `SELECT curated_lists.slug, curated_lists.title, curated_lists.twitch_login,
+              CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_creator_list,
+              (SELECT COUNT(*) FROM curated_list_items WHERE curated_list_id = curated_lists.id) AS game_count
+       FROM curated_lists
+       LEFT JOIN users ON users.id = curated_lists.owner_user_id
+       WHERE curated_lists.owner_user_id = ?1 AND curated_lists.visibility = 'public'
+       ORDER BY curated_lists.kind = 'creator' DESC, curated_lists.updated_at DESC`
+    )
+      .bind(owner.id)
+      .all<{ slug: string; title: string; twitch_login: string | null; is_creator_list: number; game_count: number }>()
+  ).results.filter((row) => row.game_count > 0);
   const name = owner.display_name || owner.profile_handle;
   const badges = [
     owner.creator_type ? `<span class="profile-badge profile-badge-dev">${renderCheckBadge("Verified content creator")} ${owner.creator_type === "partner" ? "Twitch Partner" : owner.creator_type === "affiliate" ? "Twitch Affiliate" : "Verified creator"}</span>` : "",
@@ -1966,7 +1971,13 @@ app.get("/u/:handle", async (c) => {
           ${twitchLogin ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(twitchLogin)}" target="_blank" rel="noopener noreferrer">${TWITCH_ICON_SVG}<span>${escapeHtml(twitchLogin)} on Twitch</span><span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
         </div>
       </header>
-      ${creatorList ? `<p><a class="btn" href="/lists/${encodeURIComponent(creatorList.slug)}">${escapeHtml(creatorList.title)}</a></p>` : ""}
+      ${ownedLists.length > 0 ? `<section>
+        <h2>Lists</h2>
+        <ul class="list-index">
+          ${ownedLists.map((row) => `<li><a href="/lists/${encodeURIComponent(row.slug)}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}
+            <br /><small class="muted">${row.game_count} game${row.game_count === 1 ? "" : "s"}</small></li>`).join("")}
+        </ul>
+      </section>` : ""}
       ${developed.length > 0 ? `<section>
         <h2>Games by ${escapeHtml(name)}</h2>
         ${renderCompactGameList(developed.map((game) => ({ ...game, developer: null })), user, userVotes, userFavorites)}
@@ -1975,7 +1986,7 @@ app.get("/u/:handle", async (c) => {
         <h2>Daily rotation</h2>
         <ol class="profile-rotation">${rotation.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a></li>`).join("")}</ol>
       </section>` : ""}
-      ${developed.length === 0 && rotation.length === 0 && !creatorList ? `<p class="muted">Nothing to show here yet.</p>` : ""}
+      ${developed.length === 0 && rotation.length === 0 && ownedLists.length === 0 ? `<p class="muted">Nothing to show here yet.</p>` : ""}
     </main>
     ${developed.length > 0 ? renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false }) : ""}
   `, c.env, { path: `/u/${owner.profile_handle}`, noindex: true, description: `${name} on 0x9 dles.` }));
@@ -2065,6 +2076,7 @@ app.get("/me/rotation", async (c) => {
         <p><a href="/login">Sign in</a> to sync favorites across devices.</p>
         <div class="actions">
           <button type="button" id="export-btn">Export JSON</button>
+          <button type="button" id="copy-text-btn" hidden>Copy as text</button>
           <button type="button" id="import-btn">Import JSON</button>
           <input type="file" id="import-file" accept=".json" hidden>
         </div>
@@ -2173,8 +2185,10 @@ app.get("/me/rotation", async (c) => {
           if (!list) return;
           const favorites = readFavorites();
           const exportButton = document.getElementById("export-btn");
+          const copyTextButton = document.getElementById("copy-text-btn");
           const sortControl = document.getElementById("list-sort-select")?.closest(".list-sort");
           if (exportButton) exportButton.hidden = favorites.length === 0;
+          if (copyTextButton) copyTextButton.hidden = favorites.length === 0;
           if (sortControl) sortControl.hidden = favorites.length === 0;
           if (favorites.length === 0) {
             list.innerHTML = '<li class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></li>';
@@ -2461,7 +2475,7 @@ app.get("/me/rotation", async (c) => {
         <p id="rotation-local-import-status" class="status" aria-live="polite"></p>
       </section>
       <div class="actions">
-        ${favorites.results.length > 0 ? `<button type="button" id="export-btn">Export JSON</button>` : ""}
+        ${favorites.results.length > 0 ? `<button type="button" id="export-btn">Export JSON</button><button type="button" id="copy-text-btn">Copy as text</button>` : ""}
         <button type="button" id="import-btn">Import JSON</button>
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
@@ -2472,7 +2486,7 @@ app.get("/me/rotation", async (c) => {
           .map(
             (item) => {
               const reset = renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone);
-              return `<li class="card-click" data-game-id="${item.id}" data-weekday-mask="${item.weekday_mask}" ${reset.attrs}>
+              return `<li class="card-click" data-game-id="${item.id}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}" data-weekday-mask="${item.weekday_mask}" ${reset.attrs}>
               <span class="drag">::</span>
               <div class="item-main">
                 <a class="game-title card-link" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${renderRowTitle(item.title, item.paywall, item.nsfw)}</a>
@@ -10146,22 +10160,58 @@ const DAILY_PROGRESS_SCRIPT = `
     const list = document.getElementById(listId);
     const box = document.getElementById("daily-progress");
     if (!list || !box) return;
-    const getRows = () => {
-      // Monday is bit 0 of a favorite's weekday mask; rows without a mask (local favorites) run every day.
+    // Today's rows: Monday is bit 0 of a favorite's weekday mask; rows without a mask (local favorites) run every day.
+    const todayItems = () => {
       const bit = 1 << ((new Date().getDay() + 6) % 7);
-      return Array.from(list.querySelectorAll("li[data-game-id]"))
-        .filter((li) => {
-          const mask = li.getAttribute("data-weekday-mask");
-          return mask == null || mask === "" || (Number(mask) & bit) !== 0;
-        })
-        .map((li) => {
-          const link = li.querySelector("a.card-link");
-          return { id: li.getAttribute("data-game-id"), url: link ? link.href : "", kind: li.dataset.resetKind, min: li.dataset.resetMin };
-        });
+      return Array.from(list.querySelectorAll("li[data-game-id]")).filter((li) => {
+        const mask = li.getAttribute("data-weekday-mask");
+        return mask == null || mask === "" || (Number(mask) & bit) !== 0;
+      });
     };
+    const getRows = () => todayItems().map((li) => {
+      const link = li.querySelector("a.card-link");
+      return { id: li.getAttribute("data-game-id"), url: link ? link.href : "", kind: li.dataset.resetKind, min: li.dataset.resetMin };
+    });
     const widget = window.dglProgressWidget(box, getRows);
     new MutationObserver(widget.update).observe(list, { childList: true });
     widget.update();
+
+    // Copy as text: today's games as a plain list for chat. Links go to this site's game pages; a check marks games
+    // played since their last reset. Falls back to a hidden textarea where the async clipboard API is missing.
+    document.getElementById("copy-text-btn")?.addEventListener("click", async () => {
+      const rows = todayItems();
+      if (rows.length === 0) { window.appToast?.("No games are scheduled for today.", "error"); return; }
+      const day = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
+      const lines = rows.map((li, index) => {
+        const played = window.dglIsPlayed ? window.dglIsPlayed(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin) : false;
+        const url = window.location.origin + "/games/" + encodeURIComponent(li.getAttribute("data-game-slug") || "");
+        return (index + 1) + ". " + (li.getAttribute("data-game-title") || "") + (played ? " ✓" : "") + " — " + url;
+      });
+      const text = ["My dailies for " + day + ":"].concat(lines).join("\\n");
+      const fallbackCopy = () => {
+        const area = document.createElement("textarea");
+        area.value = text;
+        area.setAttribute("readonly", "");
+        area.style.position = "fixed";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        area.setSelectionRange(0, text.length);
+        let ok = false;
+        try { ok = document.execCommand("copy"); } catch {}
+        area.remove();
+        return ok;
+      };
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } catch {
+        ok = fallbackCopy();
+      }
+      if (ok) window.appToast?.("Copied");
+      else window.appToast?.("Could not copy. Try again.", "error");
+    });
 
     // Play history: 12 week columns (Monday on top) ending with this week.
     const heat = document.getElementById("play-heatmap");
@@ -10499,12 +10549,21 @@ const GAME_ACTIONS_SCRIPT = `
         : "No votes yet. Played it? Vote above.";
     };
     // One subtle pulse on an element whose value just changed (see .count-bump in layout()).
+    const bumpTimers = new WeakMap();
     const bump = (el, tone) => {
       el.classList.remove("count-bump", "count-up", "count-down");
       void el.offsetWidth;
       el.classList.add("count-bump");
       if (tone) el.classList.add(tone);
-      el.addEventListener("animationend", () => el.classList.remove("count-bump", "count-up", "count-down"), { once: true });
+      // Clears on animationend, or after the 0.7s animation's time if it never fires (reduced motion, see layout()).
+      const clear = () => {
+        window.clearTimeout(bumpTimers.get(el));
+        bumpTimers.delete(el);
+        el.classList.remove("count-bump", "count-up", "count-down");
+      };
+      window.clearTimeout(bumpTimers.get(el));
+      bumpTimers.set(el, window.setTimeout(clear, 800));
+      el.addEventListener("animationend", clear, { once: true });
     };
     // A game's card or row ([data-game-row]) or the game page ([data-vote-counts]).
     const voteContainer = (node) => (node instanceof Element ? node.closest("[data-game-row], [data-vote-counts]") : null);
@@ -11246,9 +11305,6 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         25% { transform: scale(1.3); color: var(--bump-color, var(--brand-blue)); }
         100% { transform: scale(1); color: inherit; }
       }
-      @media (prefers-reduced-motion: reduce) {
-        @keyframes count-bump { 0%, 100% { color: inherit; } 25% { color: var(--bump-color, var(--brand-blue)); } }
-      }
       .game-row .compact-actions { display: flex; gap: 0.3rem; align-items: center; flex-shrink: 0; }
       .btn-details {
         display: inline-flex;
@@ -11716,6 +11772,16 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         .pagination a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 0.5rem; }
         .btn { min-height: 44px; }
         .rotation-list .item-main .category-pill, .suggest-main .category-pill { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+      }
+      /* Reduced motion: animations and transitions end at once. Their end events still fire, and the timers in the
+         scripts don't depend on them, so hidden cards and removed rows still go. */
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+          scroll-behavior: auto !important;
+        }
       }
     </style>
   </head>

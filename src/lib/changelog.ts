@@ -4,6 +4,14 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-10-31",
+    items: [
+      "Animations are switched off when your device asks for reduced motion.",
+      "Public profiles show the curated lists their owner has made, with game counts and verified checks.",
+      "Copy as text on your rotation copies today's games as a plain list for Discord, with a check on the ones you've played.",
+    ]
+  },
+  {
     date: "2026-10-30",
     items: [
       "Game pages show a Players also play section with games that often share a rotation with it.",
