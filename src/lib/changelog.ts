@@ -6,7 +6,6 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-10-30",
     items: [
-      "Streamers can mark games as played on a list: tap a row in stream mode (or press its number key), or use Mark played in the normal view. Everyone sees a Played on stream check, and stream mode and the overlay show how many are done today.",
       "Games added to a list in the last week get a New here pill.",
       "Lists have a panel badge for Twitch panels and socials. Copy the snippet from Stream settings.",
       "Search finds games even with a typo, and suggests what you might have meant.",

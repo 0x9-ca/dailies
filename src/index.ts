@@ -1427,15 +1427,15 @@ app.get("/games/:slug", async (c) => {
   // The reset the "Mark as played" toggle checks against (same as dglIsPlayed; none = since local midnight).
   const playReset = getResetSortData(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
-    <main class="narrow" data-vote-counts="${escapeHtml(game.id)}">
+    <main class="narrow" data-vote-counts="${escapeHtml(game.id)}" data-game-title="${escapeHtml(game.title)}">
       <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
       ${renderCategoryPills(categories.results)}
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
       <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
-        <button type="button" id="vote-up" class="${userVote === 1 ? "active" : ""}" title="Vote up"><span class="visually-hidden">Vote up, </span>▲ <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
-        <button type="button" id="vote-down" class="${userVote === -1 ? "active" : ""}" title="Vote down"><span class="visually-hidden">Vote down, </span>▼ <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
+        <button type="button" id="vote-up" data-vote-button="up" class="${userVote === 1 ? "active" : ""}" aria-pressed="${userVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", game.title, game.vote_up_count))}" title="Vote up"><span aria-hidden="true">▲</span> <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
+        <button type="button" id="vote-down" data-vote-button="down" class="${userVote === -1 ? "active" : ""}" aria-pressed="${userVote === -1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("down", game.title, game.vote_down_count))}" title="Vote down"><span aria-hidden="true">▼</span> <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
         ${user
           ? `<button type="button" id="favorite-toggle" data-favorited="${userFavorite ? "yes" : "no"}">${userFavorite ? "Remove favorite" : "Add favorite"}</button>`
           : `<button type="button" id="favorite-local-toggle" data-favorited="no">Add favorite</button>`}
@@ -1567,6 +1567,8 @@ app.get("/games/:slug", async (c) => {
             const setVoteState = (value) => {
               voteButtons.up?.classList.toggle("active", value === 1);
               voteButtons.down?.classList.toggle("active", value === -1);
+              voteButtons.up?.setAttribute("aria-pressed", value === 1 ? "true" : "false");
+              voteButtons.down?.setAttribute("aria-pressed", value === -1 ? "true" : "false");
             };
 
             const submitVote = async (value) => {
@@ -3192,6 +3194,9 @@ app.get("/lists/:slug", async (c) => {
   const canSetVisibility = isStaff || isCreatorOwner;
   // Everyone who can edit views the list normally and opts in to edit mode with ?edit=1.
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
+  // Played on stream: admins always; everyone once the site setting is on. Editors mark games when it applies to them.
+  const showPlayed = !isAdminEditor && (await playedOnStreamFor(c.env, user));
+  const canMarkPlayed = showPlayed && canEdit;
   const items = await c.env.DB.prepare(
     `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone,
             games.vote_up_count, games.vote_down_count, curated_list_items.position,
@@ -3365,7 +3370,7 @@ app.get("/lists/:slug", async (c) => {
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
-      ${isAdminEditor ? "" : `<p class="played-count" id="played-count" hidden></p>`}
+      ${showPlayed ? `<p class="played-count" id="played-count" hidden></p>` : ""}
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <div class="list-head-actions" id="head-actions">
         <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
@@ -3447,14 +3452,14 @@ app.get("/lists/:slug", async (c) => {
       </div>
       <div class="list-main">`}
       ${isAdminEditor ? "" : `<div class="list-bar"><h2 class="list-bar-title">Games <span class="tab-count" id="list-count" data-list-count>${items.results.length}</span></h2><div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div></div>`}
-      <ol class="rotation-list" id="list-items"${canEdit && !isAdminEditor ? ` data-can-mark-played data-list-id="${escapeHtml(list.id)}"` : ""}>
+      <ol class="rotation-list" id="list-items"${canMarkPlayed ? ` data-can-mark-played data-list-id="${escapeHtml(list.id)}"` : ""}>
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
           const currentFavorite = userFavorites.has(item.id);
-          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `data-last-played-at="${escapeHtml(item.last_played_at || "")}" data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
+          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `${showPlayed ? `data-last-played-at="${escapeHtml(item.last_played_at || "")}" ` : ""}data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
-            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}${isNewlyListed(item.added_at) ? renderNewHereBadge() : ""}${isAdminEditor ? "" : `<span class="played-pill" hidden><span class="pp-check" aria-hidden="true">✓</span><span class="pp-text"> Played on stream</span></span>`}</a>
+            <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}${isNewlyListed(item.added_at) ? renderNewHereBadge() : ""}${showPlayed ? `<span class="played-pill" hidden><span class="pp-check" aria-hidden="true">✓</span><span class="pp-text"> Played on stream</span></span>` : ""}</a>
             ${renderCategoryPills(categoriesByGameId.get(item.id), developersByGameId.get(item.id))}
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
@@ -3462,8 +3467,8 @@ app.get("/lists/:slug", async (c) => {
           </div>
           <div class="card-actions">
             ${isAdminEditor ? "" : `
-              <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${item.vote_up_count}</span></button>
-              <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}" title="Vote down">▼ <span data-down-count>${item.vote_down_count}</span></button>
+              <button type="button" data-list-vote="up" data-vote-button="up" class="${currentVote === 1 ? "active" : ""}" aria-pressed="${currentVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", item.title, item.vote_up_count))}" title="Vote up"><span aria-hidden="true">▲</span> <span data-up-count>${item.vote_up_count}</span></button>
+              <button type="button" data-list-vote="down" data-vote-button="down" class="${currentVote === -1 ? "active" : ""}" aria-pressed="${currentVote === -1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("down", item.title, item.vote_down_count))}" title="Vote down"><span aria-hidden="true">▼</span> <span data-down-count>${item.vote_down_count}</span></button>
               ${user
                 ? `<button type="button" data-list-favorite="${currentFavorite ? "yes" : "no"}">${currentFavorite ? "★" : "☆"}</button>`
                 : `<button type="button" data-local-favorite="no">☆</button>`}
@@ -3474,7 +3479,7 @@ app.get("/lists/:slug", async (c) => {
                 <button type="button" data-move="down">↓</button>
               </div>
             ` : ""}
-            ${canEdit && !isAdminEditor ? `<button type="button" class="list-played-btn" data-played-toggle-list aria-pressed="false" hidden>Mark played</button>` : ""}
+            ${canMarkPlayed ? `<button type="button" class="list-played-btn" data-played-toggle-list aria-pressed="false" hidden>Mark played</button>` : ""}
             ${renderDetailsLink(item.slug, item.title)}
             ${isAdminEditor ? `<button type="button" class="list-remove-game" data-game-id="${item.id}">X</button>` : ""}
           </div>
@@ -3495,8 +3500,8 @@ app.get("/lists/:slug", async (c) => {
         ${fandleSection}
       </aside></div>`}
       ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions)}
-      ${isAdminEditor ? "" : renderStreamSettings(canEdit, list.visibility === "public" ? { slug: list.slug, title: list.title, appUrl: c.env.APP_URL.replace(/\/$/, ""), shortUrl: (shortOrigin(c.env) ?? c.env.APP_URL).replace(/\/$/, "") } : null)}
-      ${isAdminEditor ? "" : renderOverlayPanel(list.title, suggestionsOn, suggestions)}
+      ${isAdminEditor ? "" : renderStreamSettings(canMarkPlayed, list.visibility === "public" ? { slug: list.slug, title: list.title, appUrl: c.env.APP_URL.replace(/\/$/, ""), shortUrl: (shortOrigin(c.env) ?? c.env.APP_URL).replace(/\/$/, "") } : null)}
+      ${isAdminEditor ? "" : renderOverlayPanel(list.title, suggestionsOn, suggestions, showPlayed)}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
     <script>${LIST_PAGE_SCRIPT}</script>
@@ -3950,6 +3955,8 @@ app.get("/lists/:slug", async (c) => {
             const ids = apiItems.map((item) => item.id);
             // Played-on-stream marks: patch the rows' data-last-played-at in place (skipped while this page is saving one).
             const patchPlayed = () => {
+              // Without Played on stream the API has no lastPlayedAt, and the rows get no marks.
+              if (!apiItems.some((item) => "lastPlayedAt" in item)) return;
               if (window.dglPlayedBusy && window.dglPlayedBusy()) return;
               const marks = new Map(apiItems.map((item) => [item.id, item.lastPlayedAt || ""]));
               let changed = false;
@@ -4974,6 +4981,26 @@ async function getFandleLimits(env: Env): Promise<{ perDeveloper: number | null;
   };
 }
 
+/** Played on stream: "on" shows it to everyone, "off" (the default) to admins only. */
+const PLAYED_SETTING = "played_on_stream";
+const PLAYED_SETTING_CACHE_KEY = "settings:played_on_stream:v1";
+// An hour: the key is rewritten on every change, so this only bounds reads of a missing key (KV writes are metered).
+const PLAYED_SETTING_CACHE_SECONDS = 3600;
+
+async function getPlayedOnStreamSetting(env: Env): Promise<boolean> {
+  const cached = await getCachedJson<{ on: boolean }>(env, PLAYED_SETTING_CACHE_KEY);
+  if (cached) return cached.on;
+  const on = (await getSiteSettings(env, [PLAYED_SETTING])).get(PLAYED_SETTING) === "on";
+  await setCachedJson(env, PLAYED_SETTING_CACHE_KEY, { on }, PLAYED_SETTING_CACHE_SECONDS);
+  return on;
+}
+
+/** Whether Played on stream applies to this request: the setting is on, or the viewer is an admin. */
+async function playedOnStreamFor(env: Env, user: AppUser | null): Promise<boolean> {
+  if (user?.role === "admin") return true;
+  return getPlayedOnStreamSetting(env);
+}
+
 app.get("/admin/stats", async (c) => {
   const auth = requireRole(c, ["admin"]);
   if (auth instanceof Response) {
@@ -5092,13 +5119,19 @@ app.get("/admin/settings", async (c) => {
     return auth;
   }
   const limits = await getFandleLimits(c.env);
+  const playedOn = await getPlayedOnStreamSetting(c.env);
   return c.html(await layout("Settings", auth, `
     <main class="narrow">
       <h1>Site settings</h1>
-      <section class="panel">
-        <h2>Fan-dles limits</h2>
-        <p>How many community games a streamer's Fan-dles section shows, and how long a Twitch check counts. Leave a box empty for no limit. Games are picked best-scoring first. With no total set, at most ${FANDLE_HARD_MAX_SHOWN} are shown.</p>
-        <form id="settings-form" class="stack-form">
+      <form id="settings-form" class="stack-form">
+        <section class="panel">
+          <h2>Played on stream</h2>
+          <label class="check"><input type="checkbox" name="playedOnStream" id="played-on-stream"${playedOn ? " checked" : ""} /> Played on stream: Off (admins only) / On (everyone)</label>
+          <p class="muted" id="played-on-stream-note">${playedOn ? "On: everyone sees and uses Played on stream on lists." : "Off: only admins see and use it on lists."}</p>
+        </section>
+        <section class="panel">
+          <h2>Fan-dles limits</h2>
+          <p>How many community games a streamer's Fan-dles section shows, and how long a Twitch check counts. Leave a box empty for no limit. Games are picked best-scoring first. With no total set, at most ${FANDLE_HARD_MAX_SHOWN} are shown.</p>
           <label>Most games per developer <small>(empty = no limit)</small>
             <input type="number" name="perDeveloper" min="1" max="${FANDLE_SETTING_LIMIT_MAX}" inputmode="numeric" value="${limits.perDeveloper ?? ""}" />
           </label>
@@ -5108,13 +5141,18 @@ app.get("/admin/settings", async (c) => {
           <label>Check again after (days) <small>(empty = a check never runs out; the developer can still leave)</small>
             <input type="number" name="membershipDays" min="1" max="3650" inputmode="numeric" value="${limits.membershipDays ?? ""}" />
           </label>
-          <button type="submit" class="btn">Save</button>
-        </form>
-        <p id="settings-status" class="status" aria-live="polite"></p>
-      </section>
+        </section>
+        <button type="submit" class="btn">Save</button>
+      </form>
+      <p id="settings-status" class="status" aria-live="polite"></p>
     </main>
     <script>
       const settingsForm = document.getElementById("settings-form");
+      const playedCheck = document.getElementById("played-on-stream");
+      const playedNote = document.getElementById("played-on-stream-note");
+      playedCheck?.addEventListener("change", () => {
+        playedNote.textContent = playedCheck.checked ? "On: everyone sees and uses Played on stream on lists." : "Off: only admins see and use it on lists.";
+      });
       settingsForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
         const data = new FormData(settingsForm);
@@ -5124,7 +5162,7 @@ app.get("/admin/settings", async (c) => {
         const res = await fetch("/api/admin/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fandleMaxPerDeveloper: num("perDeveloper"), fandleMaxShown: num("shown"), fandleMembershipDays: num("membershipDays") })
+          body: JSON.stringify({ fandleMaxPerDeveloper: num("perDeveloper"), fandleMaxShown: num("shown"), fandleMembershipDays: num("membershipDays"), playedOnStream: playedCheck.checked ? "on" : "off" })
         });
         const body = await res.json().catch(() => ({}));
         statusNode.textContent = res.ok ? "Saved." : body.error || "Could not save.";
@@ -5137,7 +5175,9 @@ app.get("/admin/settings", async (c) => {
 const siteSettingsSchema = z.object({
   fandleMaxPerDeveloper: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable(),
   fandleMaxShown: z.number().int().min(1).max(FANDLE_SETTING_LIMIT_MAX).nullable(),
-  fandleMembershipDays: z.number().int().min(1).max(3650).nullable()
+  fandleMembershipDays: z.number().int().min(1).max(3650).nullable(),
+  /** Optional, so the Fan-dles fields can be saved without it. */
+  playedOnStream: z.enum(["on", "off"]).optional()
 });
 
 app.put("/api/admin/settings", async (c) => {
@@ -5154,17 +5194,28 @@ app.put("/api/admin/settings", async (c) => {
     [FANDLE_SETTING_MAX_SHOWN, parsed.data.fandleMaxShown],
     [FANDLE_SETTING_MEMBERSHIP_DAYS, parsed.data.fandleMembershipDays]
   ];
-  await c.env.DB.batch(
-    entries.map(([key, value]) =>
-      value === null
-        ? c.env.DB.prepare("DELETE FROM site_settings WHERE key = ?1").bind(key)
-        : c.env.DB.prepare(
-            `INSERT INTO site_settings (key, value, updated_by_user_id, updated_at) VALUES (?1, ?2, ?3, datetime('now'))
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by_user_id = excluded.updated_by_user_id, updated_at = excluded.updated_at`
-          ).bind(key, String(value), auth.id)
-    )
+  const upsert = (key: string, value: string) =>
+    c.env.DB.prepare(
+      `INSERT INTO site_settings (key, value, updated_by_user_id, updated_at) VALUES (?1, ?2, ?3, datetime('now'))
+       ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by_user_id = excluded.updated_by_user_id, updated_at = excluded.updated_at`
+    ).bind(key, value, auth.id);
+  const statements = entries.map(([key, value]) =>
+    value === null
+      ? c.env.DB.prepare("DELETE FROM site_settings WHERE key = ?1").bind(key)
+      : upsert(key, String(value))
   );
-  await writeAudit(c.env, auth.id, "settings", "site", "update_settings", Object.fromEntries(entries));
+  const playedBefore = await getPlayedOnStreamSetting(c.env);
+  const playedValue = parsed.data.playedOnStream;
+  if (playedValue) statements.push(upsert(PLAYED_SETTING, playedValue));
+  await c.env.DB.batch(statements);
+  const audit: Record<string, unknown> = Object.fromEntries(entries);
+  if (playedValue) {
+    audit[PLAYED_SETTING] = playedValue;
+    // Rewrite the KV copy first (so reads see the new value), then drop the cached list pages built with the old one.
+    await setCachedJson(c.env, PLAYED_SETTING_CACHE_KEY, { on: playedValue === "on" }, PLAYED_SETTING_CACHE_SECONDS);
+    if ((playedValue === "on") !== playedBefore) await purgeAllListPageCaches(c);
+  }
+  await writeAudit(c.env, auth.id, "settings", "site", "update_settings", audit);
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -7321,8 +7372,10 @@ app.get("/api/lists/:slug", async (c) => {
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId: await getUserTwitchId(c.env, user) })) {
     return c.json({ error: "Not found" }, 404);
   }
+  // lastPlayedAt only when Played on stream applies to this request (the same rule as the list page's data attributes).
+  const playedOn = await playedOnStreamFor(c.env, user);
   const items = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, curated_list_items.position, curated_list_items.last_played_at AS lastPlayedAt
+    `SELECT games.id, games.slug, games.title, curated_list_items.position${playedOn ? ", curated_list_items.last_played_at AS lastPlayedAt" : ""}
      FROM curated_list_items
      JOIN games ON games.id = curated_list_items.game_id
      WHERE curated_list_items.curated_list_id = ?1
@@ -7737,6 +7790,9 @@ async function blockListGame(env: Env, listId: string, gameId: string, reason: "
 // Marks a game on a list as played on stream (now) or clears it. Not in the mod log: it happens during every stream.
 app.put("/api/lists/:id/items/:gameId/played", async (c) => {
   const listId = c.req.param("id");
+  if (!(await playedOnStreamFor(c.env, c.get("user")))) {
+    return c.json({ error: "Played on stream is off for everyone but admins.", code: "disabled" }, 403);
+  }
   const auth = await requireListEditor(c, listId);
   if (auth instanceof Response) {
     return auth;
@@ -7761,6 +7817,17 @@ async function purgeListPageCache(c: Context<{ Bindings: Env; Variables: AppVari
   const row = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE id = ?1").bind(listId).first<{ slug: string }>();
   for (const path of [row ? `/lists/${row.slug}` : null, "/lists"]) {
     if (!path) continue;
+    const url = new URL(path, c.req.url);
+    url.searchParams.set("__v", appVersion(c.env));
+    c.executionCtx.waitUntil(caches.default.delete(new Request(url.toString())));
+  }
+}
+
+/** purgeListPageCache for every public list, for site-wide changes (Played on stream). Only the bare list URLs are keyed. */
+async function purgeAllListPageCaches(c: Context<{ Bindings: Env; Variables: AppVariables }>): Promise<void> {
+  if (isDevEnv(c.env)) return;
+  const rows = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE visibility = 'public'").all<{ slug: string }>();
+  for (const path of ["/lists", ...rows.results.map((row) => `/lists/${row.slug}`)]) {
     const url = new URL(path, c.req.url);
     url.searchParams.set("__v", appVersion(c.env));
     c.executionCtx.waitUntil(caches.default.delete(new Request(url.toString())));
@@ -9521,8 +9588,8 @@ function renderCompactGameList(
                 ${game.nsfw ? `<span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}
               </div>
               <div class="compact-actions">
-                ${showVotes ? `                <button type="button" data-list-vote="up" class="${currentVote === 1 ? "active" : ""}" title="Vote up">▲ <span data-up-count>${game.voteUpCount}</span></button>
-                <button type="button" data-list-vote="down" class="${currentVote === -1 ? "active" : ""}" title="Vote down">▼ <span data-down-count>${game.voteDownCount}</span></button>
+                ${showVotes ? `                <button type="button" data-list-vote="up" data-vote-button="up" class="${currentVote === 1 ? "active" : ""}" aria-pressed="${currentVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", game.title, game.voteUpCount))}" title="Vote up"><span aria-hidden="true">▲</span> <span data-up-count>${game.voteUpCount}</span></button>
+                <button type="button" data-list-vote="down" data-vote-button="down" class="${currentVote === -1 ? "active" : ""}" aria-pressed="${currentVote === -1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("down", game.title, game.voteDownCount))}" title="Vote down"><span aria-hidden="true">▼</span> <span data-down-count>${game.voteDownCount}</span></button>
                 ` : ""}
                 ${opts.extraActions ? opts.extraActions(game) : ""}
                 ${
@@ -9606,6 +9673,8 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
         const setVoteState = (value) => {
           upButton?.classList.toggle("active", value === 1);
           downButton?.classList.toggle("active", value === -1);
+          upButton?.setAttribute("aria-pressed", value === 1 ? "true" : "false");
+          downButton?.setAttribute("aria-pressed", value === -1 ? "true" : "false");
         };
 
         const submitVote = async (value) => {
@@ -10102,6 +10171,12 @@ function renderResetItemData(
     label: getResetMetaLabel(basis, minutes, timeZone),
     span: renderResetSpan(basis, minutes, timeZone)
   };
+}
+
+/** Accessible name of a vote button. Keep in step with voteLabels in GAME_ACTIONS_SCRIPT. */
+function voteButtonLabel(direction: "up" | "down", title: string, count: number): string {
+  const noun = direction === "up" ? "upvote" : "downvote";
+  return `${direction === "up" ? "Upvote" : "Downvote"} ${title} (${count} ${count === 1 ? noun : `${noun}s`})`;
 }
 
 /**
@@ -10865,8 +10940,19 @@ const GAME_ACTIONS_SCRIPT = `
     };
     // A game's card or row ([data-game-row]) or the game page ([data-vote-counts]).
     const voteContainer = (node) => (node instanceof Element ? node.closest("[data-game-row], [data-vote-counts]") : null);
+    // Accessible names for the vote buttons ("Upvote <title> (12 upvotes)"). Same wording as voteButtonLabel() on the server.
+    const voteLabels = (container, up, down) => {
+      const title = container.getAttribute("data-game-title");
+      if (!title) return;
+      container.querySelectorAll("[data-vote-button]").forEach((button) => {
+        const isUp = button.getAttribute("data-vote-button") === "up";
+        const count = isUp ? up : down;
+        button.setAttribute("aria-label", (isUp ? "Upvote " : "Downvote ") + title + " (" + count + " " + (isUp ? "upvote" : "downvote") + (count === 1 ? "" : "s") + ")");
+      });
+    };
     // Shows up/down counts in one container (the counts, "% liked" and rating text), pulsing whatever changed.
     const showCounts = (container, up, down) => {
+      voteLabels(container, up, down);
       const upNode = container.querySelector("[data-up-count]");
       const downNode = container.querySelector("[data-down-count]");
       if (upNode && upNode.textContent !== String(up)) { upNode.textContent = String(up); bump(upNode, "count-up"); }
@@ -11160,10 +11246,10 @@ function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, sug
 
 // OBS overlay (?view=overlay): a compact panel over a transparent page. The address is copied from the stream bar by
 // the list script, so it always matches; the suggestions are filled in by the suggestions script.
-function renderOverlayPanel(title: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
+function renderOverlayPanel(title: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>, showPlayed: boolean): string {
   return `<div class="overlay-panel" id="overlay-panel">
     <p class="ov-title">${escapeHtml(title)}</p>
-    <p class="ov-played" id="ov-played" hidden></p>
+    ${showPlayed ? `<p class="ov-played" id="ov-played" hidden></p>` : ""}
     <p class="ov-cta"><span id="ov-label">${suggestionsOn ? "Suggest a game: " : ""}</span><strong id="ov-addr"></strong></p>
     ${suggestionsOn ? `<ol class="ov-top" id="ov-top" aria-label="Top suggestions">${suggestions.slice(0, 5).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
     <p class="ov-new" id="ov-new" role="status" hidden></p>
@@ -11811,6 +11897,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-nsfw: #f87171;
         --badge-new: #7dd3fc;
         --played-ok: #4ade80;
+        /* Played cards: a slightly darker card, title in --muted (about 8:1 on it). */
+        --played-bg: #171717;
         --warn: #fbbf24;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
@@ -11834,6 +11922,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --stream-accent: #38bdf8;
         --stream-reset: #fde047;
         --stream-bar: #111111;
+        /* Stream mode: played rows' text (about 6:1 on --stream-row). */
+        --stream-done: #8f8f8f;
       }
       html[data-theme="light"] {
         color-scheme: light;
@@ -11860,6 +11950,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-nsfw: #b91c1c;
         --badge-new: #0369a1;
         --played-ok: #166534;
+        --played-bg: #ececf0;
         --warn: #92400e;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
@@ -11877,6 +11968,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --stream-accent: #005a94;
         --stream-reset: #8a1c00;
         --stream-bar: #eeeef2;
+        --stream-done: #6b6b6b;
       }
       * { box-sizing: border-box; }
       /* Elements toggled with the hidden attribute stay hidden even when a rule gives them a display value. */
@@ -12002,9 +12094,11 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       li.reset-bar::after { content: ""; position: absolute; left: 10px; bottom: 4px; height: 3px; width: calc((100% - 20px) * var(--reset-left, 0)); border-radius: 2px; background: var(--reset-bar); opacity: 0.85; pointer-events: none; }
       /* Under two hours to the reset and not played yet: the bar turns red. */
       li.reset-bar.reset-soon::after { background: var(--reset-bar-soon); }
-      /* Played since the last reset (this browser): faded, back to full on hover or focus. */
-      li.played { opacity: 0.6; transition: opacity 0.15s ease; }
-      li.played:hover, li.played:focus-within { opacity: 0.85; }
+      /* Played since the last reset (this browser): a muted card and a dimmer title, both at AA contrast in each theme.
+         Not whole-card opacity, which pushed the small text below 4.5:1. Back to full title colour on hover or focus. */
+      html:not(.dgl-stream) li.played { background: var(--played-bg); transition: background-color 0.15s ease; }
+      html:not(.dgl-stream) li.played .game-title { color: var(--muted); transition: color 0.15s ease; }
+      html:not(.dgl-stream) li.played:hover .game-title, html:not(.dgl-stream) li.played:focus-within .game-title { color: var(--title-ink); }
       .twitch-watch { text-align: center; }
       .btn:hover { background: var(--primary-strong); }
       .btn-twitch { gap: 0.5rem; background: #9146FF; border-color: #9146FF; color: #fff; }
@@ -12386,9 +12480,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       html.dgl-stream .rotation-list li { counter-increment: stream-row; gap: 0.5em; padding: 0.3em 0.7em; border: max(1.5px, 0.09em) solid var(--stream-sep); border-radius: 0.42em; background: var(--stream-row); box-shadow: none; }
       html.dgl-stream .rotation-list li::before { content: counter(stream-row); flex: none; min-width: 2.2ch; font-size: 0.9em; font-weight: 800; line-height: 1; color: var(--stream-accent); font-variant-numeric: tabular-nums; text-align: center; }
       html.dgl-stream .rotation-list li.card-click:hover { background: var(--stream-row); border-color: var(--stream-sep); box-shadow: none; }
-      html.dgl-stream .rotation-list li.played { opacity: 1; }
       html.dgl-stream .played-count { display: inline-block; align-self: center; padding: 0.15em 0.7em; border: max(1.5px, 0.09em) solid var(--played-ok); border-radius: 999px; color: var(--played-ok); font-size: clamp(1.1rem, min(1.8vw, 3vh), 1.8rem); }
-      html.dgl-stream .rotation-list li.stream-played .title-text, html.dgl-stream .rotation-list li.stream-played .item-main .meta { opacity: 0.4; }
+      html.dgl-stream .rotation-list li.stream-played .title-text, html.dgl-stream .rotation-list li.stream-played .item-main .meta { color: var(--stream-done); }
       html.dgl-stream .rotation-list li.stream-played { border-color: var(--played-ok); }
       html.dgl-stream .rotation-list li.stream-played .played-pill { margin: 0 0 0 0.35em; padding: 0; border: 0; font-size: 1.3em; line-height: 1; color: var(--played-ok); }
       html.dgl-stream .rotation-list li.stream-played .pp-text { display: none; }

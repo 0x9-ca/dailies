@@ -12,7 +12,7 @@
 - `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
 - `GET /api/categories`
 - `GET /api/lists`
-- `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream)
+- `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
 - `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, url, paywall, nsfw, categories: [{ slug, name, hue }], votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
@@ -73,7 +73,7 @@
 
 ## Editor/Admin
 
-- `PUT /api/admin/settings` (admin only: `{ fandleMaxPerDeveloper, fandleMaxShown, fandleMembershipDays }`: games 1-100, days 1-3650, each `null` for no limit)
+- `PUT /api/admin/settings` (admin only: `{ fandleMaxPerDeveloper, fandleMaxShown, fandleMembershipDays }`: games 1-100, days 1-3650, each `null` for no limit; optional `playedOnStream: "on" | "off"` (Played on stream for everyone, or admins only). A change purges the cached list pages)
 - `POST /api/admin/creators/twitch` (admin only; `{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:twitchUserId` removes them)
 - `POST /api/admin/users/:id/creator` (admin only; `{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)
 - `POST /api/admin/claims/:claimId` (`{ action: "approve" | "reject" | "revoke" }`; approve verifies a manual claim)
@@ -100,7 +100,7 @@
 - `DELETE /api/lists/:id`
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
-- `PUT /api/lists/:id/items/:gameId/played` (`{ played: boolean }`; the list's editors, same as the item routes. Sets or clears `last_played_at`; returns `{ ok, lastPlayedAt }`; 404 when the game isn't on the list. Not in the mod log)
+- `PUT /api/lists/:id/items/:gameId/played` (`{ played: boolean }`; the list's editors, same as the item routes. Sets or clears `last_played_at`; returns `{ ok, lastPlayedAt }`; 404 when the game isn't on the list. Not in the mod log. Played on stream applies to a viewer when the site setting `played_on_stream` is `on` or they are an admin; otherwise 403 `code: "disabled"`)
 - `PATCH /api/lists/:id/items/reorder`
 - `POST /api/lists/:id/suggestions/:gameId/accept` (moves a suggestion to the end of the list)
 - `DELETE /api/lists/:id/suggestions/:gameId` (dismisses a suggestion; the game can't be suggested for that list again)
