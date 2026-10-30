@@ -9,6 +9,11 @@ export const CHANGELOG: ChangelogDay[] = [
       "Animations are switched off when your device asks for reduced motion.",
       "Public profiles show the curated lists their owner has made, with game counts and verified checks.",
       "Copy as text on your rotation copies today's games as a plain list for Discord, with a check on the ones you've played.",
+      "Creator list pages are tidier on wide screens: the list gets most of the room, with Fan-dles and Suggestions as tabs in one sidebar.",
+      "The sidebar collapses to a slim rail so the list can take the full width. Your choice is remembered on this device.",
+      "Suggestions show the top 5 with a Show all button, in shorter rows.",
+      "List headers are calmer: title, Twitch button and actions on one row, extra actions in a ... menu, and long descriptions fold behind More.",
+      "Stream mode makes a list big and easy to read on a stream: large numbered rows, reset countdowns, and the top suggestions with where to send them. Turn it on from the list header, or add ?view=stream to the address for an OBS browser source. Esc exits.",
     ]
   },
   {
