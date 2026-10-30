@@ -19,3 +19,14 @@ export async function invalidateGameCaches(env: Env): Promise<void> {
   const keys = await env.CACHE.list({ prefix: "games:" });
   await Promise.all(keys.keys.map((k) => env.CACHE.delete(k.name)));
 }
+
+/** Stores a JSON value for a given number of seconds (KV's minimum is 60). */
+export async function setCachedJsonFor(env: Env, key: string, value: unknown, ttlSeconds: number): Promise<void> {
+  await env.CACHE.put(key, JSON.stringify(value), { expirationTtl: Math.max(60, Math.ceil(ttlSeconds)) });
+}
+
+/** Seconds from `now` until the next UTC midnight. */
+export function secondsUntilNextUtcDay(now: number = Date.now()): number {
+  const nextMidnight = (Math.floor(now / 86_400_000) + 1) * 86_400_000;
+  return Math.ceil((nextMidnight - now) / 1000);
+}
