@@ -7,7 +7,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
-import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from "./lib/url";
+import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, setCachedJson } from "./lib/cache";
@@ -964,9 +964,11 @@ app.get("/games", async (c) => {
   const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", reset: "Resetting soonest" };
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
   if (activeCategory) crumbs.push([activeCategory.name, categoryPath]);
+  const categoryFeedPath = activeCategory ? `/feed.xml?category=${encodeURIComponent(activeCategory.slug)}` : "";
   return c.html(await layout(pageTitle, user, `
     <main>
       <h1>${escapeHtml(heading)}</h1>
+      ${activeCategory ? `<p class="feed-link"><a href="${escapeHtml(categoryFeedPath)}" type="application/atom+xml">Feed</a></p>` : ""}
       ${activeCategory ? `<p>${categoryDescription ? `${escapeHtml(categoryDescription)} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
       <form method="GET" action="/games" class="game-filters" id="game-filters">
         <div class="search-row">
@@ -1076,7 +1078,8 @@ app.get("/games", async (c) => {
       ? `${categoryDescription ? `${categoryDescription} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes.`
       : `Browse all ${totalGames} daily games: Wordle-style puzzles for words, geography, music, movies and more. Filter by category, sort by rating, trending or newest.`) + pageSuffix,
     jsonLd: [breadcrumbLd(crumbs), gameItemListLd(games, offset)],
-    noindex: !!q || hidePaywall || hideNsfw
+    noindex: !!q || hidePaywall || hideNsfw,
+    feed: activeCategory ? { href: categoryFeedPath, title: `New games in ${activeCategory.name} on 0x9 dles` } : undefined
   }));
 });
 
@@ -4034,11 +4037,29 @@ ${urls
 });
 
 // Atom feed of the newest approved games, same games and URLs as the sitemap (NSFW ones included, as there).
+// ?category=<slug> limits it to one active category (same games as /games?category=).
 app.get("/feed.xml", async (c) => {
   const base = c.env.APP_URL;
+  const categoryParam = c.req.query("category");
+  let category: { slug: string; name: string } | null = null;
+  if (categoryParam !== undefined) {
+    category = await c.env.DB.prepare("SELECT slug, name FROM categories WHERE slug = ?1 AND is_active = 1")
+      .bind(categoryParam)
+      .first<{ slug: string; name: string }>();
+    if (!category) {
+      return c.body(`<?xml version="1.0" encoding="UTF-8"?>\n<error>Unknown category</error>\n`, 404, { "Content-Type": "application/xml; charset=utf-8" });
+    }
+  }
+  const categoryFilter = category
+    ? " AND games.id IN (SELECT gc.game_id FROM game_categories gc JOIN categories cat ON cat.id = gc.category_id WHERE cat.slug = ?1)"
+    : "";
   const games = await c.env.DB.prepare(
-    "SELECT slug, title, description, COALESCE(approved_at, created_at) AS listed_at FROM games WHERE status = 'approved' ORDER BY COALESCE(approved_at, created_at) DESC LIMIT 50"
-  ).all<{ slug: string; title: string; description: string | null; listed_at: string }>();
+    `SELECT slug, title, description, COALESCE(approved_at, created_at) AS listed_at FROM games WHERE status = 'approved'${categoryFilter} ORDER BY COALESCE(approved_at, created_at) DESC LIMIT 50`
+  )
+    .bind(...(category ? [category.slug] : []))
+    .all<{ slug: string; title: string; description: string | null; listed_at: string }>();
+  const selfPath = category ? `/feed.xml?category=${encodeURIComponent(category.slug)}` : "/feed.xml";
+  const htmlPath = category ? `/games?category=${encodeURIComponent(category.slug)}` : "/games";
   const isoTime = (value: string) => new Date(utcMillis(value)).toISOString();
   const entries = games.results.map((game) => {
     const url = escapeHtml(`${base}/games/${encodeURIComponent(game.slug)}`);
@@ -4052,11 +4073,11 @@ app.get("/feed.xml", async (c) => {
   const updated = games.results[0] ? isoTime(games.results[0].listed_at) : new Date().toISOString();
   const body = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
-  <title>New games on 0x9 dles</title>
-  <subtitle>The newest daily games listed on 0x9 dles.</subtitle>
-  <id>${escapeHtml(base)}/feed.xml</id>
-  <link rel="self" type="application/atom+xml" href="${escapeHtml(base)}/feed.xml" />
-  <link rel="alternate" type="text/html" href="${escapeHtml(base)}/games" />
+  <title>${category ? xmlText(`New games in ${category.name} on 0x9 dles`) : "New games on 0x9 dles"}</title>
+  <subtitle>${category ? xmlText(`The newest ${category.name} daily games listed on 0x9 dles.`) : "The newest daily games listed on 0x9 dles."}</subtitle>
+  <id>${escapeHtml(base)}${escapeHtml(selfPath)}</id>
+  <link rel="self" type="application/atom+xml" href="${escapeHtml(base)}${escapeHtml(selfPath)}" />
+  <link rel="alternate" type="text/html" href="${escapeHtml(base)}${escapeHtml(htmlPath)}" />
   <updated>${updated}</updated>
   <author><name>0x9 dles</name></author>
 ${entries.join("\n")}
@@ -4265,6 +4286,35 @@ app.get("/admin", async (c) => {
   `, c.env));
 });
 
+// Possible duplicates of pending submissions: a game at the same host and path (urlLocationKey) or with the same
+// title (lowercase, letters and digits only). One query over every non-rejected game, compared in the Worker.
+type DuplicateCandidate = { id: string; title: string; slug: string; status: string };
+async function findPossibleDuplicates(env: Env, pending: Array<{ id: string; title: string; url: string }>): Promise<Map<string, DuplicateCandidate[]>> {
+  const found = new Map<string, DuplicateCandidate[]>();
+  if (pending.length === 0) return found;
+  const games = await env.DB.prepare("SELECT id, title, slug, url, status FROM games WHERE status != 'rejected'").all<DuplicateCandidate & { url: string }>();
+  const titleKey = (title: string) => title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+  const byLocation = new Map<string, DuplicateCandidate[]>();
+  const byTitle = new Map<string, DuplicateCandidate[]>();
+  const index = (map: Map<string, DuplicateCandidate[]>, key: string | null, game: DuplicateCandidate) => {
+    if (key) map.set(key, [...(map.get(key) ?? []), game]);
+  };
+  for (const game of games.results) {
+    index(byLocation, urlLocationKey(game.url), game);
+    index(byTitle, titleKey(game.title), game);
+  }
+  for (const row of pending) {
+    const location = urlLocationKey(row.url);
+    const title = titleKey(row.title);
+    const matches = new Map<string, DuplicateCandidate>();
+    for (const game of [...(location ? byLocation.get(location) ?? [] : []), ...(title ? byTitle.get(title) ?? [] : [])]) {
+      if (game.id !== row.id) matches.set(game.id, game);
+    }
+    if (matches.size > 0) found.set(row.id, [...matches.values()]);
+  }
+  return found;
+}
+
 app.get("/admin/submissions", async (c) => {
   const auth = requireRole(c, ["editor", "admin"]);
   if (auth instanceof Response) {
@@ -4292,6 +4342,7 @@ app.get("/admin/submissions", async (c) => {
       )
         .bind(status)
         .all<{ id: string; title: string; slug: string; url: string; description: string | null; status: string; moderation_note: string | null; how_to_play: string | null; created_at: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; paywall: number; nsfw: number }>();
+  const duplicates = status === "pending" ? await findPossibleDuplicates(c.env, rows.results) : new Map<string, DuplicateCandidate[]>();
 
   return c.html(await layout("Admin Submissions", auth, `
     <main>
@@ -4321,6 +4372,7 @@ app.get("/admin/submissions", async (c) => {
               ${row.how_to_play ? `<details><summary>How to play</summary><p style="white-space:pre-wrap">${escapeHtml(row.how_to_play)}</p></details>` : ""}
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
+              ${(duplicates.get(row.id) ?? []).map((match) => `<p class="duplicate-warning">Possible duplicate: <a href="/games/${escapeHtml(encodeURIComponent(match.slug))}">${escapeHtml(match.title)}</a> (${escapeHtml(match.status)})</p>`).join("")}
               ${(() => {
                 const resetLabel = getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
                 return resetLabel ? `<p>${escapeHtml(resetLabel)}</p>` : "";
@@ -10435,7 +10487,7 @@ function breadcrumbLd(items: Array<[string, string]>) {
   };
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string } }): Promise<string> {
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string } }): Promise<string> {
   const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
   const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
@@ -10488,6 +10540,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="alternate" type="application/atom+xml" title="New games on 0x9 dles" href="/feed.xml" />
+    ${opts?.feed ? `<link rel="alternate" type="application/atom+xml" title="${escapeHtml(opts.feed.title)}" href="${escapeHtml(opts.feed.href)}" />` : ""}
     <meta name="theme-color" content="#121212" />
     <meta name="apple-mobile-web-app-title" content="0x9 dles" />
     <meta name="app-version" content="${escapeHtml(appVersion(env))}" />
@@ -10547,6 +10600,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-paywall: #4ade80;
         --badge-nsfw: #f87171;
         --badge-new: #7dd3fc;
+        --warn: #fbbf24;
         --title-ink: #f2f2f2;
         --reset-bar: #7dd3fc;
         --reset-bar-soon: #f87171;
@@ -10578,6 +10632,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         --badge-paywall: #166534;
         --badge-nsfw: #b91c1c;
         --badge-new: #0369a1;
+        --warn: #92400e;
         --title-ink: #111114;
         --reset-bar: #0ea5e9;
         --reset-bar-soon: #dc2626;
@@ -10881,6 +10936,9 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
       .verified-badge { display:inline-flex; vertical-align:middle; margin-left:0.35rem; font-size:0.9em; }
       .paywall-badge { color: var(--badge-paywall); font-weight:700; margin-left:0.3rem; font-size:1em; }
       .nsfw-badge { color: var(--badge-nsfw); font-weight:700; margin-left:0.3rem; font-size:0.75em; font-variant:small-caps; letter-spacing:0.05em; }
+      .feed-link { margin: 0 0 0.5rem; font-size: 0.9em; }
+      @media (max-width: 700px) { .feed-link a { display: inline-flex; align-items: center; min-height: 44px; } }
+      .duplicate-warning { color: var(--warn); font-weight: 600; }
       .new-badge { display: inline-block; margin-left: 0.3rem; padding: 0 0.4em; border: 1px solid var(--badge-new); border-radius: 999px; color: var(--badge-new); font-size: 0.7em; font-weight: 700; line-height: 1.6; letter-spacing: 0.03em; vertical-align: middle; white-space: nowrap; }
       [data-share] { min-height: 44px; }
       .moderation-badge {

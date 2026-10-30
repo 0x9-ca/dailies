@@ -22,6 +22,18 @@ export function canonicalizeUrl(input: string): string {
   return url.toString();
 }
 
+// Host and path for duplicate checks: no scheme, query or fragment, no www. and no trailing slash. Null if unparsable.
+export function urlLocationKey(input: string): string | null {
+  try {
+    const url = new URL(input.trim());
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    const path = url.pathname.replace(/\/+$/, "");
+    return host ? `${host}${path}` : null;
+  } catch {
+    return null;
+  }
+}
+
 export function slugify(value: string): string {
   return value
     .toLowerCase()
