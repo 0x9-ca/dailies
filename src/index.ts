@@ -14,6 +14,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, secondsUntilNextUtcDay, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { fuzzyTitleMatch } from "./lib/search";
+import { RESET_SUGGESTION_DAILY_LIMIT, groupSuggestions, resetSuggestionSchema, type OpenSuggestionRow } from "./lib/reset-suggestions";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
@@ -809,7 +810,8 @@ const MOD_LOG_LABELS: Record<string, string> = {
   paywall_add: "Marked as paywalled",
   paywall_remove: "Paywall label removed",
   developer_verified: "Developer verified",
-  developer_removed: "Developer verification removed"
+  developer_removed: "Developer verification removed",
+  reset_update: "Reset time updated"
 };
 
 app.get("/mod-log", async (c) => {
@@ -1302,6 +1304,7 @@ app.get("/games/:slug", async (c) => {
         <button type="button" data-share data-share-title="${escapeHtml(game.title)}">Share</button>
       </div>
       ${renderGameMeta(game.vote_up_count, game.vote_down_count, renderResetSpan(game.reset_basis, game.reset_time_minutes, game.reset_timezone, "long")).replace('class="meta"', 'class="meta game-meta"')}
+      ${renderResetSuggest(game, user, ownClaim?.status === "verified")}
       <p class="game-actions-note">${user ? `Favorites are added to <a href="/me/rotation">your rotation</a>.` : `Favorites are added to <a href="/me/rotation">your rotation</a>, no account needed.`}${isAdminOrEditor ? ` Reports: ${game.report_count}.` : ""}</p>
       <p id="game-action-status" class="status" aria-live="polite"></p>
       ${gameFacts}
@@ -2796,6 +2799,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/submissions">Moderate submissions</a>
         <a class="panel" href="/admin/reports">Review reports</a>
         <a class="panel" href="/admin/claims">Developer claims</a>
+        <a class="panel" href="/admin/resets">Reset suggestions</a>
         ${auth.role === "admin" ? `<a class="panel" href="/admin/creators">Verified creators</a>
         <a class="panel" href="/admin/stats">Stats</a>
         <a class="panel" href="/admin/settings">Site settings</a>` : ""}
@@ -4841,6 +4845,167 @@ app.delete("/api/me/sessions/:id", async (c) => {
 const reportSchema = z.object({
   reason: z.enum(["broken", "not_daily", "spam", "other"]),
   note: z.string().max(400).optional()
+});
+
+// ---- Reset-time suggestions (migration 0036) ----
+
+app.post("/api/games/:id/reset-suggestion", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const gameId = c.req.param("id");
+  const parsed = resetSuggestionSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const minutes = parseResetTimeToMinutes(parsed.data.reset_time);
+  if (minutes === null) {
+    return c.json({ error: "Invalid reset time. Use HH:MM" }, 400);
+  }
+  const zone = normalizeResetTimeZone(parsed.data.reset_basis, parsed.data.reset_timezone === "UTC" ? null : parsed.data.reset_timezone);
+  if (!zone.ok) {
+    return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
+  }
+  const game = await c.env.DB.prepare("SELECT reset_basis, reset_time_minutes, reset_timezone FROM games WHERE id = ?1 AND status = 'approved'")
+    .bind(gameId)
+    .first<{ reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+  if (!game) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  if (game.reset_basis === parsed.data.reset_basis && game.reset_time_minutes === minutes && (game.reset_timezone === "UTC" ? null : game.reset_timezone) === zone.value) {
+    return c.json({ error: "That is already this game's reset time." }, 409);
+  }
+  // Staff and the game's verified developer set the reset directly.
+  if (auth.role === "admin" || auth.role === "editor" || (await getOwnClaim(c.env, gameId, auth.id))?.status === "verified") {
+    return c.json({ error: "You can edit this game's reset time directly." }, 403);
+  }
+  const rate = await enforceRateLimit(c.env, `reset-suggestion:${auth.id}`, RESET_SUGGESTION_DAILY_LIMIT, 24 * 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  // One open suggestion per user per game: a new one replaces the old.
+  await c.env.DB.prepare(
+    `INSERT INTO reset_suggestions (id, game_id, user_id, reset_basis, reset_time_minutes, reset_timezone, note)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+     ON CONFLICT (game_id, user_id) WHERE status = 'open'
+     DO UPDATE SET reset_basis = excluded.reset_basis, reset_time_minutes = excluded.reset_time_minutes,
+                   reset_timezone = excluded.reset_timezone, note = excluded.note, created_at = datetime('now')`
+  )
+    .bind(crypto.randomUUID(), gameId, auth.id, parsed.data.reset_basis, minutes, zone.value, parsed.data.note || null)
+    .run();
+  return c.json({ ok: true });
+});
+
+app.get("/admin/resets", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rows = await c.env.DB.prepare(
+    `SELECT s.id, s.game_id, s.user_id, s.reset_basis, s.reset_time_minutes, s.reset_timezone, s.note, s.created_at, users.display_name
+     FROM reset_suggestions s JOIN users ON users.id = s.user_id
+     WHERE s.status = 'open'
+     ORDER BY s.created_at DESC
+     LIMIT 1000`
+  ).all<OpenSuggestionRow>();
+  const groups = groupSuggestions(rows.results);
+  const gameIds = [...new Set(groups.map((group) => group.gameId))];
+  const games = new Map<string, { title: string; slug: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+  for (let i = 0; i < gameIds.length; i += 90) {
+    const chunk = gameIds.slice(i, i + 90);
+    const found = await c.env.DB.prepare(`SELECT id, title, slug, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE id IN (${chunk.map((_, n) => `?${n + 1}`).join(",")})`)
+      .bind(...chunk)
+      .all<{ id: string; title: string; slug: string; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+    for (const game of found.results) games.set(game.id, game);
+  }
+  return c.html(await layout("Reset suggestions", auth, `
+    <main>
+      <h1>Reset suggestions</h1>
+      <p>Reset times suggested by signed-in players. Identical suggestions from different people are grouped. Apply writes the game's reset and closes the matching suggestions.</p>
+      ${groups.length === 0 ? "<p>No open suggestions.</p>" : `<div class="stack">
+        ${groups.map((group) => {
+          const game = games.get(group.gameId);
+          if (!game) return "";
+          const current = describeReset(game.reset_basis, game.reset_time_minutes, game.reset_timezone) ?? "No reset time set.";
+          const suggested = describeReset(group.basis, group.minutes, group.timezone) ?? "";
+          const notes = group.rows.filter((row) => row.note);
+          return `<article class="panel" data-reset-suggestion-id="${escapeHtml(group.id)}">
+            <h2><a href="/games/${escapeHtml(game.slug)}">${escapeHtml(game.title)}</a> <small>(${group.rows.length} ${group.rows.length === 1 ? "suggestion" : "suggestions"})</small></h2>
+            <p><strong>Current:</strong> ${escapeHtml(current)}</p>
+            <p><strong>Suggested:</strong> ${escapeHtml(suggested)}</p>
+            ${notes.length > 0 ? `<ul>${notes.map((row) => `<li>${escapeHtml(row.note!)} <small>(${escapeHtml(row.display_name || "no name")})</small></li>`).join("")}</ul>` : ""}
+            <p><small>From ${group.rows.map((row) => escapeHtml(row.display_name || "(no name)")).join(", ")}</small></p>
+            <div class="actions">
+              <button type="button" data-reset-action="apply">Apply</button>
+              <button type="button" class="danger" data-reset-action="dismiss">Dismiss</button>
+            </div>
+          </article>`;
+        }).join("")}
+      </div>`}
+      <p id="resets-status" class="status" aria-live="polite"></p>
+    </main>
+    <script src="${ASSET.page_admin_resets}"></script>
+  `, c.env));
+});
+
+/** Closes a game's open suggestions identical to the given one. Returns the suggestion, or null when it isn't open. */
+async function resolveResetSuggestions(env: Env, suggestionId: string, actorId: string, status: "applied" | "dismissed") {
+  const suggestion = await env.DB.prepare(
+    "SELECT game_id, reset_basis, reset_time_minutes, reset_timezone FROM reset_suggestions WHERE id = ?1 AND status = 'open'"
+  ).bind(suggestionId).first<{ game_id: string; reset_basis: "local" | "server"; reset_time_minutes: number; reset_timezone: string | null }>();
+  if (!suggestion) return null;
+  const close = env.DB.prepare(
+    `UPDATE reset_suggestions SET status = ?1, resolved_at = datetime('now'), resolved_by = ?2
+     WHERE game_id = ?3 AND status = 'open' AND reset_basis = ?4 AND reset_time_minutes = ?5 AND COALESCE(reset_timezone, '') = COALESCE(?6, '')`
+  ).bind(status, actorId, suggestion.game_id, suggestion.reset_basis, suggestion.reset_time_minutes, suggestion.reset_timezone);
+  return { suggestion, close };
+}
+
+app.post("/api/admin/reset-suggestions/:id/apply", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const resolved = await resolveResetSuggestions(c.env, c.req.param("id"), auth.id, "applied");
+  if (!resolved) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const { suggestion, close } = resolved;
+  const game = await c.env.DB.prepare("SELECT title, slug, reset_basis, reset_time_minutes, reset_timezone FROM games WHERE id = ?1")
+    .bind(suggestion.game_id)
+    .first<{ title: string; slug: string; reset_basis: string | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+  if (!game) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE games SET reset_basis = ?1, reset_time_minutes = ?2, reset_timezone = ?3, updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?4"
+    ).bind(suggestion.reset_basis, suggestion.reset_time_minutes, suggestion.reset_timezone, suggestion.game_id),
+    close
+  ]);
+  await writeAudit(c.env, auth.id, "game", suggestion.game_id, "reset_update", {
+    title: game.title,
+    slug: game.slug,
+    via: "suggestion",
+    from: { basis: game.reset_basis, minutes: game.reset_time_minutes, timezone: game.reset_timezone },
+    to: { basis: suggestion.reset_basis, minutes: suggestion.reset_time_minutes, timezone: suggestion.reset_timezone }
+  });
+  await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
+});
+
+app.post("/api/admin/reset-suggestions/:id/dismiss", async (c) => {
+  const auth = requireRole(c, ["editor", "admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const resolved = await resolveResetSuggestions(c.env, c.req.param("id"), auth.id, "dismissed");
+  if (!resolved) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  await resolved.close.run();
+  return c.json({ ok: true });
 });
 
 app.post("/api/games/:id/report", async (c) => {
@@ -7393,6 +7558,45 @@ function renderTimeZoneField(inputName: string, value: string | null | undefined
   </label>`;
 }
 
+/**
+ * "Know the reset time?" link and its hidden form on the game page. Static markup (the same for every visitor, so
+ * edge-cache safe); the script decides client-side, via /api/me/session, whether to show the form or a sign-in link.
+ * Staff and the game's verified developer (signed in, so never cached) are pointed at the forms they can edit with.
+ */
+function renderResetSuggest(game: { slug: string; reset_basis: "local" | "server" | null }, user: AppUser | null, isVerifiedDeveloper: boolean): string {
+  const isStaff = !!user && (user.role === "admin" || user.role === "editor");
+  if (isVerifiedDeveloper || isStaff) {
+    return `<p class="game-actions-note">${isVerifiedDeveloper ? "You can set the reset time in the developer form below." : "Edit the reset time in the admin form below."}</p>`;
+  }
+  const loginHref = `/login?next=${encodeURIComponent(`/games/${game.slug}`)}`;
+  const shortlist = TIME_ZONE_SHORTLIST.map(([zone, label]) => `<option value="${escapeHtml(zone)}">${escapeHtml(label)}</option>`).join("");
+  return `<div class="reset-suggest">
+    <p class="game-actions-note"><a href="${escapeHtml(loginHref)}" data-reset-suggest-open>${game.reset_basis ? "Wrong reset time?" : "Know the reset time?"}</a></p>
+    <form class="panel stack-form" data-reset-suggest-form hidden>
+      <p data-reset-suggest-signin hidden><a href="${escapeHtml(loginHref)}">Sign in</a> to suggest a reset time.</p>
+      <div data-reset-suggest-fields>
+        <label>Resets at
+          <select name="reset_basis">
+            <option value="local">Midnight in the player's own time zone</option>
+            <option value="server">A fixed time for everyone</option>
+          </select>
+        </label>
+        <label>Time
+          <input type="time" name="reset_time" value="00:00" required />
+        </label>
+        <label data-rs-zone hidden>Time zone
+          <select name="reset_timezone"><optgroup label="Most common"><option value="">UTC</option>${shortlist}</optgroup></select>
+        </label>
+        <label>Note <small>(optional)</small>
+          <input type="text" name="note" maxlength="200" />
+        </label>
+        <button type="submit">Send suggestion</button>
+      </div>
+      <p class="status" data-reset-suggest-status aria-live="polite"></p>
+    </form>
+  </div>`;
+}
+
 /** The blue check used for verified Twitch curators and verified developers (static markup, safe to inject). */
 const CHECK_SVG = `<svg width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polygon points="12.00,1.80 15.14,4.42 19.21,4.79 19.58,8.86 22.20,12.00 19.58,15.14 19.21,19.21 15.14,19.58 12.00,22.20 8.86,19.58 4.79,19.21 4.42,15.14 1.80,12.00 4.42,8.86 4.79,4.79 8.86,4.42" fill="#1d9bf0" stroke="#1d9bf0" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 12.5l3.2 3.2L17 8.8" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
@@ -9796,6 +10000,7 @@ const ASSET = {
   page_list_live: registerAsset("list-live", "js", PAGE_SCRIPTS["list-live"]),
   page_list_edit: registerAsset("list-edit", "js", PAGE_SCRIPTS["list-edit"]),
   page_submit_reset_tz: registerAsset("submit-reset-tz", "js", PAGE_SCRIPTS["submit-reset-tz"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT)),
+  page_admin_resets: registerAsset("admin-resets", "js", PAGE_SCRIPTS["admin-resets"]),
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),

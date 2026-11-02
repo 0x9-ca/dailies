@@ -1465,6 +1465,92 @@ export const PAGE_SCRIPTS: Record<string, string> = {
               }
             });
 
+            (() => {
+              const link = document.querySelector("[data-reset-suggest-open]");
+              const form = document.querySelector("[data-reset-suggest-form]");
+              if (!link || !(form instanceof HTMLFormElement)) return;
+              const statusNode = form.querySelector("[data-reset-suggest-status]");
+              const signin = form.querySelector("[data-reset-suggest-signin]");
+              const fields = form.querySelector("[data-reset-suggest-fields]");
+              const zoneWrap = form.querySelector("[data-rs-zone]");
+              const zoneSelect = zoneWrap.querySelector("select");
+              const basis = form.elements.namedItem("reset_basis");
+              const syncBasis = () => {
+                zoneWrap.hidden = basis.value !== "server";
+              };
+              basis.addEventListener("change", syncBasis);
+              let zonesLoaded = false;
+              const loadZones = () => {
+                if (zonesLoaded) return;
+                zonesLoaded = true;
+                try {
+                  const common = new Set(Array.from(zoneSelect.options).map((o) => o.value));
+                  const groups = {};
+                  for (const zone of Intl.supportedValuesOf("timeZone")) {
+                    if (common.has(zone)) continue;
+                    const region = zone.indexOf("/") > 0 ? zone.split("/")[0] : "Other";
+                    (groups[region] = groups[region] || []).push(zone);
+                  }
+                  for (const region of Object.keys(groups)) {
+                    const group = document.createElement("optgroup");
+                    group.label = region;
+                    for (const zone of groups[region]) {
+                      const option = document.createElement("option");
+                      option.value = zone;
+                      option.textContent = zone.replace(/_/g, " ");
+                      group.appendChild(option);
+                    }
+                    zoneSelect.appendChild(group);
+                  }
+                } catch (_error) {
+                  // The short list still works.
+                }
+              };
+              const setStatus = (text) => {
+                if (statusNode) statusNode.textContent = text;
+              };
+              link.addEventListener("click", async (event) => {
+                event.preventDefault();
+                if (!form.hidden) {
+                  form.hidden = true;
+                  return;
+                }
+                form.hidden = false;
+                syncBasis();
+                loadZones();
+                const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
+                const signedIn = !!(session && session.signedIn);
+                signin.hidden = signedIn;
+                fields.hidden = !signedIn;
+              });
+              form.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const data = new FormData(form);
+                const isServer = data.get("reset_basis") === "server";
+                setStatus("Sending...");
+                const response = await fetch("/api/games/" + gameId + "/reset-suggestion", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    reset_basis: String(data.get("reset_basis")),
+                    reset_time: String(data.get("reset_time") || ""),
+                    reset_timezone: isServer ? String(data.get("reset_timezone") || "") || null : null,
+                    note: String(data.get("note") || "").trim() || undefined
+                  })
+                });
+                if (response.ok) {
+                  form.hidden = true;
+                  setStatus("");
+                  if (window.appToast) window.appToast("Thanks! An editor will review your suggestion.", "success");
+                  return;
+                }
+                const body = await response.json().catch(() => ({}));
+                const message = response.status === 429 ? "You have sent enough suggestions for today." : (body.error || "Could not send the suggestion.");
+                setStatus(message);
+                if (window.appToast) window.appToast(message, "error");
+              });
+            })();
+
             const adminEditForm = document.getElementById("admin-edit-form");
             if (adminEditForm) {
               /*@RESET_TZ@*/
@@ -2876,6 +2962,22 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         });
       })();
     `,
+  "admin-resets": `
+    document.querySelectorAll("[data-reset-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const card = button.closest("[data-reset-suggestion-id]");
+        const res = await fetch("/api/admin/reset-suggestions/" + card.getAttribute("data-reset-suggestion-id") + "/" + button.getAttribute("data-reset-action"), { method: "POST" });
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+        const data = await res.json().catch(() => ({}));
+        const message = data.error || "Could not update the suggestion.";
+        document.getElementById("resets-status").textContent = message;
+        if (window.appToast) window.appToast(message, "error");
+      });
+    });
+  `,
   "submit-reset-tz": `
       /*@RESET_TZ@*/
       const statusNode = document.getElementById("admin-submissions-status");
