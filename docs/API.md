@@ -90,6 +90,9 @@
 - `POST /api/admin/reports/bulk`
 - `POST /api/admin/reports/:id/resolve`
 - `POST /api/admin/reports/:id/dismiss`
+- `POST /api/games/:id/reset-suggestion` (signed in; 10/day per user). Body `{ reset_basis: "local"|"server", reset_time: "HH:MM", reset_timezone?: IANA name or null (server only; null = UTC), note?: string (max 200) }`. One open suggestion per user per game (a new one replaces it). 409 if it equals the current reset, 403 for staff and the game's verified developer (they edit directly).
+- `POST /api/admin/reset-suggestions/:id/apply` (editor/admin): writes the reset to the game, closes all identical open suggestions as applied, logs `reset_update` in the mod log.
+- `POST /api/admin/reset-suggestions/:id/dismiss` (editor/admin): dismisses the identical open suggestions. Reviewed at `/admin/resets`.
 - `GET /api/admin/categories`
 - `POST /api/admin/categories`
 - `PATCH /api/admin/categories/:id`
