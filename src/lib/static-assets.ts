@@ -1353,6 +1353,26 @@ export const PAGE_SCRIPTS: Record<string, string> = {
     `,
   "game-page": `
       const DATA_GAME_PAGE = JSON.parse(document.getElementById("data-game-page").textContent);
+      // "(8:00 PM your time)" after a server-basis reset, only when the viewer's zone differs from the reset zone.
+      document.querySelectorAll("[data-reset-minutes]").forEach((node) => {
+        try {
+          const minutes = Number(node.getAttribute("data-reset-minutes"));
+          const tz = node.getAttribute("data-reset-tz") || "UTC";
+          const viewerTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (!Number.isFinite(minutes) || viewerTz === tz) return;
+          const parts = (zone, at) => Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(at).map((x) => [x.type, Number(x.value)]));
+          const offsetAt = (zone, at) => {
+            const p = parts(zone, at);
+            return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(at.getTime() / 1000) * 1000) / 60000);
+          };
+          const now = new Date();
+          const p = parts(tz, now);
+          let next = new Date(Date.UTC(p.year, p.month - 1, p.day, 0, minutes) - offsetAt(tz, now) * 60000);
+          if (next <= now) next = new Date(next.getTime() + 86400000);
+          if (offsetAt(tz, next) === offsetAt(viewerTz, next)) return;
+          node.textContent = " (" + next.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) + " your time)";
+        } catch {}
+      });
             const game = {
               id: DATA_GAME_PAGE.id,
               title: DATA_GAME_PAGE.title,
