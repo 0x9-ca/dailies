@@ -16,7 +16,7 @@ import { CHANGELOG } from "./lib/changelog";
 import { fuzzyTitleMatch } from "./lib/search";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
-import { GAP_LIMIT, loadGameHealth, runGameLinkHealth } from "./lib/game-health";
+import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
@@ -3397,14 +3397,14 @@ app.get("/admin/health", async (c) => {
       <h1>Link health and data gaps</h1>
       <section>
         <h2>Possibly broken links <span class="muted">(${h.broken.length})</span></h2>
-        <p class="muted">Approved games whose play URL failed the daily check at least twice in a row. Bot walls (401/403/429, Cloudflare challenges) are not counted. Status 0 is a network error or timeout.</p>
+        <p class="muted">Approved games whose play URL failed the daily check ${BROKEN_THRESHOLD} or more times in a row (the point where an auto-report is filed). Only 404/410 and connection failures count; bot walls and timeouts do not.</p>
         <div class="stack">${
           h.broken.length
             ? h.broken.map((r) => `<article class="panel">
               <h3><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a></h3>
               <p style="overflow-wrap:anywhere"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.url)} ↗</a></p>
-              <p>Status: <strong>${r.link_status ?? "–"}</strong> · Failures: <strong>${r.link_failures}</strong> · Checked: ${escapeHtml(when(r.link_checked_at))} ET</p>
-              <p><a href="/admin/reports?q=${encodeURIComponent(r.title)}">Reports</a> · <a href="/games/${encodeURIComponent(r.slug)}">Edit or disable on game page</a></p>
+              <p>Failures: <strong>${r.link_fail_count}</strong> · Checked: ${escapeHtml(when(r.last_checked_at))} ET</p>
+              <p><a href="/admin/reports?q=${encodeURIComponent(r.title)}">Reports</a> · <a href="/games/${encodeURIComponent(r.slug)}#admin-edit-form">Edit or disable</a></p>
             </article>`).join("")
             : `<p class="muted">No broken links found.</p>`
         }</div>
@@ -6095,7 +6095,6 @@ export default {
   fetch: app.fetch,
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runLinkChecks(env));
-    ctx.waitUntil(runGameLinkHealth(env));
     ctx.waitUntil(recalculateAllScores(env));
     ctx.waitUntil(runClaimRechecks(env));
     ctx.waitUntil(runDeveloperRoleMaintenance(env));
