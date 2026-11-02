@@ -4,6 +4,13 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-11-02",
+    items: [
+      "Game pages show more details: reset schedule, ratings, lists and answers to common questions.",
+      "Browse pages have numbered page links."
+    ]
+  },
+  {
     date: "2026-10-30",
     items: [
       "Pages load faster: styles and scripts are now cached by your browser instead of downloaded with every page.",

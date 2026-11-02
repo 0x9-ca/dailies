@@ -990,7 +990,14 @@ app.get("/games", async (c) => {
     if (page > 1) {
       paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page - 1))}">&larr; Previous</a>`;
     }
-    paginationMarkup += `<span>Page ${page}${totalPages > 0 ? ` of ${totalPages}` : ""}</span>`;
+    // Numbered links (first, last and a window around this page) keep every page within a few clicks.
+    const pageNumbers = new Set([1, totalPages, page - 2, page - 1, page, page + 1, page + 2].filter((n) => n >= 1 && n <= Math.max(totalPages, page)));
+    let previousNumber = 0;
+    for (const n of [...pageNumbers].sort((a, b) => a - b)) {
+      if (n - previousNumber > 1) paginationMarkup += `<span aria-hidden="true">…</span>`;
+      paginationMarkup += n === page ? `<span aria-current="page">${n}</span>` : `<a href="${escapeHtml(buildPageUrl(n))}" aria-label="Page ${n}">${n}</a>`;
+      previousNumber = n;
+    }
     if (hasMore) {
       paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page + 1))}">Next &rarr;</a>`;
     }
@@ -1193,7 +1200,7 @@ app.get("/games/:slug", async (c) => {
     alsoPlay = coplay.results;
     await setCachedJson(c.env, coplayKey, alsoPlay, 6 * 3600).catch(() => undefined);
   }
-  const relatedHeading = categories.results.length === 1 ? `More in ${categories.results[0].name}` : "Similar daily games";
+  const relatedHeading = `Daily games like ${game.title}`;
 
   const gameLd = {
     "@context": "https://schema.org",
@@ -1218,11 +1225,21 @@ app.get("/games/:slug", async (c) => {
   const listedDate = new Date(game.listed_at.includes("T") ? game.listed_at : game.listed_at.replace(" ", "T") + "Z");
   const listedText = Number.isNaN(listedDate.getTime()) ? "" : listedDate.toLocaleDateString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
   const describedCategories = categories.results.filter((cat) => cat.description && !cat.description.startsWith("Imported from"));
+  const trimmedDesc = game.description?.trim() ?? "";
+  const resetSentence = describeReset(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+  const introText = [
+    `${game.title} is a ${game.paywall ? "paid " : "free "}${gameKind} you play in your web browser, with a new puzzle every day.${game.nsfw ? " It contains NSFW content." : ""}`,
+    categories.results.length > 0 ? `0x9 dles files it under ${joinNames(categories.results.map((cat) => cat.name))}.` : "",
+    resetSentence ?? "",
+    totalVotes >= 5 ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% of ${totalVotes} voters liked it.` : "",
+    publicLists.results.length > 0 ? `It appears in ${publicLists.results.length} public list${publicLists.results.length === 1 ? "" : "s"}, such as ${joinNames(publicLists.results.slice(0, 3).map((list) => list.title))}.` : "",
+    developer?.display_name ? `Its developer, ${developer.display_name}, is verified.` : ""
+  ].filter(Boolean).join(" ");
   const gameFacts = `
       <section class="game-facts">
         <h2>About ${escapeHtml(game.title)}</h2>
         ${game.how_to_play ? `<h3>How to play</h3>${game.how_to_play.split(/\n\s*\n/).map((para) => `<p>${escapeHtml(para.trim()).replace(/\n/g, "<br />")}</p>`).join("")}<h3>Details</h3>` : ""}
-        <p>${escapeHtml(game.title)} is a ${escapeHtml(gameKind)} that you play in your web browser, with a new puzzle every day.${game.paywall ? " It requires payment to play." : " It's free to play, with no download needed."}${game.nsfw ? " It contains NSFW content." : ""}</p>
+        <p>${escapeHtml(introText)}</p>
         <dl>
           ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
           <dt>Community rating</dt><dd data-rating>${escapeHtml(ratingText)}</dd>
@@ -1230,15 +1247,36 @@ app.get("/games/:slug", async (c) => {
           ${listedText ? `<dt>Listed on 0x9 dles since</dt><dd>${escapeHtml(listedText)}</dd>` : ""}
         </dl>
       </section>`;
-  const trimmedDescription = game.description?.trim() ?? "";
-  const baseDescription = trimmedDescription
-    ? /[.!?]$/.test(trimmedDescription) ? trimmedDescription : `${trimmedDescription}.`
-    : `${game.title} is a ${gameKind}.`;
-  const extraDescription = [
-    `A ${game.paywall ? "" : "free "}${gameKind} you play in your browser.`,
-    totalVotes > 0 ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% liked on 0x9 dles.` : ""
-  ].filter((part) => part && baseDescription.length + part.length + 1 <= 160);
-  const metaDescription = [baseDescription, ...extraDescription].join(" ");
+  const faqItems: Array<[string, string]> = [
+    [`When does ${game.title} reset?`, resetSentence ?? `${game.title} has no reset time listed yet. It offers a new puzzle each day, so check the game itself for the exact time.`],
+    [`Is ${game.title} free?`, game.paywall ? `${game.title} requires payment to play. Check the game's own site for current pricing.` : `Yes. ${game.title} is free to play in your web browser, with no download needed.`],
+    [`What is ${game.title} like?`, [
+      trimmedDesc ? (/[.!?]$/.test(trimmedDesc) ? trimmedDesc : `${trimmedDesc}.`) : `${game.title} is a ${gameKind}.`,
+      describedCategories.length > 0 ? describedCategories.map((cat) => cat.description!).join(" ") : ""
+    ].filter(Boolean).join(" ")]
+  ];
+  // Visible FAQ only: Google limits FAQ rich results to a few site types, so no FAQPage JSON-LD.
+  const faqSection = `
+      <section class="game-faq">
+        <h2>${escapeHtml(game.title)} FAQ</h2>
+        ${faqItems.map(([question, answer]) => `<h3>${escapeHtml(question)}</h3><p>${escapeHtml(answer)}</p>`).join("")}
+      </section>`;
+  // Facts first so every game's snippet differs even when the imported description is shared with other sites.
+  const metaParts = [
+    `${game.title}: a ${game.paywall ? "" : "free "}${gameKind} you play in your browser.`,
+    describeReset(game.reset_basis, game.reset_time_minutes, game.reset_timezone, true) ?? "",
+    totalVotes >= 5 ? `${Math.round((game.vote_up_count / totalVotes) * 100)}% liked on 0x9 dles.` : ""
+  ].filter(Boolean);
+  let metaDescription = metaParts.join(" ");
+  while (metaDescription.length > 160 && metaParts.length > 1) {
+    metaParts.pop();
+    metaDescription = metaParts.join(" ");
+  }
+  if (trimmedDesc && 160 - metaDescription.length >= 40) {
+    const room = 160 - metaDescription.length - 1;
+    const cut = trimmedDesc.length <= room ? trimmedDesc : `${trimmedDesc.slice(0, room - 1).replace(/\s+\S*$/, "").replace(/[\s,;:.-]+$/, "")}…`;
+    metaDescription = `${metaDescription} ${cut}`;
+  }
   // Changes whenever something drawn on the social image changes, so shares pick up edits.
   const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
   // The reset the "Mark as played" toggle checks against (same as dglIsPlayed; none = since local midnight).
@@ -1262,8 +1300,9 @@ app.get("/games/:slug", async (c) => {
       <p class="game-actions-note">${user ? `Favorites are added to <a href="/me/rotation">your rotation</a>.` : `Favorites are added to <a href="/me/rotation">your rotation</a>, no account needed.`}${isAdminOrEditor ? ` Reports: ${game.report_count}.` : ""}</p>
       <p id="game-action-status" class="status" aria-live="polite"></p>
       ${gameFacts}
+      ${faqSection}
       ${alsoPlay.length > 0 ? `<section class="related-games">
-        <h2>Players also play</h2>
+        <h2>Players who like ${escapeHtml(game.title)} also play</h2>
         <ul>${alsoPlay.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
       </section>` : ""}
       ${related.results.length > 0 ? `<section class="related-games">
@@ -2428,11 +2467,14 @@ const SIBLING_SITE_URLS = [
 
 app.get("/sitemap.xml", async (c) => {
   const games = await c.env.DB.prepare(
-    "SELECT slug, updated_at FROM games WHERE status = 'approved' ORDER BY updated_at DESC"
-  ).all<{ slug: string; updated_at: string }>();
+    "SELECT slug, content_updated_at, approved_at, created_at FROM games WHERE status = 'approved' ORDER BY slug ASC"
+  ).all<{ slug: string; content_updated_at: string | null; approved_at: string | null; created_at: string }>();
   const lists = await c.env.DB.prepare(
-    "SELECT slug, updated_at FROM curated_lists WHERE visibility = 'public' AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id) ORDER BY updated_at DESC"
-  ).all<{ slug: string; updated_at: string }>();
+    `SELECT slug, MAX(updated_at, COALESCE((SELECT MAX(created_at) FROM curated_list_items WHERE curated_list_id = curated_lists.id), '')) AS changed_at
+     FROM curated_lists
+     WHERE visibility = 'public' AND EXISTS (SELECT 1 FROM curated_list_items WHERE curated_list_id = curated_lists.id)
+     ORDER BY slug ASC`
+  ).all<{ slug: string; changed_at: string }>();
 
   const categoriesWithGames = await c.env.DB.prepare(
     `SELECT DISTINCT categories.slug
@@ -2443,21 +2485,31 @@ app.get("/sitemap.xml", async (c) => {
      ORDER BY categories.slug ASC`
   ).all<{ slug: string }>();
 
-  const toLastmod = (value: string) => value.replace(" ", "T") + "Z";
-  const latest = (rows: Array<{ updated_at: string }>) => (rows.length > 0 ? toLastmod(rows[0].updated_at) : null);
-  const latestGame = latest(games.results);
-  const latestList = latest(lists.results);
-  const latestAny = [latestGame, latestList].filter((v): v is string => !!v).sort().pop() ?? null;
+  // Rows hold "YYYY-MM-DD HH:MM:SS" (datetime()) or ISO strings (API inserts); both are UTC. Invalid values are dropped.
+  const toLastmod = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+    return Number.isNaN(date.getTime()) ? null : date.toISOString().replace(/\.\d+Z$/, "Z");
+  };
+  // Real content changes only: updated_at moves on every daily score and link-check run, so it is not used.
+  const gameLastmod = (game: { content_updated_at: string | null; approved_at: string | null; created_at: string }) =>
+    [game.content_updated_at, game.approved_at, game.created_at].map(toLastmod).filter((v): v is string => !!v).sort().pop() ?? null;
+  const newest = (values: Array<string | null>) => values.filter((v): v is string => !!v).sort().pop() ?? null;
+  const gameEntries = games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: gameLastmod(game) }));
+  const listEntries = lists.results.map((list) => ({ loc: `/lists/${list.slug}`, lastmod: toLastmod(list.changed_at) }));
+  const latestGame = newest(gameEntries.map((e) => e.lastmod));
+  const latestList = newest(listEntries.map((e) => e.lastmod));
+  // Static pages carry no lastmod (nothing to say when they changed); hubs get the newest content they link to.
   const urls = [
-    { loc: "/", lastmod: latestAny },
+    { loc: "/", lastmod: newest([latestGame, latestList]) },
     { loc: "/games", lastmod: latestGame },
     { loc: "/lists", lastmod: latestList },
     { loc: "/mod-log", lastmod: null as string | null },
-    { loc: "/changelog", lastmod: `${CHANGELOG[0].date}T00:00:00Z` },
-    ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: latestGame })),
+    { loc: "/changelog", lastmod: null as string | null },
+    ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: null as string | null })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
-    ...games.results.map((game) => ({ loc: `/games/${game.slug}`, lastmod: toLastmod(game.updated_at) })),
-    ...lists.results.map((list) => ({ loc: `/lists/${list.slug}`, lastmod: toLastmod(list.updated_at) }))
+    ...gameEntries,
+    ...listEntries
   ];
 
   const body = `<?xml version="1.0" encoding="UTF-8"?>
@@ -4047,7 +4099,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
     `UPDATE games
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, status = ?5,
          reset_basis = ?6, reset_time_minutes = ?7, paywall = ?9, nsfw = ?10, reset_timezone = ?11,
-         how_to_play = CASE WHEN ?12 = 1 THEN ?13 ELSE how_to_play END, updated_at = datetime('now')
+         how_to_play = CASE WHEN ?12 = 1 THEN ?13 ELSE how_to_play END, updated_at = datetime('now'), content_updated_at = datetime('now')
      WHERE id = ?8`
   )
     .bind(
@@ -4198,6 +4250,7 @@ async function markClaimVerified(
     throw error;
   }
   const game = await env.DB.prepare("SELECT title, slug FROM games WHERE id = ?1").bind(claim.game_id).first<{ title: string; slug: string }>();
+  await env.DB.prepare("UPDATE games SET content_updated_at = datetime('now') WHERE id = ?1").bind(claim.game_id).run();
   await writeAudit(env, actorUserId, "game", claim.game_id, "developer_verified", { title: game?.title, slug: game?.slug, method });
   await invalidateGameCaches(env);
   // Gives them the Dle Developer role in our Discord server if they are in it (and keeps checking if not yet).
@@ -4436,7 +4489,7 @@ app.put("/api/games/:id/developer-update", async (c) => {
   await c.env.DB.prepare(
     `UPDATE games
      SET title = ?1, url = ?2, canonical_url = ?3, description = ?4, reset_basis = ?5, reset_time_minutes = ?6,
-         reset_timezone = ?7, paywall = ?8, how_to_play = CASE WHEN ?9 = 1 THEN ?10 ELSE how_to_play END, updated_at = datetime('now')
+         reset_timezone = ?7, paywall = ?8, how_to_play = CASE WHEN ?9 = 1 THEN ?10 ELSE how_to_play END, updated_at = datetime('now'), content_updated_at = datetime('now')
      WHERE id = ?11`
   )
     .bind(
@@ -5623,7 +5676,7 @@ app.patch("/api/admin/games/:id/reset", async (c) => {
     return c.json({ error: "Invalid time zone. Use an IANA name like America/New_York" }, 400);
   }
   await c.env.DB.prepare(
-    "UPDATE games SET reset_basis = ?1, reset_time_minutes = ?2, reset_timezone = ?4, updated_at = datetime('now') WHERE id = ?3"
+    "UPDATE games SET reset_basis = ?1, reset_time_minutes = ?2, reset_timezone = ?4, updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?3"
   )
     .bind(nextBasis, nextResetTime, gameId, nextZone.value)
     .run();
@@ -5652,7 +5705,7 @@ app.post("/api/admin/games/bulk", async (c) => {
   const statements = parsed.data.ids.map((gameId) => {
     if (parsed.data.action === "approve") {
       return c.env.DB.prepare(
-        "UPDATE games SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now') WHERE id = ?2"
+        "UPDATE games SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?2"
       ).bind(auth.id, gameId);
     }
     if (parsed.data.action === "reject") {
@@ -5664,7 +5717,7 @@ app.post("/api/admin/games/bulk", async (c) => {
     if (parsed.data.action === "disable") {
       return c.env.DB.prepare("UPDATE games SET status = 'disabled', updated_at = datetime('now') WHERE id = ?1").bind(gameId);
     }
-    return c.env.DB.prepare("UPDATE games SET status = 'approved', updated_at = datetime('now') WHERE id = ?1").bind(gameId);
+    return c.env.DB.prepare("UPDATE games SET status = 'approved', updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?1").bind(gameId);
   });
 
   await c.env.DB.batch(statements);
@@ -5688,7 +5741,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
   const newlyApproved = await logGameEvents(c.env, auth.id, [gameId], "approve");
   await c.env.DB.prepare(
     `UPDATE games
-     SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now')
+     SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now'), content_updated_at = datetime('now')
      WHERE id = ?2`
   )
     .bind(auth.id, gameId)
@@ -5738,7 +5791,7 @@ app.post("/api/admin/games/:id/restore", async (c) => {
   }
   const gameId = c.req.param("id");
   await logGameEvents(c.env, auth.id, [gameId], "restore");
-  await c.env.DB.prepare("UPDATE games SET status = 'approved', updated_at = datetime('now') WHERE id = ?1").bind(gameId).run();
+  await c.env.DB.prepare("UPDATE games SET status = 'approved', updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?1").bind(gameId).run();
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 });
@@ -5961,6 +6014,8 @@ app.patch("/api/admin/categories/:id", async (c) => {
       c.req.param("id")
     )
     .run();
+  // The category's name and description show on its games' pages.
+  await c.env.DB.prepare("UPDATE games SET content_updated_at = datetime('now') WHERE id IN (SELECT game_id FROM game_categories WHERE category_id = ?1)").bind(c.req.param("id")).run();
   await writeAudit(c.env, auth.id, "category", c.req.param("id"), "update", parsed.data);
   return c.json({ ok: true });
 });
@@ -5972,6 +6027,7 @@ app.delete("/api/admin/categories/:id", async (c) => {
   }
   const categoryId = c.req.param("id");
   await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE games SET content_updated_at = datetime('now') WHERE id IN (SELECT game_id FROM game_categories WHERE category_id = ?1)").bind(categoryId),
     c.env.DB.prepare("DELETE FROM game_categories WHERE category_id = ?1").bind(categoryId),
     c.env.DB.prepare("DELETE FROM categories WHERE id = ?1").bind(categoryId)
   ]);
@@ -7170,6 +7226,29 @@ function parseResetTimeToMinutes(value: string | undefined): number | null {
     return null;
   }
   return hour * 60 + minute;
+}
+
+// "A", "A and B", "A, B and C".
+function joinNames(names: string[]): string {
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+// "9:00 AM" from minutes after midnight (en-US clock for prose).
+function formatClock12(minutes: number): string {
+  const hour = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
+}
+
+// The reset in plain words for game page copy. `short` is the meta-description form.
+function describeReset(basis: "local" | "server" | null, minutes: number | null, timezone: string | null, short = false): string | null {
+  if (!basis || minutes === null || minutes < 0 || minutes > 1439) return null;
+  const clock = formatClock12(minutes);
+  if (basis === "local") {
+    return short ? `Resets daily at ${clock} local time.` : `It resets every day at ${clock} in your own time zone, so the new puzzle arrives at the same clock time wherever you are.`;
+  }
+  const zone = timezone ?? "UTC";
+  return short ? `Resets daily at ${clock} ${zone}.` : `It resets every day at ${clock} ${zone === "UTC" ? "UTC" : `in the ${zone} time zone`}, the same moment for everyone.`;
 }
 
 function formatResetTime(minutes: number | null | undefined): string {

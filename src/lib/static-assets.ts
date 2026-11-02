@@ -859,6 +859,11 @@ export const SHARED_CSS = `      :root {
       .report-panel > summary { cursor: pointer; font-weight: 700; }
       .report-panel[open] > summary { margin-bottom: 0.75rem; }
       .game-facts { margin-top: 1.5rem; }
+      .game-faq { margin-top: 1.5rem; }
+      .game-faq h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
+      .game-faq p { margin: 0; color: var(--muted); }
+      .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.25rem 0.75rem; margin: 1.25rem 0; }
+      .pagination [aria-current] { font-weight: 700; }
       .game-facts dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.45rem 1rem; margin: 0.75rem 0 0; }
       .game-facts dt { color: var(--muted); }
       .game-facts dd { margin: 0; }
