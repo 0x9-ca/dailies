@@ -10,6 +10,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "Game pages show more details: reset schedule, ratings, lists and answers to common questions.",
       "Browse pages have numbered page links.",
       "The home page warns you when an unplayed game in your rotation is about to reset, and the rotation's reset sort puts games you've played last.",
+      "Reset times show friendly time zone names, plus the time where you are."
     ]
   },
   {

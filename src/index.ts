@@ -51,6 +51,17 @@ app.use("*", async (c, next) => {
   return c.redirect(`${appOrigin(c.env)}${expandShortPath(url.pathname)}${url.search}`, status);
 });
 
+// Trailing slashes: /games/ redirects to /games (query kept, relative Location).
+app.use("*", async (c, next) => {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") return next();
+  const url = new URL(c.req.url);
+  if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    return c.redirect(`${path}${url.search}`, 301);
+  }
+  return next();
+});
+
 // Content-hashed static CSS/JS (see ASSET at the end of the file). Registered before the session, cookie and cache
 // middleware on purpose: no D1 lookup, no Set-Cookie (it would make the response uncacheable), no noindex header.
 app.get("/assets/:file", (c) => serveAsset(c.req.param("file"), c.req.method));
@@ -1232,6 +1243,10 @@ app.get("/games/:slug", async (c) => {
   const describedCategories = categories.results.filter((cat) => cat.description && !cat.description.startsWith("Imported from"));
   const trimmedDesc = game.description?.trim() ?? "";
   const resetSentence = describeReset(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+  // Empty in the HTML (pages are edge-cached); the page script fills in "(8:00 PM your time)" for server-basis resets.
+  const resetHint = game.reset_basis === "server" && game.reset_time_minutes !== null && game.reset_time_minutes >= 0 && game.reset_time_minutes <= 1439
+    ? `<span data-reset-minutes="${game.reset_time_minutes}" data-reset-tz="${escapeHtml(game.reset_timezone ?? "UTC")}"></span>`
+    : "";
   const introText = [
     `${game.title} is a ${game.paywall ? "paid " : "free "}${gameKind} you play in your web browser, with a new puzzle every day.${game.nsfw ? " It contains NSFW content." : ""}`,
     categories.results.length > 0 ? `0x9 dles files it under ${joinNames(categories.results.map((cat) => cat.name))}.` : "",
@@ -1244,7 +1259,7 @@ app.get("/games/:slug", async (c) => {
       <section class="game-facts">
         <h2>About ${escapeHtml(game.title)}</h2>
         ${game.how_to_play ? `<h3>How to play</h3>${game.how_to_play.split(/\n\s*\n/).map((para) => `<p>${escapeHtml(para.trim()).replace(/\n/g, "<br />")}</p>`).join("")}<h3>Details</h3>` : ""}
-        <p>${escapeHtml(introText)}</p>
+        <p>${escapeHtml(introText)}${resetHint}</p>
         <dl>
           ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
           <dt>Community rating</dt><dd data-rating>${escapeHtml(ratingText)}</dd>
@@ -6400,20 +6415,24 @@ async function getCategoriesForGames(
     return map;
   }
   const uniqueIds = [...new Set(gameIds)];
-  const placeholders = uniqueIds.map((_id, index) => `?${index + 1}`).join(", ");
-  const rows = await env.DB.prepare(
-    `SELECT game_categories.game_id, categories.slug, categories.name
-     FROM game_categories
-     JOIN categories ON categories.id = game_categories.category_id
-     WHERE game_categories.game_id IN (${placeholders})
-     ORDER BY categories.name ASC`
-  )
-    .bind(...uniqueIds)
-    .all<{ game_id: string; slug: string; name: string }>();
-  for (const row of rows.results) {
-    const list = map.get(row.game_id) ?? [];
-    list.push({ slug: row.slug, name: row.name });
-    map.set(row.game_id, list);
+  // D1 allows 100 bind parameters per statement, so look up in chunks.
+  for (let i = 0; i < uniqueIds.length; i += 90) {
+    const chunk = uniqueIds.slice(i, i + 90);
+    const placeholders = chunk.map((_id, index) => `?${index + 1}`).join(", ");
+    const rows = await env.DB.prepare(
+      `SELECT game_categories.game_id, categories.slug, categories.name
+       FROM game_categories
+       JOIN categories ON categories.id = game_categories.category_id
+       WHERE game_categories.game_id IN (${placeholders})
+       ORDER BY categories.name ASC`
+    )
+      .bind(...chunk)
+      .all<{ game_id: string; slug: string; name: string }>();
+    for (const row of rows.results) {
+      const list = map.get(row.game_id) ?? [];
+      list.push({ slug: row.slug, name: row.name });
+      map.set(row.game_id, list);
+    }
   }
   return map;
 }
@@ -7253,8 +7272,17 @@ function describeReset(basis: "local" | "server" | null, minutes: number | null,
   if (basis === "local") {
     return short ? `Resets daily at ${clock} local time.` : `It resets every day at ${clock} in your own time zone, so the new puzzle arrives at the same clock time wherever you are.`;
   }
-  const zone = timezone ?? "UTC";
-  return short ? `Resets daily at ${clock} ${zone}.` : `It resets every day at ${clock} ${zone === "UTC" ? "UTC" : `in the ${zone} time zone`}, the same moment for everyone.`;
+  const zone = friendlyZoneName(timezone ?? "UTC");
+  return short ? `Resets daily at ${clock} ${zone}.` : `It resets every day at ${clock} ${zone}, the same moment for everyone.`;
+}
+
+// "Eastern Time", "UK time", "Berlin time" for an IANA zone; UTC stays "UTC".
+function friendlyZoneName(zone: string): string {
+  const known: Record<string, string> = {
+    UTC: "UTC", "America/New_York": "Eastern Time", "America/Chicago": "Central Time", "America/Denver": "Mountain Time",
+    "America/Los_Angeles": "Pacific Time", "Europe/London": "UK time"
+  };
+  return known[zone] ?? `${zone.split("/").pop()!.replace(/_/g, " ")} time`;
 }
 
 function formatResetTime(minutes: number | null | undefined): string {
