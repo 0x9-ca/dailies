@@ -16,6 +16,7 @@ import { CHANGELOG } from "./lib/changelog";
 import { fuzzyTitleMatch } from "./lib/search";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
+import { GAP_LIMIT, loadGameHealth, runGameLinkHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
@@ -2798,6 +2799,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/claims">Developer claims</a>
         ${auth.role === "admin" ? `<a class="panel" href="/admin/creators">Verified creators</a>
         <a class="panel" href="/admin/stats">Stats</a>
+        <a class="panel" href="/admin/health">Link health and data gaps</a>
         <a class="panel" href="/admin/settings">Site settings</a>` : ""}
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
@@ -3374,6 +3376,48 @@ app.post("/api/admin/users/:id/creator", async (c) => {
   await writeAudit(c.env, auth.id, "user", userId, parsed.data.grant ? "grant_creator" : "revoke_creator", {});
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
+});
+
+app.get("/admin/health", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const h = await loadGameHealth(c.env.DB);
+  const when = (iso: string | null) =>
+    iso ? new Date(iso.replace(" ", "T") + "Z").toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" }) : "never";
+  const gapSection = (title: string, g: { count: number; rows: { slug: string; title: string; description_length: number }[] }, showLen: boolean) =>
+    `<details class="panel"><summary><strong>${escapeHtml(title)}</strong> <span class="muted">${g.count.toLocaleString("en-US")} game${g.count === 1 ? "" : "s"}</span></summary>${
+      g.rows.length
+        ? `<ol>${g.rows.map((r) => `<li><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a>${showLen ? ` <span class="muted">${r.description_length} chars</span>` : ""}</li>`).join("")}</ol>${g.count > GAP_LIMIT ? `<p class="muted">Showing the top ${GAP_LIMIT} by score.</p>` : ""}`
+        : `<p class="muted">None.</p>`
+    }</details>`;
+  return c.html(await layout("Link health", auth, `
+    <main>
+      <h1>Link health and data gaps</h1>
+      <section>
+        <h2>Possibly broken links <span class="muted">(${h.broken.length})</span></h2>
+        <p class="muted">Approved games whose play URL failed the daily check at least twice in a row. Bot walls (401/403/429, Cloudflare challenges) are not counted. Status 0 is a network error or timeout.</p>
+        <div class="stack">${
+          h.broken.length
+            ? h.broken.map((r) => `<article class="panel">
+              <h3><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a></h3>
+              <p style="overflow-wrap:anywhere"><a href="${escapeHtml(r.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.url)} ↗</a></p>
+              <p>Status: <strong>${r.link_status ?? "–"}</strong> · Failures: <strong>${r.link_failures}</strong> · Checked: ${escapeHtml(when(r.link_checked_at))} ET</p>
+              <p><a href="/admin/reports?q=${encodeURIComponent(r.title)}">Reports</a> · <a href="/games/${encodeURIComponent(r.slug)}">Edit or disable on game page</a></p>
+            </article>`).join("")
+            : `<p class="muted">No broken links found.</p>`
+        }</div>
+      </section>
+      <section>
+        <h2>Data gaps</h2>
+        <p class="muted">Approved games, highest score first, up to ${GAP_LIMIT} each.</p>
+        ${gapSection("Missing or short description (under 40 characters)", h.description, true)}
+        ${gapSection("Missing reset schedule", h.reset, false)}
+        ${gapSection("No categories", h.categories, false)}
+      </section>
+    </main>
+  `, c.env));
 });
 
 app.get("/admin/reports", async (c) => {
@@ -6051,6 +6095,7 @@ export default {
   fetch: app.fetch,
   scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     ctx.waitUntil(runLinkChecks(env));
+    ctx.waitUntil(runGameLinkHealth(env));
     ctx.waitUntil(recalculateAllScores(env));
     ctx.waitUntil(runClaimRechecks(env));
     ctx.waitUntil(runDeveloperRoleMaintenance(env));
