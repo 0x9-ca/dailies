@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Crowdsourced reset-time suggestions (table reset_suggestions, migration 0036).
+// Crowdsourced reset-time suggestions (table reset_suggestions, migration 0035).
 export const RESET_SUGGESTION_DAILY_LIMIT = 10;
 
 export const resetSuggestionSchema = z.object({

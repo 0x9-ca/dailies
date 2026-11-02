@@ -4906,7 +4906,7 @@ const reportSchema = z.object({
   note: z.string().max(400).optional()
 });
 
-// ---- Reset-time suggestions (migration 0036) ----
+// ---- Reset-time suggestions (migration 0035) ----
 
 app.post("/api/games/:id/reset-suggestion", async (c) => {
   const auth = requireAuth(c);
