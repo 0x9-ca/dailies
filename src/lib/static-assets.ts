@@ -742,6 +742,9 @@ export const SHARED_CSS = `      :root {
       .daily-progress-bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
       .daily-progress-bar span { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--brand-blue); transition: width 0.3s ease; }
       .daily-progress .btn { min-height: 44px; }
+      .daily-soon { grid-column: 1 / -1; margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.75rem; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+      .daily-soon[hidden] { display: none; }
+      .daily-soon-play { color: var(--brand-blue); text-decoration: underline; font-weight: 800; padding: 0.55rem 0.5rem; margin: -0.55rem -0.5rem; }
       .daily-done { color: var(--muted); font-weight: 600; }
       .daily-strip { margin: 0 0 1.25rem; }
       .daily-strip-link { position: relative; color: var(--brand-blue); font-weight: 700; margin-left: auto; }

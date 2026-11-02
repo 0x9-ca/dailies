@@ -1731,7 +1731,7 @@ app.get("/rotation/:shareToken", async (c) => {
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
       ${favorites.results.length > 0 && user?.id !== owner.id ? `<p><button type="button" id="copy-rotation-btn">Copy to my rotation</button></p>` : ""}
       ${favorites.results.length > 0 ? `
-        ${renderListSortControl()}
+        ${renderListSortControl({ rotation: true })}
         <ol class="rotation-list" id="shared-rotation-list">
           ${favorites.results
             .map(
@@ -1786,7 +1786,7 @@ app.get("/me/rotation", async (c) => {
         </div>
         <p id="import-status" class="status" aria-live="polite"></p>
         ${DAILY_PROGRESS_MARKUP}
-        ${renderListSortControl()}
+        ${renderListSortControl({ rotation: true })}
         <ol id="local-rotation-list" class="rotation-list"></ol>
         <p id="rotation-status" class="status" aria-live="polite"></p>
       </main>
@@ -1851,7 +1851,7 @@ app.get("/me/rotation", async (c) => {
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
       <p id="import-status" class="status" aria-live="polite"></p>
-      ${favorites.results.length > 0 ? DAILY_PROGRESS_MARKUP + renderListSortControl() : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
+      ${favorites.results.length > 0 ? DAILY_PROGRESS_MARKUP + renderListSortControl({ rotation: true }) : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
           .map(
@@ -7048,6 +7048,7 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
 const HOME_ROTATION_MARKUP = `<section class="daily-progress daily-strip" id="daily-progress" aria-label="Today's rotation" hidden>
   <div class="daily-progress-head"><span id="daily-progress-text"></span><span id="daily-progress-streak" class="daily-streak" hidden></span><a class="daily-strip-link" href="/me/rotation">Your rotation</a></div>
   <div class="daily-progress-bar" id="daily-progress-bar" role="progressbar" aria-valuemin="0" aria-label="Games played today"><span id="daily-progress-fill"></span></div>
+  <p class="daily-soon" id="daily-soon" hidden><span>Resetting soon: <b id="daily-soon-title"></b> in <span id="daily-soon-in"></span></span> <a class="daily-soon-play" id="daily-soon-play" href="#" target="_blank" rel="noopener noreferrer">Play</a></p>
   <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
   <span class="daily-done" id="daily-done" hidden>All done for today</span>
 </section>`;
@@ -7867,6 +7868,24 @@ const ROTATION_TODAY_SCRIPT = `
       bar.setAttribute("aria-valuenow", String(played));
       bar.setAttribute("aria-valuemax", String(rows.length));
       nextRow = unplayed[0] || null;
+      // Home strip only (has #daily-soon): the unplayed game that resets within two hours, soonest first.
+      const soonBox = box.querySelector("#daily-soon");
+      if (soonBox) {
+        let soon = null;
+        unplayed.forEach((row) => {
+          const reset = row.kind && row.min !== "" ? window.dglResetCountdown(row.kind, row.min) : null;
+          if (reset && reset.minutesLeft <= 120 && (!soon || reset.minutesLeft < soon.reset.minutesLeft)) soon = { row, reset };
+        });
+        soonBox.hidden = !soon;
+        if (soon) {
+          box.querySelector("#daily-soon-title").textContent = soon.row.title || "";
+          box.querySelector("#daily-soon-in").textContent = soon.reset.in;
+          const play = box.querySelector("#daily-soon-play");
+          play.setAttribute("href", soon.row.url || "#");
+          play.setAttribute("data-play-id", soon.row.id);
+          play.setAttribute("aria-label", "Play " + (soon.row.title || "game"));
+        }
+      }
       next.hidden = !nextRow;
       done.hidden = !!nextRow;
       try {
@@ -8674,9 +8693,15 @@ const LIST_SORT_SCRIPT = `
         const mode = select.value;
         const now = new Date();
         list.classList.toggle("sorted-by-reset", mode === "reset");
+        const isRotation = list.classList.contains("rotation-list") && !!window.dglIsPlayed;
+        const playedToday = (li) => isRotation && window.dglIsPlayed(li.dataset.gameId || "", li.dataset.resetKind || "", li.dataset.resetMin ?? "");
         const sorted = items().sort((a, b) => {
           const indexDiff = Number(a.dataset.defaultIndex) - Number(b.dataset.defaultIndex);
           if (mode === "reset") {
+            // Rotations: games already played since their reset go last.
+            const pa = playedToday(a) ? 1 : 0;
+            const pb = playedToday(b) ? 1 : 0;
+            if (pa !== pb) return pa - pb;
             const ua = minutesUntilReset(a, now);
             const ub = minutesUntilReset(b, now);
             return ua === ub ? indexDiff : ua < ub ? -1 : 1;
@@ -8701,6 +8726,8 @@ const LIST_SORT_SCRIPT = `
       const saved = readMode();
       select.value = Array.from(select.options).some((option) => option.value === saved) ? saved : "default";
       select.addEventListener("change", () => { writeMode(select.value); apply(); });
+      // Played state and countdowns change over time: re-sort rotations in "resets soonest" (no animation).
+      if (list.classList.contains("rotation-list")) (window.dglPlayedHooks = window.dglPlayedHooks || []).push(() => { if (select.value === "reset") apply(); });
       refresh();
       return { refresh, apply };
     };
@@ -8709,11 +8736,11 @@ const LIST_SORT_SCRIPT = `
 `;
 
 // The vote orders need [data-up-count]/[data-down-count] in each row, so only curated lists offer them.
-function renderListSortControl(options: { votes?: boolean } = {}): string {
+function renderListSortControl(options: { votes?: boolean; rotation?: boolean } = {}): string {
   return `<label class="list-sort">Sort
     <select id="list-sort-select" aria-label="Sort order">
-      <option value="default">Default order</option>
-      <option value="reset">Resetting soonest</option>
+      <option value="default">${options.rotation ? "Your order" : "Default order"}</option>
+      <option value="reset">${options.rotation ? "Resets soonest" : "Resetting soonest"}</option>
       ${options.votes ? `<option value="liked">Highest % upvoted</option>
       <option value="upvotes">Most upvotes</option>` : ""}
     </select>

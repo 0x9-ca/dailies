@@ -8,7 +8,8 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "Short links (d.0x9.ca) now forward to dailies.0x9.ca, so you stay signed in.",
       "Game pages show more details: reset schedule, ratings, lists and answers to common questions.",
-      "Browse pages have numbered page links."
+      "Browse pages have numbered page links.",
+      "Your rotation can sort by which games reset soonest, and the home page warns you when an unplayed game is about to reset."
     ]
   },
   {
