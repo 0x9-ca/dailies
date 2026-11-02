@@ -7,7 +7,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
-import { isShortHost, requestOrigin, shortOrigin } from "./lib/origins";
+import { appOrigin, expandShortPath, isShortHost, SHORT_PATHS, shortOrigin } from "./lib/origins";
 import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
@@ -43,6 +43,14 @@ app.use("*", async (c, next) => {
   if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", "frame-ancestors 'none'");
 });
 
+// The short host only forwards to APP_URL (expanding short paths), so cookies and sessions live on one host.
+app.use("*", async (c, next) => {
+  if (!isShortHost(c.env, c.req.url)) return next();
+  const url = new URL(c.req.url);
+  const status = c.req.method === "GET" || c.req.method === "HEAD" ? 301 : 308;
+  return c.redirect(`${appOrigin(c.env)}${expandShortPath(url.pathname)}${url.search}`, status);
+});
+
 // Content-hashed static CSS/JS (see ASSET at the end of the file). Registered before the session, cookie and cache
 // middleware on purpose: no D1 lookup, no Set-Cookie (it would make the response uncacheable), no noindex header.
 app.get("/assets/:file", (c) => serveAsset(c.req.param("file"), c.req.method));
@@ -55,15 +63,12 @@ app.use("*", async (c, next) => {
   await next();
   if (c.env.APP_ENV !== "production") {
     c.header("X-Robots-Tag", "noindex, nofollow");
-  } else if (isShortHost(c.env, c.req.url)) {
-    // Duplicate host: pages point their canonical at APP_URL, and this keeps the short host out of the index.
-    c.header("X-Robots-Tag", "noindex");
   }
 });
 
 // Short paths for sharing (no clash with the long routes): /c/<list>, /g/<game>, /r/<rotation token>. Relative
 // redirects keep the visitor on the host they used.
-for (const [short, long] of [["c", "lists"], ["g", "games"], ["r", "rotation"]] as const) {
+for (const [short, long] of SHORT_PATHS) {
   app.get(`/${short}/:id`, (c) => {
     const query = new URL(c.req.url).search;
     return c.redirect(`/${long}/${encodeURIComponent(c.req.param("id"))}${query}`, 301);
@@ -1814,7 +1819,7 @@ app.get("/me/rotation", async (c) => {
     .first<{ rotation_share_token: string | null }>();
 
   const shareToken = userWithToken?.rotation_share_token;
-  const shareUrl = shareToken ? `${shortOrigin(c.env) ?? requestOrigin(c.env, c.req.url)}/r/${shareToken}` : null;
+  const shareUrl = shareToken ? `${shortOrigin(c.env) ?? appOrigin(c.env)}/r/${shareToken}` : null;
 
   return c.html(await layout("My Rotation", user, `
     <main class="narrow">
@@ -9449,9 +9454,9 @@ function escapeHtml(value: string): string {
 
 type OAuthProvider = "discord" | "twitch";
 
-// Sent to the provider and again at the token exchange: the flow stays on one host, so both derive from the request.
-function oauthRedirectUri(env: Env, requestUrl: string, provider: OAuthProvider): string {
-  return `${requestOrigin(env, requestUrl)}/auth/${provider}/callback`;
+// Sent to the provider and again at the token exchange; always APP_URL's host.
+function oauthRedirectUri(env: Env, _requestUrl: string, provider: OAuthProvider): string {
+  return `${appOrigin(env)}/auth/${provider}/callback`;
 }
 
 const OAUTH_AUTHORIZE: Record<OAuthProvider, { url: string; scope: string }> = {

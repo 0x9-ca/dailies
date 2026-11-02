@@ -15,17 +15,19 @@ export function shortOrigin(env: Env): string | null {
   return short && short !== originOf(env.APP_URL) ? short : null;
 }
 
-/** Origins that may serve the site: APP_URL's and, if set, SHORT_URL's. */
-export function publicOrigins(env: Env): string[] {
-  const app = originOf(env.APP_URL);
-  const short = shortOrigin(env);
-  return [app, short].filter((o): o is string => !!o);
+/** APP_URL's origin: the only host that serves the site. */
+export function appOrigin(env: Env): string {
+  return originOf(env.APP_URL) ?? env.APP_URL;
 }
 
-/** The origin of this request when it is an allowed public origin, otherwise APP_URL's. */
-export function requestOrigin(env: Env, requestUrl: string): string {
-  const origin = originOf(requestUrl);
-  return origin && publicOrigins(env).includes(origin) ? origin : (originOf(env.APP_URL) ?? env.APP_URL);
+/** Short paths for sharing and the long routes they expand to. */
+export const SHORT_PATHS = [["c", "lists"], ["g", "games"], ["r", "rotation"]] as const;
+
+/** The long path for a short-host path (/c/x -> /lists/x); other paths are unchanged. */
+export function expandShortPath(path: string): string {
+  const m = /^\/([cgr])(\/[^/]+)$/.exec(path);
+  const long = m && SHORT_PATHS.find(([s]) => s === m[1]);
+  return long && m ? `/${long[1]}${m[2]}` : path;
 }
 
 /** True when the request arrived on the short host. */

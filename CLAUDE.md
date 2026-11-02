@@ -32,7 +32,7 @@ There is no test runner in the repo. Verify changes by running the app (see Test
   npx wrangler d1 execute DB --env staging --remote --command "SELECT ..."
   npx wrangler d1 migrations apply DB --env production --remote
   ```
-- Each env serves its long host (`APP_URL`, canonical) and a short host (`SHORT_URL`), both custom domains in `routes`. Short paths `/c/<list>`, `/g/<game>`, `/r/<rotation token>` 301 to `/lists`, `/games`, `/rotation`. Cookies stay host-only.
+- Each env has a long host (`APP_URL`) and a short host (`SHORT_URL`), both custom domains in `routes`. The short host serves nothing: an early middleware redirects every request to `APP_URL` (301 GET/HEAD, 308 otherwise), expanding `/c/<list>`, `/g/<game>`, `/r/<rotation token>` to `/lists`, `/games`, `/rotation`; share links still use the short host. The same short paths on the long host 301 relatively. Sessions and cookies live only on `APP_URL`.
 - workers.dev and preview URLs are disabled for staging and production (`workers_dev: false`).
 - `scripts/set-secrets.sh` only pushes secrets to staging and production. Per-env binding IDs: `D1_DATABASE_ID`/`KV_NAMESPACE_ID` (production) and `*_STAGING` (staging and dev).
 

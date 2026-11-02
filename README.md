@@ -42,14 +42,14 @@ npm run validate:config
 | Setting | Kind | Purpose |
 |---|---|---|
 | `APP_URL` | var | Public base URL (canonical) |
-| `SHORT_URL` | var | Short host serving the same site (e.g. `https://d.0x9.ca`); empty = none |
+| `SHORT_URL` | var | Short host that redirects to `APP_URL` (e.g. `https://d.0x9.ca`); empty = none |
 | `OAUTH_DISCORD_CLIENT_ID` / `OAUTH_DISCORD_CLIENT_SECRET` | var / secret | Discord sign-in |
 | `OAUTH_TWITCH_CLIENT_ID` / `OAUTH_TWITCH_CLIENT_SECRET` | var / secret | Twitch sign-in (hidden when unset) |
 | `DISCORD_GUILD_ID`, `DISCORD_ROLE_ADMIN`, `DISCORD_ROLE_EDITOR` | var | Discord server roles that map to admin and editor |
 | `DISCORD_NEW_GAME_WEBHOOK_URL`, `DISCORD_ROLE_DLE_ENJOYER` | secret / var | New-game announcements (off when unset) |
 | `SESSION_SECRET` | secret | Session token hashing |
 
-OAuth redirect URLs are `/auth/discord/callback` and `/auth/twitch/callback` on `APP_URL` and on `SHORT_URL` (register both). Keep secrets in `.secrets.env` (git-ignored). `./scripts/set-secrets.sh` syncs the vars into `wrangler.jsonc`, writes `.dev.vars` and uploads the secrets to staging and production.
+OAuth redirect URLs are `/auth/discord/callback` and `/auth/twitch/callback` on `APP_URL` only. Keep secrets in `.secrets.env` (git-ignored). `./scripts/set-secrets.sh` syncs the vars into `wrangler.jsonc`, writes `.dev.vars` and uploads the secrets to staging and production.
 
 ## Deploying
 
