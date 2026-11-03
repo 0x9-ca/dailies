@@ -162,6 +162,13 @@ CREATE UNIQUE INDEX idx_game_claims_one_verified ON game_claims(game_id) WHERE s
 CREATE INDEX idx_game_claims_status ON game_claims(status, last_checked_at);
 CREATE INDEX idx_game_claims_user ON game_claims(user_id);
 
+CREATE TABLE game_click_days (
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  clicks INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (game_id, day)
+);
+
 CREATE TABLE games (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,

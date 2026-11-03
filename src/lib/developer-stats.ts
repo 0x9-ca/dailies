@@ -1,6 +1,6 @@
-// Stats shown to a game's verified developer. Everything is derived from existing tables. Click timestamps are not
-// stored (games.click_count is a running total), so clicks are a total only; rotation adds and votes have created_at
-// and get a 30-day series. Votes are bucketed by when first cast (a changed vote keeps its created_at).
+// Stats shown to a game's verified developer. Everything is derived from existing tables. Daily plays come from
+// game_click_days (counted from Nov 2, 2026 onward; games.click_count is the all-time total); rotation adds and votes
+// have created_at and get a 30-day series. Votes are bucketed by when first cast (a changed vote keeps its created_at).
 import type { Env } from "../env";
 import { getCachedJson, setCachedJson } from "./cache";
 
@@ -10,6 +10,7 @@ const TZ = "America/New_York";
 
 export type DeveloperStats = {
   days: string[];
+  playsPerDay: number[];
   rotationAddsPerDay: number[];
   votesUpPerDay: number[];
   votesDownPerDay: number[];
@@ -47,7 +48,7 @@ export async function loadDeveloperStats(env: Env, gameId: string): Promise<Deve
   ).bind(gameId).first<{ id: string; score: number; click_count: number; vote_up_count: number; vote_down_count: number; nsfw: number; status: string; rotations: number }>();
   if (!game) return null;
   const since = "datetime('now','-32 days')";
-  const [favs, votes, lists, rank, rankOf] = await Promise.all([
+  const [favs, votes, lists, rank, rankOf, plays] = await Promise.all([
     env.DB.prepare(`SELECT created_at FROM favorites WHERE game_id = ?1 AND created_at > ${since} UNION ALL SELECT created_at FROM anonymous_favorites WHERE game_id = ?1 AND created_at > ${since}`).bind(gameId).all<{ created_at: string }>(),
     env.DB.prepare(`SELECT created_at, value FROM votes WHERE game_id = ?1 AND created_at > ${since} UNION ALL SELECT created_at, value FROM anonymous_votes WHERE game_id = ?1 AND created_at > ${since}`).bind(gameId).all<{ created_at: string; value: number }>(),
     env.DB.prepare(
@@ -61,11 +62,14 @@ export async function loadDeveloperStats(env: Env, gameId: string): Promise<Deve
            AND (g.score > ?1 OR (g.score = ?1 AND (g.vote_up_count > ?2 OR (g.vote_up_count = ?2 AND g.id < ?3))))`
         ).bind(game.score, game.vote_up_count, game.id).first<{ n: number }>()
       : Promise.resolve(null),
-    env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved' AND nsfw = 0").first<{ n: number }>()
+    env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved' AND nsfw = 0").first<{ n: number }>(),
+    env.DB.prepare("SELECT day, clicks FROM game_click_days WHERE game_id = ?1 AND day >= date('now','-32 days')").bind(gameId).all<{ day: string; clicks: number }>()
   ]);
   const days = lastDays(new Date());
   const idx = new Map(days.map((d, i) => [d, i]));
   const bucket = (iso: string) => idx.get(etDay(new Date(iso.replace(" ", "T") + "Z")));
+  const playsPerDay = days.map(() => 0);
+  for (const r of plays.results) { const i = idx.get(r.day); if (i !== undefined) playsPerDay[i] = r.clicks; }
   const rotationAddsPerDay = days.map(() => 0);
   const votesUpPerDay = days.map(() => 0);
   const votesDownPerDay = days.map(() => 0);
@@ -74,7 +78,7 @@ export async function loadDeveloperStats(env: Env, gameId: string): Promise<Deve
   const publicLists = lists.results.filter((l) => l.visibility === "public");
   const nVotes = game.vote_up_count + game.vote_down_count;
   const stats: DeveloperStats = {
-    days, rotationAddsPerDay, votesUpPerDay, votesDownPerDay,
+    days, playsPerDay, rotationAddsPerDay, votesUpPerDay, votesDownPerDay,
     totals: {
       clicks: game.click_count,
       rotations: game.rotations,
@@ -168,9 +172,10 @@ export const DEVELOPER_STATS_SCRIPT = `(function () {
       tiles.appendChild(tile(t.ratingPercent == null ? "No votes" : t.ratingPercent + "%", "rating (" + fmt.format(t.votesUp) + " up, " + fmt.format(t.votesDown) + " down)"));
       tiles.appendChild(tile(t.rank == null ? "Not ranked" : "#" + fmt.format(t.rank), t.rank == null ? "in the top ranking" : "of " + fmt.format(t.rankOf) + " games, score " + t.score));
       body.appendChild(tiles);
+      body.appendChild(chart("Plays per day", s.days, s.playsPerDay, null, "plays"));
       body.appendChild(chart("New rotation adds per day", s.days, s.rotationAddsPerDay, null, "rotation adds"));
       body.appendChild(chart("Votes per day", s.days, s.votesUpPerDay, s.votesDownPerDay, "up", "down"));
-      body.appendChild(el("p", "game-actions-note", "Clicks are only counted as a running total, so there is no daily clicks chart."));
+      body.appendChild(el("p", "game-actions-note", "Daily plays are counted from Nov 2, 2026 onward; the play total above includes earlier clicks."));
       if (s.lists.length) {
         body.appendChild(el("h3", null, "Public lists featuring your game"));
         var ul = el("ul");

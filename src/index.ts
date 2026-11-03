@@ -1479,7 +1479,7 @@ app.get("/games/:slug", async (c) => {
       ${renderCategoryPills(categories.results)}
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
-      <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}" onclick="fetch('/api/games/${game.id}/click',{method:'POST'}).catch(()=>{})">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
+      <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
       <div class="game-actions" role="group" aria-label="Vote and favorite">
         <button type="button" id="vote-up" data-vote-button="up" class="${userVote === 1 ? "active" : ""}" aria-pressed="${userVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", game.title, game.vote_up_count))}" title="Vote up"><span aria-hidden="true">▲</span> <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
         <button type="button" id="vote-down" data-vote-button="down" class="${userVote === -1 ? "active" : ""}" aria-pressed="${userVote === -1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("down", game.title, game.vote_down_count))}" title="Vote down"><span aria-hidden="true">▼</span> <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
@@ -5343,7 +5343,15 @@ app.post("/api/games/:id/click", async (c) => {
   if (!clickRate.ok) {
     return c.json({ ok: true });
   }
-  await c.env.DB.prepare("UPDATE games SET click_count = click_count + 1 WHERE id = ?1").bind(gameId).run();
+  // Daily plays are bucketed by US/Eastern date (same as developer stats).
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const [update] = await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE games SET click_count = click_count + 1 WHERE id = ?1").bind(gameId),
+    c.env.DB.prepare("INSERT INTO game_click_days (game_id, day, clicks) SELECT id, ?2, 1 FROM games WHERE id = ?1 ON CONFLICT(game_id, day) DO UPDATE SET clicks = clicks + 1").bind(gameId, day)
+  ]);
+  if (!update.meta.changes) {
+    return c.json({ ok: true });
+  }
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
@@ -8871,7 +8879,10 @@ const RESET_LOCALIZE_SCRIPT = `
     const link = event.target instanceof Element ? event.target.closest("a.card-link, a[data-play-id]") : null;
     if (!link || !/^https?:/.test(link.href) || new URL(link.href).origin === window.location.origin) return;
     const card = link.closest("li");
-    window.dglMarkPlayed(link.getAttribute("data-play-id") || (card ? cardGameId(card) : ""));
+    const id = link.getAttribute("data-play-id") || (card ? cardGameId(card) : "");
+    window.dglMarkPlayed(id);
+    // The one place a play click is counted (feeds the ranking score). keepalive lets it outlive the navigation.
+    if (id) fetch("/api/games/" + encodeURIComponent(id) + "/click", { method: "POST", keepalive: true }).catch(() => {});
   };
   document.addEventListener("click", onGameOpen, true);
   document.addEventListener("auxclick", onGameOpen, true);

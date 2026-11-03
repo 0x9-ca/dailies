@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-02",
     items: [
+      "Opening a game from your rotation, a list or a game card now counts as a play, not just the Play button on its page.",
       "Import games into your rotation by pasting a list of names or links, like one copied from Discord.",
       "Share today's progress from your rotation: games played and your streak, ready to paste.",
       "Developers can add an Add to my rotation link to their own site, from their game page.",

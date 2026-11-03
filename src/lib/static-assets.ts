@@ -2509,7 +2509,6 @@ export const PAGE_SCRIPTS: Record<string, string> = {
             link.dataset.playId = item.gameId;
             link.title = "Play " + item.title + " (opens in a new tab)";
             link.textContent = item.title;
-            link.addEventListener("click", () => { fetch("/api/games/" + encodeURIComponent(item.gameId) + "/click", { method: "POST" }).catch(() => {}); });
             if (item.paywall) {
               const badge = document.createElement("span");
               badge.className = "paywall-badge";

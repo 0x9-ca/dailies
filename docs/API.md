@@ -26,7 +26,7 @@
 - `DELETE /api/games/:id/favorite-anon`
 - `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour per user or IP. Logged-out visitors are identified by hashed IP.
 - `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back; taking back the last vote withdraws the suggestion, `withdrawn: true`, and the game can still be suggested again)
-- `POST /api/games/:id/click` (increments click count for scoring; capped per visitor per game)
+- `POST /api/games/:id/click` (increments click count for scoring and the game's daily plays (US/Eastern day, `game_click_days`); capped per visitor per game. The client script sends it for every outbound game open)
 
 ## Auth pages/routes
 
@@ -71,7 +71,7 @@
 - `POST /api/games/:id/claim/verify` (fetches the game's URL for `<meta name="0x9dles-verify" content="TOKEN">`, then `/.well-known/0x9dles.txt` on its origin. Staging uses `0x9dles-stg-verify` and `0x9dles-stg.txt`, dev `-dev`; 422 token not found, 502 site unreachable)
 - `POST /api/games/:id/claim/evidence` (`{ evidence }`, 10-500 chars: asks an editor to confirm instead; claim becomes `review`)
 - `DELETE /api/games/:id/claim` (withdraw, or release a verified game)
-- `GET /api/games/:id/developer-stats` (the game's verified developer or an admin; 401/403/404 otherwise. Last 30 days in US/Eastern: `days`, `rotationAddsPerDay`, `votesUpPerDay`, `votesDownPerDay`, plus `totals` (`clicks` all-time, `rotations`, `lists`, `publicLists`, `votesUp`, `votesDown`, `ratingPercent`, `rank`/`rankOf` in the top ranking, `score`) and `lists` (public ones: `title`, `slug`). Clicks have no daily series: only a running total is stored. KV-cached 10 minutes per game)
+- `GET /api/games/:id/developer-stats` (the game's verified developer or an admin; 401/403/404 otherwise. Last 30 days in US/Eastern: `days`, `rotationAddsPerDay`, `votesUpPerDay`, `votesDownPerDay`, `playsPerDay` (daily plays, counted from 2026-11-02), plus `totals` (`clicks` all-time, `rotations`, `lists`, `publicLists`, `votesUp`, `votesDown`, `ratingPercent`, `rank`/`rankOf` in the top ranking, `score`) and `lists` (public ones: `title`, `slug`). `totals.clicks` includes plays from before daily counting. KV-cached 10 minutes per game)
 - `PUT /api/games/:id/developer-update` (verified developer only: title, url, description, reset metadata, paywall, `how_to_play`; never status, NSFW or categories. Changing the URL needs the token on the new address first, else 422)
 
 ## Editor/Admin
