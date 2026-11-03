@@ -15,6 +15,7 @@
 - `GET /api/lists`
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
+- `GET /api/games/new?days=14&categories=a,b,c&limit=12` → `{ games: [{ id, slug, title, url, paywall, categories: [{ slug, name }], listedAt }] }`: approved, non-NSFW games listed in the last `days` (1-60) in any of up to 5 categories, newest first (`limit` up to 24). Empty without valid categories. KV-cached for 5 minutes; used by the home page's "New in your categories" row.
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
 - `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, url, paywall, nsfw, categories: [{ slug, name, hue }], votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
 
@@ -45,6 +46,8 @@
 - `GET /api/me/favorites/export` (JSON export of rotation)
 - `POST /api/me/favorites/import` (JSON import of rotation)
 - `POST /api/me/favorites/import-local` (sync localStorage favorites to account)
+- `GET /api/me/plays?since=<ISO>` (signed in, 600/hour; default last 100 days): `{ userId, plays: [{ gameId, playedAt }], streak: { last, count }, log: { "YYYY-MM-DD": games } }`. `playedAt` is a UTC instant; `last` and `log` days are the player's local dates.
+- `POST /api/me/plays` (signed in, CSRF, 600/hour): `{ plays?: [{ gameId, playedAt }], unplayed?: [{ gameId, since }], streak?: { last, count }, log?: { day: games } }`, max 200 plays and 200 unplayed. `playedAt` is clamped to 100 days ago..now; a play within 10 minutes of an existing one for the same game is ignored. `unplayed` deletes that game's plays at or after `since` (its last reset) and runs before `plays`. `streak` keeps the later `last` (larger `count` on a tie); `log` keeps the larger count per day. Rows older than 120 days are pruned on write. The favorites export also carries `plays` and `streak`.
 - `POST /api/me/favorites/reorder`
 - `PATCH /api/me/favorites/:gameId`
 - `GET /api/me/rotation?weekday=1..7`
