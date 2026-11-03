@@ -1002,7 +1002,52 @@ export const SHARED_CSS = `      :root {
         }
       }`;
 
-// Header search, theme toggle, toasts, CSRF fetch wrapper, share buttons (end of <body> on every page).
+// Same-origin mutating fetches carry the double-submit CSRF token. Loaded in <head> (head.js) so it is installed before
+// any page script runs (app.js loads last and, uncached on a first visit, after setTimeout(0) callbacks). A new
+// visitor's cookie may not be there yet: fetch /api/me/session (no-store, sets the cookie) first, and retry once on a CSRF 403.
+export const CSRF_FETCH_SCRIPT = `      (() => {
+        const readToken = () => {
+          for (const raw of document.cookie.split(";")) {
+            const part = raw.trim();
+            if (part.startsWith("csrf_token=")) return decodeURIComponent(part.slice(11));
+          }
+          return "";
+        };
+        const originalFetch = window.fetch.bind(window);
+        let pending = null;
+        const refresh = () => originalFetch("/api/me/session", { credentials: "same-origin", cache: "no-store" }).catch(() => null);
+        const ensureToken = () => {
+          if (readToken()) return Promise.resolve();
+          if (!pending) pending = refresh().then(() => { pending = null; });
+          return pending;
+        };
+        window.fetch = async (input, init = {}) => {
+          const isRequest = typeof input !== "string" && !(input instanceof URL);
+          const requestUrl = isRequest ? input.url : input.toString();
+          const method = String((init && init.method) || (isRequest ? input.method : "GET") || "GET").toUpperCase();
+          const sameOrigin = requestUrl.startsWith("/") || requestUrl.startsWith(window.location.origin);
+          if (!sameOrigin || method === "GET" || method === "HEAD" || method === "OPTIONS") {
+            return originalFetch(input, init);
+          }
+          const send = () => {
+            const headers = new Headers((init && init.headers) || (isRequest ? input.headers : undefined));
+            const token = readToken();
+            if (token) headers.set("x-csrf-token", token);
+            return originalFetch(isRequest ? input.clone() : input, { ...init, headers, credentials: "same-origin" });
+          };
+          await ensureToken();
+          const response = await send();
+          if (response.status !== 403) return response;
+          let invalid = false;
+          try { invalid = (await response.clone().json()).error === "Invalid CSRF token"; } catch (e) {}
+          if (!invalid) return response;
+          await refresh();
+          return send();
+        };
+      })();
+`;
+
+// Header search, theme toggle, toasts, share buttons (end of <body> on every page).
 export const LAYOUT_SCRIPT = `      (() => {
         const buttons = document.querySelectorAll("[data-theme-toggle]");
         const root = document.documentElement;
@@ -1206,35 +1251,6 @@ export const LAYOUT_SCRIPT = `      (() => {
         };
 
         window.appToast = showToast;
-
-        const getCookie = (name) => {
-          const key = name + "=";
-          const parts = document.cookie.split(";");
-          for (const raw of parts) {
-            const part = raw.trim();
-            if (part.startsWith(key)) {
-              return decodeURIComponent(part.slice(key.length));
-            }
-          }
-          return "";
-        };
-
-        const originalFetch = window.fetch.bind(window);
-        window.fetch = async (input, init = {}) => {
-          const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-          const method = String((init && init.method) || (typeof input !== "string" && !(input instanceof URL) ? input.method : "GET") || "GET").toUpperCase();
-          const sameOrigin = requestUrl.startsWith("/") || requestUrl.startsWith(window.location.origin);
-          if (!sameOrigin || method === "GET" || method === "HEAD" || method === "OPTIONS") {
-            return originalFetch(input, init);
-          }
-
-          const token = getCookie("csrf_token");
-          const headers = new Headers(init.headers || (typeof input !== "string" && !(input instanceof URL) ? input.headers : undefined));
-          if (token) {
-            headers.set("x-csrf-token", token);
-          }
-          return originalFetch(input, { ...init, headers, credentials: "same-origin" });
-        };
       })();
       // Share buttons ([data-share], data-share-title): the native share sheet where there is one, otherwise the
       // page link is copied. The URL is the canonical page URL (no query string).
