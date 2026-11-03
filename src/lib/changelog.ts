@@ -9,6 +9,7 @@ export const CHANGELOG: ChangelogDay[] = [
       "Import games into your rotation by pasting a list of names or links, like one copied from Discord.",
       "Share today's progress from your rotation: games played and your streak, ready to paste.",
       "Developers can add an Add to my rotation link to their own site, from their game page.",
+      "Verified developers see stats for their game on its page: plays, rotations, lists and rating.",
       "Know when a game resets? Suggest its reset time from the game page.",
       "Short links (d.0x9.ca) now forward to dailies.0x9.ca, so you stay signed in.",
       "Game pages show more details: reset schedule, ratings, lists and answers to common questions.",
