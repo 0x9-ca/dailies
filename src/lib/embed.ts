@@ -57,6 +57,18 @@ footer a{color:var(--brand);font-weight:600}
 // Clicks on a game are sent with sendBeacon: the embed is a cross-site iframe, so the site's CSRF-aware fetch isn't there.
 const EMBED_SCRIPT = `
 (function () {
+  var errs = {}, nerr = 0;
+  function rep(msg, src, line, col, stack) {
+    try {
+      if (nerr >= 5 || !navigator.sendBeacon || !src || src.indexOf(location.origin) !== 0 || !msg || msg === "Script error.") return;
+      var path = src.slice(location.origin.length).split(/[?#]/)[0], k = msg + "|" + path + "|" + line;
+      if (errs[k]) return;
+      errs[k] = 1; nerr++;
+      navigator.sendBeacon("/api/client-errors", JSON.stringify({ message: String(msg).slice(0, 500), source: path, line: line | 0, col: col | 0, stack: String(stack || "").slice(0, 1500), page: location.pathname, version: "" }));
+    } catch (e) {}
+  }
+  window.addEventListener("error", function (e) { rep(e.message, e.filename || location.href, e.lineno, e.colno, e.error && e.error.stack); });
+  window.addEventListener("unhandledrejection", function (e) { var r = e.reason; rep("Unhandled rejection: " + (r && r.message ? r.message : r), location.href, 0, 0, r && r.stack); });
   function tick() {
     var els = document.querySelectorAll("[data-kind]");
     for (var i = 0; i < els.length; i++) {

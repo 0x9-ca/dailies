@@ -96,6 +96,9 @@
 
 ## Editor/Admin
 
+- `POST /api/client-errors` (anonymous, no CSRF, sendBeacon; `{ message, source, line, col, stack, page, version }`, body max 4 KB, 30/hour per IP; always 204)
+- `DELETE /api/admin/client-errors/:fingerprint` and `DELETE /api/admin/client-errors` (admin only; clear one or all client error rows)
+
 - `PUT /api/admin/settings` (admin only: `{ fandleMaxPerDeveloper, fandleMaxShown, fandleMembershipDays }`: games 1-100, days 1-3650, each `null` for no limit; optional `playedOnStream: "on" | "off"` (Played on stream for everyone, or admins only). A change purges the cached list pages)
 - `POST /api/admin/creators/twitch` (admin only; `{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:twitchUserId` removes them)
 - `POST /api/admin/users/:id/creator` (admin only; `{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)

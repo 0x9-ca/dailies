@@ -33,7 +33,7 @@ import { PLAY_HISTORY_CSS, PLAY_HISTORY_KEEP_DAYS, PLAY_HISTORY_PAGE_DAYS, PLAY_
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
 import { PUSH_MAX_PER_USER, isAllowedEndpoint, pendingReminder, pushEnabled, runPushReminders, validTimeZone } from "./lib/push";
 import { clearPlays, loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
-import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
+import { CSRF_FETCH_SCRIPT, ERROR_REPORT_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
 
 type Bindings = Env;
 
@@ -175,16 +175,17 @@ function ensureCsrfCookie(c: Context<{ Bindings: Bindings; Variables: AppVariabl
 }
 
 app.use("*", async (c, next) => {
-  if (!isEmbedPath(c.req.path) && !c.req.path.startsWith(EMBED_CLICK_PREFIX)) ensureCsrfCookie(c);
+  if (!isEmbedPath(c.req.path) && !c.req.path.startsWith(EMBED_CLICK_PREFIX) && c.req.path !== CLIENT_ERRORS_PATH) ensureCsrfCookie(c);
   await next();
 });
 
 // The embed widget runs in third-party iframes with no site fetch wrapper (and maybe no cookies); this one anonymous,
 // rate-limited click endpoint is exempt from CSRF.
 const EMBED_CLICK_PREFIX = "/api/embed/click/";
+const CLIENT_ERRORS_PATH = "/api/client-errors";
 
 app.use("/api/*", async (c, next) => {
-  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS" || c.req.path.startsWith(EMBED_CLICK_PREFIX)) {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS" || c.req.path.startsWith(EMBED_CLICK_PREFIX) || c.req.path === CLIENT_ERRORS_PATH) {
     await next();
     return;
   }
@@ -3403,6 +3404,9 @@ app.get("/admin", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
+  const errCount24 = auth.role === "admin"
+    ? ((await c.env.DB.prepare("SELECT COALESCE(SUM(count), 0) AS n FROM client_errors WHERE last_seen >= datetime('now', '-1 day')").first<{ n: number }>().catch(() => null))?.n ?? 0)
+    : 0;
   return c.html(await layout("Admin", auth, `
     <main>
       <h1>Admin</h1>
@@ -3415,6 +3419,7 @@ app.get("/admin", async (c) => {
         <a class="panel" href="/admin/stats">Stats</a>
         <a class="panel" href="/admin/health">Link health and data gaps</a>
         <a class="panel" href="/admin/settings">Site settings</a>` : ""}
+        ${auth.role === "admin" ? `<a class="panel" href="/admin/errors">Client errors${errCount24 > 0 ? ` <strong>(${errCount24} client error${errCount24 === 1 ? "" : "s"} today)</strong>` : ""}</a>` : ""}
         <a class="panel" href="/admin/categories">Manage categories</a>
         <a class="panel" href="/admin/lists">Manage curated lists</a>
       </div>
@@ -4000,6 +4005,90 @@ app.post("/api/admin/users/:id/creator", async (c) => {
   }
   await writeAudit(c.env, auth.id, "user", userId, parsed.data.grant ? "grant_creator" : "revoke_creator", {});
   await invalidateGameCaches(c.env);
+  return c.json({ ok: true });
+});
+
+// Client JS error reports (sendBeacon from head.js / the embed page; anonymous, no CSRF). Aggregated by fingerprint.
+app.post(CLIENT_ERRORS_PATH, async (c) => {
+  const len = Number(c.req.header("content-length") || 0);
+  if (len > 4096) return c.body(null, 204);
+  const raw = await c.req.text().catch(() => "");
+  if (raw.length > 4096) return c.body(null, 204);
+  let json: unknown = null;
+  try { json = JSON.parse(raw); } catch { /* ignore */ }
+  const parsed = z.object({
+    message: z.string().min(1).max(500),
+    source: z.string().max(300).optional(),
+    line: z.number().int().min(0).max(1e7).optional(),
+    col: z.number().int().min(0).max(1e7).optional(),
+    stack: z.string().max(1500).optional(),
+    page: z.string().max(300).optional(),
+    version: z.string().max(80).optional()
+  }).safeParse(json);
+  if (!parsed.success) return c.body(null, 204);
+  const rate = await enforceRateLimit(c.env, `clienterr:${await getAnonymousVoteKey(c)}`, 30, 60 * 60);
+  if (!rate.ok) return c.body(null, 204);
+  const d = parsed.data;
+  const source = (d.source ?? "").split(/[?#]/)[0];
+  const fingerprint = await hashToken(c.env.SESSION_SECRET, `client-error:${d.message}|${source}|${d.line ?? 0}`);
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      `INSERT INTO client_errors (fingerprint, message, source, line, col, stack, page, version, first_seen, last_seen, count)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'), datetime('now'), 1)
+       ON CONFLICT(fingerprint) DO UPDATE SET count = count + 1, last_seen = datetime('now'), page = excluded.page, version = excluded.version, stack = excluded.stack`
+    ).bind(fingerprint, d.message, source, d.line ?? 0, d.col ?? 0, d.stack ?? "", d.page ?? "", d.version ?? ""),
+    c.env.DB.prepare("DELETE FROM client_errors WHERE last_seen < datetime('now', '-30 days')")
+  ]);
+  return c.body(null, 204);
+});
+
+app.get("/admin/errors", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) return auth;
+  const rows = await c.env.DB.prepare("SELECT fingerprint, message, source, line, stack, page, version, first_seen, last_seen, count FROM client_errors ORDER BY last_seen DESC LIMIT 500")
+    .all<{ fingerprint: string; message: string; source: string | null; line: number | null; stack: string | null; page: string | null; version: string | null; first_seen: string; last_seen: string; count: number }>();
+  const when = (iso: string) => new Date(iso.replace(" ", "T") + "Z").toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" });
+  return c.html(await layout("Client errors", auth, `
+    <main>
+      <h1>Client errors</h1>
+      <p class="muted">Uncaught JavaScript errors reported by browsers, grouped by message and location, kept 30 days. Times are US/Eastern.</p>
+      ${rows.results.length ? `<p><button type="button" class="btn" id="clear-all-errors">Clear all</button></p>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Message</th><th>Page</th><th>Source</th><th>Count</th><th>First seen</th><th>Last seen</th><th>Version</th><th></th></tr></thead>
+        <tbody>${rows.results.map((r) => `<tr>
+          <td>${escapeHtml(r.message)}${r.stack ? `<details><summary>Stack</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(r.stack)}</pre></details>` : ""}</td>
+          <td>${escapeHtml(r.page ?? "")}</td>
+          <td>${escapeHtml(r.source ?? "")}:${r.line ?? 0}</td>
+          <td>${r.count.toLocaleString("en-US")}</td>
+          <td>${escapeHtml(when(r.first_seen))} ET</td>
+          <td>${escapeHtml(when(r.last_seen))} ET</td>
+          <td>${escapeHtml(r.version ?? "")}</td>
+          <td><button type="button" class="btn" data-clear-error="${escapeHtml(r.fingerprint)}">Clear</button></td>
+        </tr>`).join("")}</tbody></table></div>` : `<p class="muted">No client errors recorded.</p>`}
+      <script>
+        document.addEventListener("click", async (e) => {
+          const one = e.target.closest("[data-clear-error]");
+          const all = e.target.closest("#clear-all-errors");
+          if (!one && !all) return;
+          const res = await fetch(one ? "/api/admin/client-errors/" + encodeURIComponent(one.dataset.clearError) : "/api/admin/client-errors", { method: "DELETE" });
+          if (res.ok) location.reload();
+        });
+      </script>
+    </main>
+  `, c.env));
+});
+
+app.delete("/api/admin/client-errors/:fingerprint", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) return auth;
+  await c.env.DB.prepare("DELETE FROM client_errors WHERE fingerprint = ?1").bind(c.req.param("fingerprint")).run();
+  return c.json({ ok: true });
+});
+
+app.delete("/api/admin/client-errors", async (c) => {
+  const auth = requireRole(c, ["admin"]);
+  if (auth instanceof Response) return auth;
+  await c.env.DB.prepare("DELETE FROM client_errors").run();
   return c.json({ ok: true });
 });
 
@@ -11516,6 +11605,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <script>try{if(localStorage.getItem("dgl_theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}</script>
     ${opts?.headHtml ?? ""}
+    <script>window.DGL_VERSION = ${scriptJson(appVersion(env))};</script>
     <script>window.DGL_SHORT_ORIGIN = ${scriptJson(shortOrigin(env))} || window.location.origin;</script>
     <script>${HIDDEN_GAMES_SCRIPT}</script>
     <script src="${ASSET.headJs}"></script>
@@ -12288,7 +12378,7 @@ const ASSET = {
   dev_stats_js: registerAsset("dev-stats", "js", DEVELOPER_STATS_SCRIPT),
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
-  headJs: registerAsset("head", "js", joinJs(CSRF_FETCH_SCRIPT, GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
+  headJs: registerAsset("head", "js", joinJs(ERROR_REPORT_SCRIPT, CSRF_FETCH_SCRIPT, GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
   appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, OFFLINE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   liveBadgesJs: registerAsset("live-badges", "js", LIVE_BADGES_SCRIPT),

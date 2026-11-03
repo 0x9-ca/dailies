@@ -128,6 +128,12 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - `anonymous_favorites` table: `anon_id`, `game_id` (no position or weekday_mask).
 - Local favorites in localStorage key `dgl_local_favorites_v1`: `[{ id, slug, title }]`.
 
+## Client error reporting
+
+- `ERROR_REPORT_SCRIPT` (first in head.js; a smaller copy in `src/lib/embed.ts`) sends uncaught errors and unhandled rejections with `sendBeacon` to `POST /api/client-errors`: same-origin scripts only, deduped by message+line, max 5 per page load. `window.DGL_VERSION` carries the deploy version.
+- The endpoint is anonymous and CSRF-exempt (`CLIENT_ERRORS_PATH`, like the embed click), body max 4 KB, 30 reports/hour per hashed IP, always 204. Rows aggregate in `client_errors` (fingerprint = hash of message+source+line, `count`, first/last seen); rows idle 30 days are deleted on each write.
+- `/admin/errors` (admin only) lists them with stacks and Clear / Clear all; `/admin` shows "N client errors today" for the last 24h.
+
 ## Safe editing notes for agents
 
 - Keep SQL parameterized with D1 prepared statements.
