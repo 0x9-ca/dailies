@@ -1,3 +1,4 @@
+import { parseMonth, dayFormatter, loadRecap } from "./lib/recap";
 import { DurableObject } from "cloudflare:workers";
 import { queueDeveloperRole, runDeveloperRoleMaintenance } from "./lib/developer-role";
 export { DeveloperRoleSync } from "./lib/developer-role";
@@ -2306,7 +2307,7 @@ app.get("/me/settings", async (c) => {
       <h1>Account Settings</h1>
       <section class="panel">
         <h2>Profile</h2>
-        <p class="muted"><small>Your played games sync across devices while you're signed in.</small></p>
+        <p class="muted"><small>Your played games sync across devices while you're signed in. <a href="/me/recap">Monthly recap</a></small></p>
         <form id="profile-form" class="stack-form">
           <label for="display-name">Display name</label>
           <input id="display-name" name="displayName" maxlength="80" placeholder="Your name" value="${escapeHtml(auth.displayName || "")}" />
@@ -5054,6 +5055,53 @@ app.post("/api/me/favorites/import-local", async (c) => {
   }
 
   return c.json({ ok: true, imported });
+});
+
+app.get("/api/me/recap", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const month = parseMonth(c.req.query("month"));
+  const fmt = dayFormatter(c.req.query("tz") || "");
+  if (!month || !fmt) {
+    return c.json({ error: "Invalid month or tz" }, 400);
+  }
+  const rate = await enforceRateLimit(c.env, `recap:get:${auth.id}`, 300, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  return c.json(await loadRecap(c.env, auth.id, month, fmt), 200, { "Cache-Control": "no-store" });
+});
+
+// Private, per-visitor (never in PUBLIC_CACHE_PATHS): the shell is the same for everyone and the script fills it in.
+app.get("/me/recap", async (c) => {
+  const user = c.get("user");
+  return c.html(await layout("Monthly recap", user, `
+    <main class="narrow recap" id="recap" data-signed-in="${user ? "1" : "0"}">
+      <h1>Monthly recap</h1>
+      <div class="recap-nav">
+        <button type="button" class="secondary" id="recap-prev" aria-label="Previous month" disabled>&larr;</button>
+        <h2 id="recap-month" aria-live="polite">&nbsp;</h2>
+        <button type="button" class="secondary" id="recap-next" aria-label="Next month" disabled>&rarr;</button>
+      </div>
+      <p class="muted" id="recap-empty" hidden>Nothing played this month.</p>
+      <div id="recap-body" hidden>
+        <div class="stats-tiles" id="recap-tiles"></div>
+        <section class="panel" id="recap-top-box"><h2>Top games</h2><ol id="recap-top"></ol></section>
+        <section class="heatmap recap-cal" aria-labelledby="recap-cal-title">
+          <h2 id="recap-cal-title">Calendar</h2>
+          <div class="recap-cal-head" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+          <div class="recap-cal-grid" id="recap-cal" role="list"></div>
+          <div class="heatmap-legend" aria-hidden="true"><span>Less</span><span class="heat-cell" data-level="0"></span><span class="heat-cell" data-level="1"></span><span class="heat-cell" data-level="2"></span><span class="heat-cell" data-level="3"></span><span class="heat-cell" data-level="4"></span><span>More</span></div>
+        </section>
+        <button type="button" id="recap-copy">Copy recap</button>
+      </div>
+      <p class="muted"><small>${user ? "Recaps cover about the last 4 months." : "Saved on this device; sign in to keep it across devices."}</small></p>
+      <p><a href="/me/rotation">Back to my rotation</a></p>
+    </main>
+    <script src="${ASSET.recapJs}"></script>
+  `, c.env, { path: "/me/recap", noindex: true }));
 });
 
 app.get("/api/me/plays", async (c) => {
@@ -7845,6 +7893,7 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
 <details class="stats-card" id="play-stats" open hidden>
   <summary>Your stats</summary>
   <div class="stats-tiles" id="play-stats-tiles"></div>
+  <p class="stats-link"><a href="/me/recap">Monthly recap &rarr;</a></p>
 </details>
 <div class="reminder-opt" id="reminder-opt" hidden>
   <label><input type="checkbox" id="reminder-toggle"> Remind me before resets</label>
@@ -9130,6 +9179,182 @@ const DAILY_PROGRESS_SCRIPT = `
       minutes.addEventListener("change", save);
     }
   };
+`;
+
+// /me/recap: month summary from local play data (signed out) or GET /api/me/recap (signed in).
+const RECAP_SCRIPT = `
+(() => {
+  const root = document.getElementById("recap");
+  if (!root) return;
+  const signedIn = root.getAttribute("data-signed-in") === "1";
+  const $ = (id) => document.getElementById(id);
+  const num = new Intl.NumberFormat("en-US");
+  const tz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } })();
+  const key2 = (y, m) => y + "-" + String(m).padStart(2, "0");
+  const now = new Date();
+  const thisMonth = key2(now.getFullYear(), now.getMonth() + 1);
+  const shift = (key, delta) => { const [y, m] = key.split("-").map(Number); const d = new Date(Date.UTC(y, m - 1 + delta, 1)); return key2(d.getUTCFullYear(), d.getUTCMonth() + 1); };
+  const monthName = (key) => { const [y, m] = key.split("-").map(Number); return new Intl.DateTimeFormat("en-US", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(y, m - 1, 1))); };
+  const monthTitle = (key) => monthName(key) + " " + key.split("-")[0];
+  const daysIn = (key) => { const [y, m] = key.split("-").map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
+  const plural = (n, one, many) => num.format(n) + " " + (n === 1 ? one : many);
+  const readLocal = (name) => { try { return JSON.parse(window.localStorage.getItem(name) || "{}") || {}; } catch { return {}; } };
+
+  let month = thisMonth;
+  let availableFrom = thisMonth;
+  const cache = {};
+  const titles = {};
+  let titlesLoaded = false;
+  const loadTitles = async () => {
+    if (titlesLoaded) return;
+    titlesLoaded = true;
+    try {
+      const r = await fetch("/api/games/titles");
+      const data = r.ok ? await r.json() : null;
+      ((data && data.games) || []).forEach((g) => { titles[g.id] = { title: g.title, slug: g.slug }; });
+    } catch {}
+  };
+
+  // Normalized: { counts: { "YYYY-MM-DD": n }, tally: { gameId: n }, games: { id: { title, slug } } }
+  const localMonth = (key) => {
+    const log = readLocal("dgl_play_log_v1");
+    const byDay = readLocal("dgl_play_games_v1");
+    const counts = {};
+    const tally = {};
+    for (let d = 1; d <= daysIn(key); d++) {
+      const day = key + "-" + String(d).padStart(2, "0");
+      const list = Array.isArray(byDay[day]) ? byDay[day] : null;
+      const n = list ? list.length : Math.max(0, Math.floor(Number(log[day]) || 0));
+      if (n > 0) counts[day] = n;
+      if (list) list.forEach((id) => { tally[id] = (tally[id] || 0) + 1; });
+    }
+    return { counts, tally, games: {} };
+  };
+  const localFrom = () => {
+    const keys = Object.keys(readLocal("dgl_play_log_v1")).concat(Object.keys(readLocal("dgl_play_games_v1"))).filter((k) => k.length === 10 && k[4] === "-").sort();
+    return keys.length ? keys[0].slice(0, 7) : thisMonth;
+  };
+  const serverMonth = async (key) => {
+    const r = await fetch("/api/me/recap?month=" + key + "&tz=" + encodeURIComponent(tz), { credentials: "same-origin" });
+    if (!r.ok) throw new Error("recap " + r.status);
+    const data = await r.json();
+    const counts = {};
+    Object.keys(data.days).forEach((d) => { if (data.days[d].length) counts[d] = data.days[d].length; });
+    const tally = {};
+    const games = {};
+    data.games.forEach((g) => { tally[g.id] = g.plays; games[g.id] = { title: g.title, slug: g.slug }; });
+    if (data.available && data.available.from) availableFrom = data.available.from;
+    return { counts, tally, games };
+  };
+  const get = async (key) => {
+    if (!cache[key]) cache[key] = signedIn ? await serverMonth(key) : localMonth(key);
+    return cache[key];
+  };
+
+  const summarize = (data, key) => {
+    const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
+    let best = 0;
+    let run = 0;
+    for (let d = 1; d <= daysIn(key); d++) {
+      if (data.counts[key + "-" + String(d).padStart(2, "0")]) { run++; if (run > best) best = run; } else run = 0;
+    }
+    return { days: Object.keys(data.counts).length, total, distinct: Object.keys(data.tally).length, best };
+  };
+  const delta = (cur, prev, unit, prevName) => (cur >= prev ? "+" : "-") + num.format(Math.abs(cur - prev)) + " " + unit + " vs " + prevName;
+
+  let current = null;
+  const render = async (key) => {
+    month = key;
+    $("recap-month").textContent = monthTitle(key);
+    $("recap-prev").disabled = key <= availableFrom;
+    $("recap-next").disabled = key >= thisMonth;
+    let data;
+    try { data = await get(key); } catch { $("recap-empty").textContent = "Could not load your recap. Try again later."; $("recap-empty").hidden = false; $("recap-body").hidden = true; return; }
+    if (key !== month) return;
+    const stats = summarize(data, key);
+    $("recap-empty").textContent = "Nothing played in " + monthName(key) + ".";
+    $("recap-empty").hidden = stats.total > 0;
+    $("recap-body").hidden = stats.total === 0;
+    if (stats.total === 0) { current = null; return; }
+    if (!signedIn && Object.keys(data.tally).length) await loadTitles();
+    if (key !== month) return;
+    const info = (id) => (data.games[id] && data.games[id].title ? data.games[id] : titles[id] || { title: "", slug: "" });
+
+    const prevKey = shift(key, -1);
+    let prev = null;
+    if (prevKey >= availableFrom) {
+      try { const p = summarize(await get(prevKey), prevKey); if (p.total > 0) prev = p; } catch {}
+    }
+    if (key !== month) return;
+    const prevName = monthName(prevKey);
+    const tiles = [
+      ["Days played", num.format(stats.days), prev ? delta(stats.days, prev.days, Math.abs(stats.days - prev.days) === 1 ? "day" : "days", prevName) : ""],
+      ["Total plays", num.format(stats.total), prev ? delta(stats.total, prev.total, Math.abs(stats.total - prev.total) === 1 ? "play" : "plays", prevName) : ""],
+      ["Best run", plural(stats.best, "day", "days"), ""]
+    ];
+    if (stats.distinct > 0) tiles.splice(2, 0, ["Different games", num.format(stats.distinct), ""]);
+    $("recap-tiles").replaceChildren(...tiles.map(([label, value, note]) => {
+      const tile = document.createElement("div");
+      tile.className = "stat-tile";
+      const v = document.createElement("strong");
+      v.textContent = value;
+      const l = document.createElement("span");
+      l.textContent = label;
+      tile.append(v, l);
+      if (note) { const n = document.createElement("span"); n.className = "recap-delta"; n.textContent = note; tile.append(n); }
+      return tile;
+    }));
+
+    const top = Object.keys(data.tally).sort((a, b) => data.tally[b] - data.tally[a] || info(a).title.localeCompare(info(b).title)).slice(0, 5).filter((id) => info(id).title);
+    $("recap-top-box").hidden = top.length === 0;
+    $("recap-top").replaceChildren(...top.map((id) => {
+      const li = document.createElement("li");
+      const g = info(id);
+      if (g.slug) { const a = document.createElement("a"); a.href = "/games/" + encodeURIComponent(g.slug); a.textContent = g.title; li.append(a); } else li.append(g.title);
+      li.append(" (" + num.format(data.tally[id]) + ")");
+      return li;
+    }));
+
+    const cells = [];
+    const first = new Date(Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5)) - 1, 1)).getUTCDay();
+    for (let i = 0; i < first; i++) { const b = document.createElement("span"); b.setAttribute("aria-hidden", "true"); cells.push(b); }
+    for (let d = 1; d <= daysIn(key); d++) {
+      const n = data.counts[key + "-" + String(d).padStart(2, "0")] || 0;
+      const cell = document.createElement("span");
+      cell.className = "heat-cell recap-day";
+      cell.setAttribute("role", "listitem");
+      cell.dataset.level = String(n === 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 5 ? 3 : 4);
+      cell.setAttribute("aria-label", monthName(key) + " " + d + ": " + plural(n, "play", "plays"));
+      cell.textContent = String(d);
+      cells.push(cell);
+    }
+    $("recap-cal").replaceChildren(...cells);
+
+    const topText = top.map((id) => info(id).title + " (" + data.tally[id] + ")").join(", ");
+    current = "My " + monthName(key) + " on 0x9 dles: " + plural(stats.days, "day", "days") + " played, " + plural(stats.total, "play", "plays") +
+      (stats.distinct ? ", " + plural(stats.distinct, "game", "games") : "") + "." + (topText ? " Top: " + topText + "." : "") + " " + window.location.origin;
+  };
+
+  $("recap-prev").addEventListener("click", () => render(shift(month, -1)));
+  $("recap-next").addEventListener("click", () => render(shift(month, 1)));
+  $("recap-copy").addEventListener("click", async () => {
+    if (!current) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(current); ok = true; } catch {
+      const area = document.createElement("textarea");
+      area.value = current; area.setAttribute("readonly", ""); area.style.position = "fixed"; area.style.opacity = "0";
+      document.body.appendChild(area); area.select();
+      try { ok = document.execCommand("copy"); } catch {}
+      area.remove();
+    }
+    if (ok) window.appToast?.("Copied"); else window.appToast?.("Could not copy. Try again.", "error");
+  });
+
+  (async () => {
+    if (signedIn) { try { await get(thisMonth); } catch {} } else availableFrom = localFrom();
+    render(thisMonth);
+  })();
+})();
 `;
 
 const RESET_LOCALIZE_SCRIPT = `
@@ -11193,6 +11418,7 @@ const ASSET = {
   npCss: registerAsset("now-playing", "css", NOW_PLAYING_CSS),
   npJs: registerAsset("now-playing", "js", NOW_PLAYING_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
+  recapJs: registerAsset("recap", "js", RECAP_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
   page_home_new_cats: registerAsset("home-new-cats", "js", PAGE_SCRIPTS["home-new-cats"]),
