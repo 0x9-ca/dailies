@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-03",
     items: [
+      "Stream mode and the OBS overlay show how many games from the list you've played this stream.",
       "The home page shows which creators are live right now and what they're playing.",
       "Game pages show how often you've played a game lately.",
       "Reset reminders now arrive even when 0x9 dles isn't open, if you're signed in and allow notifications.",
