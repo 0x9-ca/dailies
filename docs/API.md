@@ -11,6 +11,7 @@
 - `GET /feed.xml?category=<slug>` → the same feed limited to approved games in that active category. Unknown or inactive slugs get a 404 `application/xml` error.
 - `GET /badge/c/:slug.svg` → 320×60 SVG for a public list with games: "0x9 dles", "N dailies" and the list's short address (`<short host>/c/<slug>`). Private, unknown or empty lists get a 404 SVG. Cached an hour; for Twitch panels and socials (snippets in the list's Stream settings).
 - `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
+- `GET /embed/lists/:slug?theme=dark|light|auto&limit=1-50&title=0&transparent=1` → standalone HTML widget of a public list for iframes (numbered games linking out in a new tab, paywall badge, reset countdown, suggest/footer links). Framing allowed anywhere (`frame-ancestors *`, no `X-Frame-Options`), `X-Robots-Tag: noindex`, canonical to `/lists/:slug`, no cookies, edge-cached 60s (`Cache-Control: public, max-age=60`). Skips unapproved and NSFW games. Private or unknown lists get an embed-styled 404. The list page's Embed menu item builds the snippet.
 - `GET /api/categories`
 - `GET /api/lists`
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
@@ -27,6 +28,7 @@
 - `DELETE /api/games/:id/favorite-anon`
 - `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour per user or IP. Logged-out visitors are identified by hashed IP.
 - `PUT /api/lists/:id/suggestions/:gameId/vote`, `DELETE /api/lists/:id/suggestions/:gameId/vote` (agree, or take it back; taking back the last vote withdraws the suggestion, `withdrawn: true`, and the game can still be suggested again)
+- `POST /api/embed/click/:gameId` (what the embed widget sends with `navigator.sendBeacon`; same counting and per-IP-and-game rate limit as the click above, no cookies, exempt from CSRF; always `{ ok: true }`)
 - `POST /api/games/:id/click` (increments click count for scoring and the game's daily plays (US/Eastern day, `game_click_days`); capped per visitor per game. The client script sends it for every outbound game open)
 
 ## Auth pages/routes

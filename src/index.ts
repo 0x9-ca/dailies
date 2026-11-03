@@ -7,6 +7,7 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
+import { EMBED_DIALOG_SCRIPT, parseEmbedOptions, renderEmbedDialog, renderEmbedNotFound, renderEmbedPage, type EmbedItem } from "./lib/embed";
 import { appOrigin, expandShortPath, isShortHost, SHORT_PATHS, shortOrigin } from "./lib/origins";
 import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
@@ -44,9 +45,16 @@ app.use("*", async (c, next) => {
   if (!isDevEnv(c.env)) c.header("Strict-Transport-Security", "max-age=31536000");
   c.header("X-Content-Type-Options", "nosniff");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-  c.header("X-Frame-Options", "DENY");
-  // Routes such as the badge SVG set their own policy.
-  if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", "frame-ancestors 'none'");
+  if (isEmbedPath(c.req.path)) {
+    // The embeddable list widget may be framed by any site.
+    c.res.headers.delete("X-Frame-Options");
+    c.header("Content-Security-Policy", "frame-ancestors *");
+    c.header("X-Robots-Tag", "noindex");
+  } else {
+    c.header("X-Frame-Options", "DENY");
+    // Routes such as the badge SVG set their own policy.
+    if (!c.res.headers.has("Content-Security-Policy")) c.header("Content-Security-Policy", "frame-ancestors 'none'");
+  }
 });
 
 // The short host only forwards to APP_URL (expanding short paths), so cookies and sessions live on one host.
@@ -96,15 +104,19 @@ for (const [short, long] of SHORT_PATHS) {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|mod-log|changelog)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|mod-log|changelog|embed\/lists\/[^/]+)?$/;
+
+// The embed widget never shows per-visitor state and sets no cookies, so it is cached whatever cookies the request has.
+function isEmbedPath(path: string): boolean {
+  return path.startsWith("/embed/");
+}
 
 app.use("*", async (c, next) => {
   const cacheable =
     c.req.method === "GET" &&
     !isDevEnv(c.env) &&
     PUBLIC_CACHE_PATHS.test(c.req.path) &&
-    !getCookie(c, c.env.SESSION_COOKIE_NAME) &&
-    !getCookie(c, "dgl_voted");
+    (isEmbedPath(c.req.path) || (!getCookie(c, c.env.SESSION_COOKIE_NAME) && !getCookie(c, "dgl_voted")));
   c.set("publicCache", cacheable);
   if (!cacheable) {
     await next();
@@ -119,8 +131,9 @@ app.use("*", async (c, next) => {
   const cacheKey = new Request(cacheUrl.toString());
   const cached = await caches.default.match(cacheKey);
   if (cached) {
-    ensureCsrfCookie(c);
-    return c.body(await cached.text(), 200, { "Content-Type": cached.headers.get("Content-Type") ?? "text/html; charset=UTF-8", "Cache-Control": "no-cache", "X-Page-Cache": "HIT" });
+    const embed = isEmbedPath(c.req.path);
+    if (!embed) ensureCsrfCookie(c);
+    return c.body(await cached.text(), 200, { "Content-Type": cached.headers.get("Content-Type") ?? "text/html; charset=UTF-8", "Cache-Control": embed ? `public, max-age=${PUBLIC_CACHE_SECONDS}` : "no-cache", "X-Page-Cache": "HIT" });
   }
 
   await next();
@@ -129,7 +142,7 @@ app.use("*", async (c, next) => {
     c.executionCtx.waitUntil(caches.default.put(cacheKey, copy));
   }
   // Browsers must revalidate, or a visitor who just voted could be shown their own stale copy.
-  c.header("Cache-Control", "no-cache");
+  c.header("Cache-Control", isEmbedPath(c.req.path) ? `public, max-age=${PUBLIC_CACHE_SECONDS}` : "no-cache");
   c.header("X-Page-Cache", "MISS");
 });
 
@@ -147,12 +160,16 @@ function ensureCsrfCookie(c: Context<{ Bindings: Bindings; Variables: AppVariabl
 }
 
 app.use("*", async (c, next) => {
-  ensureCsrfCookie(c);
+  if (!isEmbedPath(c.req.path) && !c.req.path.startsWith(EMBED_CLICK_PREFIX)) ensureCsrfCookie(c);
   await next();
 });
 
+// The embed widget runs in third-party iframes with no site fetch wrapper (and maybe no cookies); this one anonymous,
+// rate-limited click endpoint is exempt from CSRF.
+const EMBED_CLICK_PREFIX = "/api/embed/click/";
+
 app.use("/api/*", async (c, next) => {
-  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS") {
+  if (c.req.method === "GET" || c.req.method === "HEAD" || c.req.method === "OPTIONS" || c.req.path.startsWith(EMBED_CLICK_PREFIX)) {
     await next();
     return;
   }
@@ -2320,6 +2337,55 @@ app.get("/lists", async (c) => {
   `, c.env, { path: "/lists", description: "Curated lists of daily games picked by editors and Twitch streamers. See which dailies they play, then add them to your own rotation.", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"]])] }));
 });
 
+app.get("/embed/lists/:slug", async (c) => {
+  const slug = c.req.param("slug");
+  const siteUrl = appOrigin(c.env);
+  const list = await c.env.DB.prepare(
+    `SELECT curated_lists.id, curated_lists.slug, curated_lists.title,
+            CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_verified_list
+     FROM curated_lists
+     LEFT JOIN users ON users.id = curated_lists.owner_user_id
+     WHERE curated_lists.slug = ?1 AND curated_lists.visibility = 'public'`
+  )
+    .bind(slug)
+    .first<{ id: string; slug: string; title: string; is_verified_list: number }>();
+  if (!list) return c.html(renderEmbedNotFound(siteUrl), 404);
+  const options = parseEmbedOptions((name) => c.req.query(name));
+  const rows = await c.env.DB.prepare(
+    `SELECT games.id, games.title, games.url, games.paywall, games.reset_basis, games.reset_time_minutes, games.reset_timezone
+     FROM curated_list_items
+     JOIN games ON games.id = curated_list_items.game_id
+     WHERE curated_list_items.curated_list_id = ?1 AND games.status = 'approved' AND games.nsfw = 0
+     ORDER BY curated_list_items.position ASC
+     LIMIT ?2`
+  )
+    .bind(list.id, options.limit ?? 500)
+    .all<{ id: string; title: string; url: string; paywall: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
+  const items: EmbedItem[] = rows.results.map((row) => {
+    const reset = getResetSortData(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
+    return {
+      id: row.id,
+      title: row.title,
+      url: row.url,
+      paywall: !!row.paywall,
+      resetKind: reset?.kind ?? null,
+      resetMin: reset?.min ?? null,
+      resetLabel: getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone)
+    };
+  });
+  const short = shortOrigin(c.env);
+  return c.html(renderEmbedPage({
+    title: list.title,
+    verified: !!list.is_verified_list,
+    items,
+    options,
+    canonicalUrl: `${siteUrl}/lists/${encodeURIComponent(list.slug)}`,
+    suggestLabel: `${new URL(short ?? siteUrl).host}/c/${list.slug}`,
+    siteUrl,
+    checkSvg: CHECK_SVG
+  }));
+});
+
 app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
@@ -2528,6 +2594,7 @@ app.get("/lists/:slug", async (c) => {
       <div class="list-head-actions" id="head-actions">
         <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
         ${canEdit ? `<a class="btn" data-head-item data-head-keep href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a>` : ""}
+        ${isAdminEditor || list.visibility !== "public" ? "" : `<button type="button" class="secondary" data-head-item id="embed-btn">Embed</button>`}
         ${isAdminEditor || items.results.length === 0 ? "" : `<button type="button" class="secondary" data-head-item id="add-all-btn">Add all to my rotation</button>`}
         ${isAdminEditor ? "" : `<button type="button" class="secondary" data-head-item id="stream-toggle" aria-pressed="false" title="Large-type view for streaming (Esc exits)">Stream mode</button>`}
         <div class="head-more" id="head-more" hidden>
@@ -2658,6 +2725,7 @@ app.get("/lists/:slug", async (c) => {
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
     <script src="${ASSET.listPageJs}"></script>
+    ${isAdminEditor || list.visibility !== "public" ? "" : `${renderEmbedDialog()}<script src="${ASSET.embedDialogJs}" data-origin="${escapeHtml(appOrigin(c.env))}" data-slug="${escapeHtml(list.slug)}" data-title="${escapeHtml(list.title)}"></script>`}
     ${layoutOn ? `<script src="${ASSET.page_list_layout}"></script>` : ""}
     ${!isAdminEditor ? `<script>
       (() => {
@@ -5406,8 +5474,12 @@ app.get("/api/games/:id/developer-stats", async (c) => {
   return c.json(stats, 200, { "Cache-Control": "private, no-store" });
 });
 
-app.post("/api/games/:id/click", async (c) => {
-  const gameId = c.req.param("id");
+app.post("/api/games/:id/click", (c) => recordGameClick(c, c.req.param("id")));
+
+// Unauthenticated, no CSRF (see EMBED_CLICK_PREFIX); same per-IP-and-game rate limit and counters as the site's click.
+app.post("/api/embed/click/:gameId", (c) => recordGameClick(c, c.req.param("gameId")));
+
+async function recordGameClick(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, gameId: string): Promise<Response> {
   // Clicks feed the score, so cap how many one visitor can contribute per game.
   const clickRate = await enforceRateLimit(c.env, `click:${await getAnonymousVoteKey(c)}:${gameId}`, 5, 60 * 60);
   if (!clickRate.ok) {
@@ -5425,8 +5497,7 @@ app.post("/api/games/:id/click", async (c) => {
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
-});
-
+}
 
 // Whether this browser has a session. Always 200 (no 401 noise for logged-out visitors) and never cached, so
 // edge-cached pages can ask it from the client.
@@ -10959,6 +11030,7 @@ const ASSET = {
   headJs: registerAsset("head", "js", joinJs(CSRF_FETCH_SCRIPT, GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
   appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
+  embedDialogJs: registerAsset("embed-dialog", "js", EMBED_DIALOG_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
