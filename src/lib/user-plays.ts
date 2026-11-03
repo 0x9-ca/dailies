@@ -69,8 +69,10 @@ export async function loadPlays(env: Env, userId: string, sinceParam: string | u
     .all<{ day: string; game_id: string }>();
   const skips: Record<string, string[]> = {};
   for (const r of skipRows.results) (skips[r.day] ||= []).push(r.game_id);
+  const resetRow = await env.DB.prepare("SELECT reset_at FROM user_plays_reset WHERE user_id = ?1").bind(userId).first<{ reset_at: string }>();
   return {
     userId,
+    resetAt: resetRow?.reset_at || "",
     skips,
     plays: rows.results.map((r) => ({ gameId: r.game_id, playedAt: r.played_at })),
     streak: { last: streak.last, count: streak.count, best: streak.best },
@@ -139,4 +141,18 @@ export async function savePlays(env: Env, userId: string, body: z.infer<typeof p
     );
   }
   await env.DB.batch(stmts);
+}
+
+/** Deletes plays, skips and the streak row; records resetAt so other devices wipe their local copy. */
+export async function clearPlays(env: Env, userId: string): Promise<string> {
+  const resetAt = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM user_plays WHERE user_id = ?1").bind(userId),
+    env.DB.prepare("DELETE FROM user_skips WHERE user_id = ?1").bind(userId),
+    env.DB.prepare("DELETE FROM user_streaks WHERE user_id = ?1").bind(userId),
+    env.DB.prepare(
+      "INSERT INTO user_plays_reset (user_id, reset_at) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET reset_at = excluded.reset_at"
+    ).bind(userId, resetAt)
+  ]);
+  return resetAt;
 }

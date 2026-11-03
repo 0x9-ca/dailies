@@ -9,7 +9,7 @@
 // merge by "later day / larger count" in both directions. No ${} or backticks in this text.
 export const PLAY_SYNC_SCRIPT = `
 (() => {
-  const PENDING = "dgl_plays_pending_v1", SYNCED = "dgl_plays_synced_v1", PLAYED = "dgl_played_v1", LOG = "dgl_play_log_v1", STREAK = "dgl_streak_v1";
+  const PENDING = "dgl_plays_pending_v1", SYNCED = "dgl_plays_synced_v1", PLAYED = "dgl_played_v1", LOG = "dgl_play_log_v1", STREAK = "dgl_streak_v1", RESET_SEEN = "dgl_plays_reset_seen_v1";
   const DAY = 24 * 60 * 60 * 1000;
   const signedIn = !!document.querySelector('a[href="/me/settings"]');
   if (!signedIn) {
@@ -104,6 +104,19 @@ export const PLAY_SYNC_SCRIPT = `
   const sync = async () => {
     lastSync = Date.now();
     try {
+      // Cleared elsewhere? Wipe local play data before flush() can re-upload an old streak or log.
+      const probe = await fetch("/api/me/plays?since=" + encodeURIComponent(new Date().toISOString()));
+      if (probe.ok) {
+        const pd = await probe.json();
+        const seen = window.localStorage.getItem(RESET_SEEN) || "";
+        if (pd && typeof pd.resetAt === "string" && pd.resetAt > seen) {
+          ["dgl_played_v1", "dgl_play_log_v1", "dgl_play_games_v1", "dgl_streak_v1", "dgl_streak_best_v1", "dgl_skipped_v1", PENDING].forEach((k) => { try { window.localStorage.removeItem(k); } catch {} });
+          try { window.localStorage.setItem(RESET_SEEN, pd.resetAt); window.localStorage.setItem(SYNCED, String(pd.userId)); } catch {}
+          lastSent = "";
+          window.dglLocalizeResets();
+          (window.dglPlayedHooks || []).forEach((hook) => { try { hook(); } catch {} });
+        }
+      }
       await flush();
       const res = await fetch("/api/me/plays");
       if (!res.ok) return;

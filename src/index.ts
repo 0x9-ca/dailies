@@ -29,7 +29,7 @@ import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
 import { buildServiceWorker, OFFLINE_SCRIPT } from "./lib/service-worker";
 import { PLAY_HISTORY_CSS, PLAY_HISTORY_KEEP_DAYS, PLAY_HISTORY_PAGE_DAYS, PLAY_HISTORY_SCRIPT, recordPlay } from "./lib/play-history";
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
-import { loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
+import { clearPlays, loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
 
 type Bindings = Env;
@@ -2473,6 +2473,15 @@ app.get("/me/settings", async (c) => {
             )
             .join("")}
         </ul>
+      </section>
+      <section class="panel" id="your-data">
+        <h2>Your data</h2>
+        <p>Download your play history, or clear it. Clearing removes your play history, streak and recap data on every device. Your rotation stays.</p>
+        <div class="actions">
+          <a class="button" href="/api/me/plays/export?format=json" download>Download JSON</a>
+          <a class="button" href="/api/me/plays/export?format=csv" download>Download CSV</a>
+          <button type="button" id="plays-clear" class="danger">Clear play history</button>
+        </div>
       </section>
       <section class="panel" id="hidden-games-panel" hidden>
         <h2>Hidden games</h2>
@@ -5333,6 +5342,67 @@ app.get("/api/me/plays", async (c) => {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
   }
   return c.json(await loadPlays(c.env, auth.id, c.req.query("since")), 200, { "Cache-Control": "no-store" });
+});
+
+app.get("/api/me/plays/export", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `plays:export:${auth.id}`, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const format = c.req.query("format") === "csv" ? "csv" : "json";
+  const data = await loadPlays(c.env, auth.id, new Date(0).toISOString());
+  const ids = [...new Set(data.plays.map((p) => p.gameId))];
+  const games = new Map<string, { title: string; slug: string }>();
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const rows = await c.env.DB.prepare(`SELECT id, title, slug FROM games WHERE id IN (${chunk.map((_, n) => `?${n + 1}`).join(",")})`)
+      .bind(...chunk)
+      .all<{ id: string; title: string; slug: string }>();
+    for (const r of rows.results) games.set(r.id, { title: r.title, slug: r.slug });
+  }
+  const plays = data.plays.map((p) => ({
+    gameId: p.gameId,
+    title: games.get(p.gameId)?.title || "",
+    slug: games.get(p.gameId)?.slug || "",
+    playedAt: p.playedAt
+  }));
+  const exportedAt = new Date().toISOString();
+  const headers = {
+    "Cache-Control": "no-store",
+    "Content-Disposition": `attachment; filename="0x9-dles-plays-${exportedAt.slice(0, 10)}.${format}"`
+  };
+  if (format === "json") {
+    return new Response(JSON.stringify({ exportedAt, plays, streak: data.streak, dayLog: data.log }, null, 2), {
+      headers: { ...headers, "Content-Type": "application/json; charset=utf-8" }
+    });
+  }
+  const cell = (v: string) => {
+    // Neutralize spreadsheet formula injection, then quote.
+    const safe = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+    return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+  };
+  const lines = ["played_at,game_title,game_slug,game_url"];
+  for (const p of plays) {
+    lines.push([p.playedAt, p.title, p.slug, p.slug ? `${c.env.APP_URL}/games/${encodeURIComponent(p.slug)}` : ""].map(cell).join(","));
+  }
+  return new Response(lines.join("\r\n") + "\r\n", { headers: { ...headers, "Content-Type": "text/csv; charset=utf-8" } });
+});
+
+app.delete("/api/me/plays", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `plays:clear:${auth.id}`, 10, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const resetAt = await clearPlays(c.env, auth.id);
+  return c.json({ ok: true, resetAt }, 200, { "Cache-Control": "no-store" });
 });
 
 app.post("/api/me/plays", async (c) => {
