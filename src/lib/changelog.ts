@@ -8,6 +8,7 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "No connection? Your rotation still opens with what it showed last time, and games you mark played sync when you're back online.",
       "See your month at a glance: the new Monthly recap shows days played, your top games and a calendar, ready to share.",
+      "Shared rotations show which games you both play and add only the ones you don't have yet.",
       "A New page lists the games added in the last 30 days, week by week.",
       "Game pages say when our link checker couldn't reach a game recently.",
       "Put a list on your own site: Embed in a list's menu gives you a small widget to paste anywhere.",
