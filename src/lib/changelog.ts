@@ -8,6 +8,7 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "A New page lists the games added in the last 30 days, week by week.",
       "Game pages say when our link checker couldn't reach a game recently.",
+      "Put a list on your own site: Embed in a list's menu gives you a small widget to paste anywhere.",
       "Stream mode can switch between your list, viewer suggestions and Fan-dles: press 1, 2 or 3, use the control that appears when you move the mouse, or set a pane or auto-rotate in Stream settings.",
       "Signed in? Your played games, play history and streak now sync across your devices.",
       "After you play a game, you can rate it with a thumbs up or down right from the page you came from.",
