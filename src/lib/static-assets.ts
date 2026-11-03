@@ -420,6 +420,7 @@ export const SHARED_CSS = `      :root {
       textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--control-border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
       .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
+      .offline-banner { background: var(--card); color: var(--warn); border-bottom: 1px solid var(--border); padding: 0.5rem 1rem; text-align: center; font-weight: 600; font-size: 0.9rem; }
       .status { min-height: 1.2rem; color:var(--accent); font-weight: 600; }
       .status.error { color: #cc6666; }
       .actions { display:flex; gap:0.6rem; flex-wrap:wrap; margin-bottom:0.8rem; }
