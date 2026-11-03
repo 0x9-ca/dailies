@@ -801,6 +801,15 @@ export const SHARED_CSS = `      :root {
       .stat-tile { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; }
       .stat-tile strong { font-size: 1.05rem; overflow-wrap: anywhere; }
       .stat-tile span { color: var(--muted); font-size: 0.8rem; }
+      .stats-link { margin: 0.6rem 0 0; font-size: 0.9rem; }
+      .recap-nav { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin: 0 0 1rem; }
+      .recap-nav h2 { margin: 0; font-size: 1.2rem; text-align: center; }
+      .recap .panel, .recap .stats-tiles, .recap .heatmap { margin-bottom: 1rem; }
+      .recap-delta { color: var(--brand-blue) !important; }
+      .recap-cal-head, .recap-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; max-width: 420px; }
+      .recap-cal-head { color: var(--muted); font-size: 0.75rem; text-align: center; margin-bottom: 3px; }
+      .recap-day { display: flex; align-items: center; justify-content: center; font-size: 0.8rem; color: var(--ink); }
+      .recap-day[data-level="3"], .recap-day[data-level="4"] { color: #fff; }
       .new-in-cats { margin: 0 0 1rem; }
       .new-in-cats[hidden] { display: none !important; }
       .new-in-cats h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }

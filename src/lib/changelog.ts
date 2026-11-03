@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-02",
     items: [
+      "See your month at a glance: the new Monthly recap shows days played, your top games and a calendar, ready to share.",
       "A New page lists the games added in the last 30 days, week by week.",
       "Game pages say when our link checker couldn't reach a game recently.",
       "Put a list on your own site: Embed in a list's menu gives you a small widget to paste anywhere.",
