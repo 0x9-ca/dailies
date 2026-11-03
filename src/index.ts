@@ -94,7 +94,7 @@ for (const [short, long] of SHORT_PATHS) {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|mod-log|changelog)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|mod-log|changelog)?$/;
 
 app.use("*", async (c, next) => {
   const cacheable =
@@ -1006,25 +1006,7 @@ app.get("/games", async (c) => {
     return `/games${params.toString() ? "?" + params.toString() : ""}`;
   };
 
-  let paginationMarkup = "";
-  if (page > 1 || hasMore) {
-    paginationMarkup = `<div class="pagination">`;
-    if (page > 1) {
-      paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page - 1))}">&larr; Previous</a>`;
-    }
-    // Numbered links (first, last and a window around this page) keep every page within a few clicks.
-    const pageNumbers = new Set([1, totalPages, page - 2, page - 1, page, page + 1, page + 2].filter((n) => n >= 1 && n <= Math.max(totalPages, page)));
-    let previousNumber = 0;
-    for (const n of [...pageNumbers].sort((a, b) => a - b)) {
-      if (n - previousNumber > 1) paginationMarkup += `<span aria-hidden="true">…</span>`;
-      paginationMarkup += n === page ? `<span aria-current="page">${n}</span>` : `<a href="${escapeHtml(buildPageUrl(n))}" aria-label="Page ${n}">${n}</a>`;
-      previousNumber = n;
-    }
-    if (hasMore) {
-      paginationMarkup += `<a href="${escapeHtml(buildPageUrl(page + 1))}">Next &rarr;</a>`;
-    }
-    paginationMarkup += `</div>`;
-  }
+  const paginationMarkup = renderPagination(page, totalPages, hasMore, buildPageUrl);
 
   const activeCategory = category ? categories.results.find((cat) => cat.slug === category) : undefined;
   if (category && !activeCategory) {
@@ -1034,19 +1016,24 @@ app.get("/games", async (c) => {
   const pageSuffix = page > 1 ? ` – Page ${page}` : "";
   const pageTitle = (activeCategory ? `${heading} (${totalGames})` : "All Daily Games") + pageSuffix;
   const categoryPath = activeCategory ? `/games?category=${encodeURIComponent(activeCategory.slug)}` : "/games";
+  const categoryPagePath = activeCategory ? `/categories/${encodeURIComponent(activeCategory.slug)}` : "";
   // Later pages list different games, so each is its own canonical page (the sort order is not).
-  const canonicalPath = page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
+  // A plain category filter (no search, sort or hide filters) is the same list as the category's landing page.
+  const plainCategory = !!activeCategory && sort === "top" && !q && !hidePaywall && !hideNsfw;
+  const canonicalPath = plainCategory
+    ? (page > 1 ? `${categoryPagePath}?page=${page}` : categoryPagePath)
+    : page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
   const categoryDescription = activeCategory?.description && !activeCategory.description.startsWith("Imported from") ? activeCategory.description : "";
   const activeFilterCount = [sort !== "top", !!category, hidePaywall, hideNsfw].filter(Boolean).length;
   const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", reset: "Resetting soonest" };
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
-  if (activeCategory) crumbs.push([activeCategory.name, categoryPath]);
+  if (activeCategory) crumbs.push([activeCategory.name, categoryPagePath]);
   const categoryFeedPath = activeCategory ? `/feed.xml?category=${encodeURIComponent(activeCategory.slug)}` : "";
   return c.html(await layout(pageTitle, user, `
     <main>
       <h1>${escapeHtml(heading)}</h1>
       ${activeCategory ? `<p class="feed-link"><a href="${escapeHtml(categoryFeedPath)}" type="application/atom+xml">Feed</a></p>` : ""}
-      ${activeCategory ? `<p>${categoryDescription ? `${escapeHtml(categoryDescription)} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/games">browse every category</a>.</p>` : ""}
+      ${activeCategory ? `<p>${categoryDescription ? `${escapeHtml(categoryDescription)} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${escapeHtml(activeCategory.name)} category, ranked by community votes. Vote for your favorites, add them to your daily rotation, or <a href="/categories">browse every category</a>.</p>` : ""}
       <form method="GET" action="/games" class="game-filters" id="game-filters">
         <div class="search-row">
           <input type="search" name="q" placeholder="Search games" aria-label="Search games" value="${escapeHtml(q || "")}" />
@@ -1079,26 +1066,7 @@ app.get("/games", async (c) => {
         ${paginationMarkup}
         ${similarMarkup}
       </div>
-      <p class="hidden-toggle" id="hidden-toggle" hidden><button type="button" id="hidden-toggle-btn" aria-pressed="false"></button></p>
-      <script>
-        (() => {
-          const root = document.documentElement;
-          const box = document.getElementById("hidden-toggle");
-          const button = document.getElementById("hidden-toggle-btn");
-          if (!box || !button || !window.dglHidden) return;
-          const refresh = () => {
-            const count = window.dglHidden.read().length;
-            if (count === 0) root.classList.remove("dgl-show-hidden");
-            const showing = root.classList.contains("dgl-show-hidden");
-            box.hidden = count === 0;
-            button.textContent = "Hidden games (" + count + ") · " + (showing ? "Hide" : "Show");
-            button.setAttribute("aria-pressed", showing ? "true" : "false");
-          };
-          button.addEventListener("click", () => { root.classList.toggle("dgl-show-hidden"); refresh(); });
-          window.addEventListener("dglhiddenchange", refresh);
-          refresh();
-        })();
-      </script>
+      ${HIDDEN_TOGGLE_MARKUP}
     </main>
     ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
   `, c.env, {
@@ -1109,6 +1077,204 @@ app.get("/games", async (c) => {
     jsonLd: [breadcrumbLd(crumbs), gameItemListLd(games, offset)],
     noindex: !!q || hidePaywall || hideNsfw,
     feed: activeCategory ? { href: categoryFeedPath, title: `New games in ${activeCategory.name} on 0x9 dles` } : undefined
+  }));
+});
+
+// Category landing pages: /categories lists every category that has games, /categories/:slug is one category's
+// overview, ranked game grid, related categories and FAQ. /games?category= stays as the filterable Browse view.
+const CATEGORY_PER_PAGE = 98;
+
+function categoryHeading(name: string): string {
+  return /\bgames$/i.test(name) ? `Daily ${name}` : `${name} daily games`;
+}
+
+function categoryBlurb(description: string | null | undefined): string {
+  return description && !description.startsWith("Imported from") ? description.trim() : "";
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+app.get("/categories", async (c) => {
+  const user = c.get("user");
+  const cats = (await c.env.DB.prepare(
+    `SELECT categories.id, categories.slug, categories.name, categories.description, COUNT(DISTINCT games.id) AS n
+     FROM categories
+     JOIN game_categories ON game_categories.category_id = categories.id
+     JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
+     WHERE categories.is_active = 1
+     GROUP BY categories.id
+     ORDER BY n DESC, categories.name ASC`
+  ).all<{ id: string; slug: string; name: string; description: string | null; n: number }>()).results;
+  const top = (await c.env.DB.prepare(
+    `SELECT category_id, title, slug FROM (
+       SELECT game_categories.category_id AS category_id, games.title AS title, games.slug AS slug,
+              ROW_NUMBER() OVER (PARTITION BY game_categories.category_id ORDER BY games.score DESC, games.vote_up_count DESC) AS rn
+       FROM game_categories
+       JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
+     ) WHERE rn <= 3 ORDER BY category_id, rn`
+  ).all<{ category_id: string; title: string; slug: string }>()).results;
+  const topByCategory = new Map<string, Array<{ title: string; slug: string }>>();
+  for (const row of top) {
+    const list = topByCategory.get(row.category_id) ?? [];
+    list.push(row);
+    topByCategory.set(row.category_id, list);
+  }
+  if (cats.length === 0) return notFoundPage(c);
+  const totalGames = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
+  const itemLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    itemListElement: cats.map((cat, index) => ({ "@type": "ListItem", position: index + 1, name: categoryHeading(cat.name), url: `${c.env.APP_URL}/categories/${encodeURIComponent(cat.slug)}` }))
+  };
+  return c.html(await layout("Daily Game Categories", user, `
+    <main class="narrow">
+      <h1>Daily game categories</h1>
+      <p>${plural(cats.length, "category").replace(/^1 category$/, "1 category")} covering ${totalGames.toLocaleString("en-US")} daily games. Pick a category to see its games ranked by community votes, or <a href="/games">browse every game</a> with filters.</p>
+      <ul class="category-index">
+        ${cats.map((cat) => {
+          const blurb = categoryBlurb(cat.description);
+          const tops = topByCategory.get(cat.id) ?? [];
+          return `<li class="panel">
+          <h2>${renderCategoryPill(cat, cat.n)}</h2>
+          ${blurb ? `<p>${escapeHtml(blurb)}</p>` : ""}
+          <p class="category-index-top">Top rated: ${tops.map((game) => `<a href="/games/${escapeHtml(encodeURIComponent(game.slug))}">${escapeHtml(game.title)}</a>`).join(", ")}</p>
+          <p><a href="/categories/${escapeHtml(encodeURIComponent(cat.slug))}">All ${plural(cat.n, "game")} in ${escapeHtml(cat.name)}</a></p>
+        </li>`;
+        }).join("")}
+      </ul>
+    </main>
+  `, c.env, {
+    path: "/categories",
+    description: `Browse ${cats.length} categories of daily games, from ${cats.slice(0, 3).map((cat) => cat.name).join(", ")} and more. ${totalGames} games ranked by community votes.`.slice(0, 160),
+    jsonLd: [breadcrumbLd([["Home", "/"], ["Categories", "/categories"]]), itemLd]
+  }));
+});
+
+app.get("/categories/:slug", async (c) => {
+  const user = c.get("user");
+  const slug = c.req.param("slug");
+  const page = Math.max(1, parsePositiveInt(c.req.query("page"), 1));
+  const offset = (page - 1) * CATEGORY_PER_PAGE;
+  const category = await c.env.DB.prepare("SELECT id, slug, name, description FROM categories WHERE slug = ?1 AND is_active = 1")
+    .bind(slug)
+    .first<{ id: string; slug: string; name: string; description: string | null }>();
+  if (!category) return notFoundPage(c);
+  const stats = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(games.reset_basis = 'server') AS fixed_reset,
+            SUM(games.reset_basis = 'local') AS local_reset,
+            SUM(games.paywall = 1) AS paid
+     FROM games
+     JOIN game_categories ON game_categories.game_id = games.id AND game_categories.category_id = ?1
+     WHERE games.status = 'approved'`
+  ).bind(category.id).first<{ total: number; fixed_reset: number | null; local_reset: number | null; paid: number | null }>();
+  const totalGames = stats?.total ?? 0;
+  if (totalGames === 0) return notFoundPage(c);
+  const totalPages = Math.ceil(totalGames / CATEGORY_PER_PAGE);
+  const gamesWithExtra = await listGames(c.env, { sort: "top", category: slug, limit: CATEGORY_PER_PAGE + 1, offset });
+  const hasMore = gamesWithExtra.length > CATEGORY_PER_PAGE;
+  const games = gamesWithExtra.slice(0, CATEGORY_PER_PAGE);
+  if (page > 1 && games.length === 0) return notFoundPage(c);
+
+  const leaders = page === 1 ? games.slice(0, 3) : await listGames(c.env, { sort: "top", category: slug, limit: 3 });
+  const newest = await c.env.DB.prepare(
+    `SELECT games.title, games.slug FROM games
+     JOIN game_categories ON game_categories.game_id = games.id AND game_categories.category_id = ?1
+     WHERE games.status = 'approved'
+     ORDER BY COALESCE(games.approved_at, games.created_at) DESC LIMIT 1`
+  ).bind(category.id).first<{ title: string; slug: string }>();
+  const related = (await c.env.DB.prepare(
+    `SELECT other.slug, other.name, COUNT(DISTINCT mine.game_id) AS shared
+     FROM game_categories mine
+     JOIN game_categories theirs ON theirs.game_id = mine.game_id AND theirs.category_id != mine.category_id
+     JOIN categories other ON other.id = theirs.category_id AND other.is_active = 1
+     JOIN games ON games.id = mine.game_id AND games.status = 'approved'
+     WHERE mine.category_id = ?1
+     GROUP BY other.id
+     ORDER BY shared DESC, other.name ASC
+     LIMIT 6`
+  ).bind(category.id).all<{ slug: string; name: string; shared: number }>()).results;
+
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
+  const gamesMarkup = renderCompactGameList(games, user, userVotes, userFavorites, { hideable: true });
+  const basePath = `/categories/${encodeURIComponent(category.slug)}`;
+  const buildPageUrl = (n: number) => (n > 1 ? `${basePath}?page=${n}` : basePath);
+  const paginationMarkup = renderPagination(page, totalPages, hasMore, buildPageUrl);
+
+  const blurb = categoryBlurb(category.description);
+  const heading = categoryHeading(category.name);
+  const fixed = stats?.fixed_reset ?? 0;
+  const local = stats?.local_reset ?? 0;
+  const paid = stats?.paid ?? 0;
+  const feedPath = `/feed.xml?category=${encodeURIComponent(category.slug)}`;
+  const lc = heading;
+  const inCategory = `${plural(totalGames, "daily game")} in the ${category.name} category`;
+  const resetSentence = fixed + local > 0
+    ? `${fixed > 0 ? `${plural(fixed, "game")} reset${fixed === 1 ? "s" : ""} at a fixed time, the same moment for everyone` : ""}${fixed > 0 && local > 0 ? ", and " : ""}${local > 0 ? `${local} ${local === 1 ? "resets" : "reset"} at the same clock time in your own time zone` : ""}.`
+    : "";
+  const introText = [
+    `0x9 dles lists ${inCategory}${paid > 0 ? `, ${paid === totalGames ? "all of them paid" : `${paid} of them paid`}` : ", all free to play in your browser"}.`,
+    leaders[0] ? `The top-rated one is ${leaders[0].title}${leaders[0].voteUpCount + leaders[0].voteDownCount >= 5 ? ` (${Math.round((leaders[0].voteUpCount / (leaders[0].voteUpCount + leaders[0].voteDownCount)) * 100)}% liked)` : ""}.` : "",
+    newest ? `The newest addition is ${newest.title}.` : "",
+    resetSentence ? resetSentence.charAt(0).toUpperCase() + resetSentence.slice(1) : ""
+  ].filter(Boolean).join(" ");
+
+  const faqItems: Array<[string, string]> = [
+    [`What are the best ${lc}?`, leaders.length > 0 ? `Based on community votes, the top rated are ${joinNames(leaders.map((game) => game.title))}.` : `There are no ${lc} games yet.`],
+    [`How many ${lc} are there?`, `0x9 dles lists ${inCategory}${newest ? `, most recently ${newest.title}` : ""}.`],
+    [`Are ${lc} free?`, paid === 0 ? `Yes, all ${totalGames} are free to play in your web browser.` : `${totalGames - paid} of ${totalGames} are free to play. ${plural(paid, "game")} ${paid === 1 ? "requires" : "require"} payment, marked with a $ badge.`],
+    [`When do ${lc} reset?`, resetSentence ? resetSentence.charAt(0).toUpperCase() + resetSentence.slice(1) : "Each game gets a new puzzle every day. Reset times are shown on game pages when known."]
+  ];
+
+  const pageSuffix = page > 1 ? ` – Page ${page}` : "";
+  const metaParts = [
+    `${inCategory.charAt(0).toUpperCase()}${inCategory.slice(1)}${paid === 0 ? ", free to play" : ""}, ranked by community votes.`,
+    leaders[0] ? `Top rated: ${leaders[0].title}.` : "",
+    blurb
+  ].filter(Boolean);
+  let metaDescription = metaParts.join(" ");
+  while (metaDescription.length > 160 - pageSuffix.length && metaParts.length > 1) {
+    metaParts.pop();
+    metaDescription = metaParts.join(" ");
+  }
+  if (metaDescription.length > 160 - pageSuffix.length) metaDescription = metaDescription.slice(0, 160 - pageSuffix.length - 1).replace(/\s+\S*$/, "") + "…";
+  metaDescription += pageSuffix;
+
+  const crumbs: Array<[string, string]> = [["Home", "/"], ["Categories", "/categories"], [category.name, basePath]];
+  const faqLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqItems.map(([question, answer]) => ({ "@type": "Question", name: question, acceptedAnswer: { "@type": "Answer", text: answer } }))
+  };
+  return c.html(await layout(`${heading} (${totalGames})${pageSuffix}`, user, `
+    <main>
+      <h1>${escapeHtml(heading)}</h1>
+      <p class="feed-link"><a href="${escapeHtml(feedPath)}" type="application/atom+xml">Feed</a></p>
+      ${blurb ? `<p>${escapeHtml(blurb)}</p>` : ""}
+      <p>${escapeHtml(introText)} Vote for your favorites, add them to your daily rotation, or <a href="/games?category=${escapeHtml(encodeURIComponent(category.slug))}">filter and sort these games</a> in Browse.</p>
+      <div id="game-results">
+        ${gamesMarkup}
+        ${paginationMarkup}
+      </div>
+      ${HIDDEN_TOGGLE_MARKUP}
+      ${related.length > 0 ? `<section class="related-categories">
+        <h2>Related categories</h2>
+        <ul class="about-categories">${related.map((cat) => `<li>${renderCategoryPill(cat, cat.shared)}</li>`).join("")}</ul>
+        <p><a href="/categories">All categories</a></p>
+      </section>` : `<p><a href="/categories">All categories</a></p>`}
+      <section class="game-faq">
+        <h2>${escapeHtml(heading)} FAQ</h2>
+        ${faqItems.map(([question, answer]) => `<h3>${escapeHtml(question)}</h3><p>${escapeHtml(answer)}</p>`).join("")}
+      </section>
+    </main>
+    ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
+  `, c.env, {
+    path: page > 1 ? `${basePath}?page=${page}` : basePath,
+    description: metaDescription,
+    jsonLd: [breadcrumbLd(crumbs), gameItemListLd(games, offset), faqLd],
+    feed: { href: feedPath, title: `New games in ${category.name} on 0x9 dles` }
   }));
 });
 
@@ -1267,7 +1433,7 @@ app.get("/games/:slug", async (c) => {
         ${game.how_to_play ? `<h3>How to play</h3>${game.how_to_play.split(/\n\s*\n/).map((para) => `<p>${escapeHtml(para.trim()).replace(/\n/g, "<br />")}</p>`).join("")}<h3>Details</h3>` : ""}
         <p>${escapeHtml(introText)}${resetHint}</p>
         <dl>
-          ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/games?category=${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
+          ${categories.results.length > 0 ? `<dt>Category</dt><dd>${categories.results.map((cat) => `<a href="/categories/${encodeURIComponent(cat.slug)}">${escapeHtml(cat.name)}</a>`).join(", ")}${describedCategories.length > 0 ? `: ${describedCategories.map((cat) => escapeHtml(cat.description!)).join(" ")}` : ""}</dd>` : ""}
           <dt>Community rating</dt><dd data-rating>${escapeHtml(ratingText)}</dd>
           ${publicLists.results.length > 0 ? `<dt>Featured in</dt><dd>${publicLists.results.map((list) => `<a href="/lists/${encodeURIComponent(list.slug)}">${escapeHtml(list.title)}</a>`).join(", ")}</dd>` : ""}
           ${listedText ? `<dt>Listed on 0x9 dles since</dt><dd>${escapeHtml(listedText)}</dd>` : ""}
@@ -2536,13 +2702,14 @@ app.get("/sitemap.xml", async (c) => {
   ).all<{ slug: string; changed_at: string }>();
 
   const categoriesWithGames = await c.env.DB.prepare(
-    `SELECT DISTINCT categories.slug
+    `SELECT categories.slug, MAX(COALESCE(games.content_updated_at, games.approved_at, games.created_at)) AS changed_at
      FROM categories
      JOIN game_categories ON game_categories.category_id = categories.id
      JOIN games ON games.id = game_categories.game_id
      WHERE categories.is_active = 1 AND games.status = 'approved'
+     GROUP BY categories.id
      ORDER BY categories.slug ASC`
-  ).all<{ slug: string }>();
+  ).all<{ slug: string; changed_at: string | null }>();
 
   // Rows hold "YYYY-MM-DD HH:MM:SS" (datetime()) or ISO strings (API inserts); both are UTC. Invalid values are dropped.
   const toLastmod = (value: string | null | undefined): string | null => {
@@ -2565,7 +2732,8 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/lists", lastmod: latestList },
     { loc: "/mod-log", lastmod: null as string | null },
     { loc: "/changelog", lastmod: null as string | null },
-    ...categoriesWithGames.results.map((cat) => ({ loc: `/games?category=${encodeURIComponent(cat.slug)}`, lastmod: null as string | null })),
+    { loc: "/categories", lastmod: latestGame },
+    ...categoriesWithGames.results.map((cat) => ({ loc: `/categories/${encodeURIComponent(cat.slug)}`, lastmod: toLastmod(cat.changed_at) })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...gameEntries,
     ...listEntries
@@ -2791,6 +2959,7 @@ app.get("/llms.txt", async (c) => {
     "## Browse",
     "",
     `- [All daily games](${base}/games): every game, sortable by rating, newest, trending or resetting soonest`,
+    `- [All categories](${base}/categories): every category with its games and related categories`,
     `- [Curated lists](${base}/lists): lists of games picked by editors and Twitch streamers`,
     `- [Submit a game](${base}/submit): suggest a daily game that's missing`,
     "",
@@ -2800,7 +2969,7 @@ app.get("/llms.txt", async (c) => {
       .filter((cat) => cat.game_count > 0)
       .map((cat) => {
         const description = cat.description && !cat.description.startsWith("Imported from") ? `: ${oneLine(cat.description)}` : "";
-        return `- [${cat.name}](${base}/games?category=${encodeURIComponent(cat.slug)}) (${cat.game_count} game${cat.game_count === 1 ? "" : "s"})${description}`;
+        return `- [${cat.name}](${base}/categories/${encodeURIComponent(cat.slug)}) (${cat.game_count} game${cat.game_count === 1 ? "" : "s"})${description}`;
       }),
     "",
     ...(lists.results.length > 0
@@ -6792,7 +6961,7 @@ function renderDeveloperChip(dev: GameDeveloper): string {
 function renderCategoryPill(cat: { slug: string; name: string }, count?: number): string {
   const hue = categoryHue(cat.slug);
   const style = `color:hsl(${hue}, 65%, 28%); background:hsl(${hue}, 65%, 90%); border-color:hsl(${hue}, 55%, 72%);`;
-  return `<a href="/games?category=${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}${count === undefined ? "" : ` <span class="pill-count">${count}</span>`}</a>`;
+  return `<a href="/categories/${encodeURIComponent(cat.slug)}" class="tag category-pill" style="${style}">${escapeHtml(cat.name)}${count === undefined ? "" : ` <span class="pill-count">${count}</span>`}</a>`;
 }
 
 // Typo-tolerant search fallback (src/lib/search.ts): every approved title with its filter fields, cached in KV.
@@ -9682,6 +9851,48 @@ async function notFoundPage(c: Context<{ Bindings: Bindings; Variables: AppVaria
   `, c.env, { path: c.req.path, noindex: true }), 404);
 }
 
+/** Previous / numbered / Next links (first, last and a window around this page keep every page within a few clicks). */
+function renderPagination(page: number, totalPages: number, hasMore: boolean, buildPageUrl: (page: number) => string): string {
+  if (page <= 1 && !hasMore) return "";
+  let markup = `<div class="pagination">`;
+  if (page > 1) {
+    markup += `<a href="${escapeHtml(buildPageUrl(page - 1))}">&larr; Previous</a>`;
+  }
+  const pageNumbers = new Set([1, totalPages, page - 2, page - 1, page, page + 1, page + 2].filter((n) => n >= 1 && n <= Math.max(totalPages, page)));
+  let previousNumber = 0;
+  for (const n of [...pageNumbers].sort((a, b) => a - b)) {
+    if (n - previousNumber > 1) markup += `<span aria-hidden="true">…</span>`;
+    markup += n === page ? `<span aria-current="page">${n}</span>` : `<a href="${escapeHtml(buildPageUrl(n))}" aria-label="Page ${n}">${n}</a>`;
+    previousNumber = n;
+  }
+  if (hasMore) {
+    markup += `<a href="${escapeHtml(buildPageUrl(page + 1))}">Next &rarr;</a>`;
+  }
+  return markup + `</div>`;
+}
+
+/** The "Hidden games (N) · Show" toggle under a game grid (cards are hidden before paint by HIDDEN_GAMES_SCRIPT). */
+const HIDDEN_TOGGLE_MARKUP = `<p class="hidden-toggle" id="hidden-toggle" hidden><button type="button" id="hidden-toggle-btn" aria-pressed="false"></button></p>
+      <script>
+        (() => {
+          const root = document.documentElement;
+          const box = document.getElementById("hidden-toggle");
+          const button = document.getElementById("hidden-toggle-btn");
+          if (!box || !button || !window.dglHidden) return;
+          const refresh = () => {
+            const count = window.dglHidden.read().length;
+            if (count === 0) root.classList.remove("dgl-show-hidden");
+            const showing = root.classList.contains("dgl-show-hidden");
+            box.hidden = count === 0;
+            button.textContent = "Hidden games (" + count + ") · " + (showing ? "Hide" : "Show");
+            button.setAttribute("aria-pressed", showing ? "true" : "false");
+          };
+          button.addEventListener("click", () => { root.classList.toggle("dgl-show-hidden"); refresh(); });
+          window.addEventListener("dglhiddenchange", refresh);
+          refresh();
+        })();
+      </script>`;
+
 // "Music" -> "Music Games", but "Logic Games" stays as is (category names are editor-chosen).
 function categoryGamesLabel(name: string): string {
   return /\bgames$/i.test(name) ? name : `${name} Games`;
@@ -9863,6 +10074,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/mod-log">modlog</a>
         |
         <a href="/changelog">changelog</a>
+        |
+        <a href="/categories">categories</a>
         |
         <a href="/feed.xml">new games feed</a>
         |

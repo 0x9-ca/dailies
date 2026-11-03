@@ -84,7 +84,7 @@ Nearly everything is in `src/index.ts` (routes, SSR templates, shared client scr
 - OAuth stores only the provider user id, a placeholder email (`<provider>-<id>@users.noreply.dailies`, never shown to anyone) and the initial display name. Provider tokens are revoked right after the profile read. Discord roles are re-synced on every login.
 
 **Edge cache**
-- Logged-out GETs of `/`, `/games`, `/games/:slug`, `/lists`, `/lists/:slug`, `/mod-log` and `/changelog` are cached for 60s. Sessions and the `dgl_voted` cookie (set after a vote) bypass it.
+- Logged-out GETs of `/`, `/games`, `/games/:slug`, `/categories`, `/categories/:slug`, `/lists`, `/lists/:slug`, `/mod-log` and `/changelog` are cached for 60s. Sessions and the `dgl_voted` cookie (set after a vote) bypass it.
 - A cached page is shown to every visitor, so **never render per-visitor state when `c.get("publicCache")` is true**. Use `getViewerGameState()` for votes and favorites; it already handles this.
 
 **UI conventions**
