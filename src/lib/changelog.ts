@@ -6,6 +6,8 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-02",
     items: [
+      "Your rotation shows your stats: current and longest streak, recent plays and your most-played game.",
+      "The home page suggests new games in the categories you play most.",
       "Opening a game from your rotation, a list or a game card now counts as a play, not just the Play button on its page.",
       "Import games into your rotation by pasting a list of names or links, like one copied from Discord.",
       "Share today's progress from your rotation: games played and your streak, ready to paste.",

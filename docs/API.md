@@ -15,6 +15,7 @@
 - `GET /api/lists`
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
+- `GET /api/games/new?days=14&categories=a,b,c&limit=12` → `{ games: [{ id, slug, title, url, paywall, categories: [{ slug, name }], listedAt }] }`: approved, non-NSFW games listed in the last `days` (1-60) in any of up to 5 categories, newest first (`limit` up to 24). Empty without valid categories. KV-cached for 5 minutes; used by the home page's "New in your categories" row.
 - `GET /api/games/titles` → `{ games: [{ id, slug, title }] }` for every approved game (the list suggestion search). Edge-cached for 5 minutes.
 - `GET /api/lists/:id/suggestions` → `{ suggestions: [{ gameId, slug, title, url, paywall, nsfw, categories: [{ slug, name, hue }], votes, voted }] }`, most votes first, plus `enabled` (false, with no suggestions, when the list has suggestions turned off; suggesting and voting then return 403 `code: "disabled"`) (`voted`: whether this visitor, signed in or by hashed IP, agreed).
 
