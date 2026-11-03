@@ -2,7 +2,7 @@
 
 ## Public
 
-- `GET /api/games?sort=top|new|trending|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
+- `GET /api/games?sort=top|new|trending|popular|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
 - `GET /c/:slug`, `/g/:slug`, `/r/:token` → 301 (relative `Location`, query string kept) to `/lists/:slug`, `/games/:slug`, `/rotation/:token`. Every request to `SHORT_URL`'s host (e.g. `d.0x9.ca`) is redirected to `APP_URL` (301 for GET/HEAD, else 308; absolute `Location`; short paths expanded).
 - `GET /api/version` → `{ version }`, the deployed Worker version id (pages reload when it changes).
 - `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
