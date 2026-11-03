@@ -21,6 +21,7 @@ import { IMPORT_MAX_BYTES, IMPORT_MAX_LINES, matchImportLines, parseImportText }
 import { RESET_SUGGESTION_DAILY_LIMIT, groupSuggestions, resetSuggestionSchema, type OpenSuggestionRow } from "./lib/reset-suggestions";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
+import { barChartSvg, labelDay, loadActivity } from "./lib/activity-stats";
 import { DEVELOPER_STATS_CSS, DEVELOPER_STATS_SCRIPT, loadDeveloperStats, renderDeveloperStatsPanel } from "./lib/developer-stats";
 import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { getLiveStatus, getTwitchAppToken } from "./lib/twitch-live";
@@ -3616,7 +3617,7 @@ app.get("/admin/stats", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const { scalars: s, topClicked, topVoted, topFavorited, series } = await loadStats(c.env.DB);
+  const [{ scalars: s, topClicked, topVoted, topFavorited, series }, act] = await Promise.all([loadStats(c.env.DB), loadActivity(c.env.DB)]);
   const num = (n: number) => n.toLocaleString("en-US");
   const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : "–");
   const card = (label: string, value: number | string, note = "") =>
@@ -3630,6 +3631,25 @@ app.get("/admin/stats", async (c) => {
     `<div class="stat-chart"><h3>${escapeHtml(title)} <span class="muted">(${num(series.reduce((t, d) => t + d[key], 0))} in 14 days)</span></h3><div class="bars" role="img" aria-label="${escapeHtml(title)}, last 14 days">${series
       .map((d) => `<span class="bar" title="${d.date}: ${d[key]}" style="height:${Math.max(d[key] > 0 ? 6 : 2, Math.round((d[key] / maxOf(key)) * 100))}%"></span>`)
       .join("")}</div><div class="bars-axis"><span>${series[0].date.slice(5)}</span><span>${series[series.length - 1].date.slice(5)}</span></div></div>`;
+
+  const delta = (cur: number, prev: number) => (prev > 0 ? `${cur >= prev ? "▲" : "▼"} ${Math.abs(Math.round(((cur - prev) / prev) * 100))}%` : cur > 0 ? "▲ new" : "–");
+  const actChart = (title: string, values: number[], note: string) =>
+    `<div class="stat-chart"><h3>${escapeHtml(title)} <span class="muted">${escapeHtml(note)}</span></h3>${barChartSvg(title, act.days, values, escapeHtml)}</div>`;
+  const sumA = (a: number[]) => a.reduce((t, v) => t + v, 0);
+  const activitySection = `<section class="panel"><h2>Activity</h2><p class="muted">Last 30 days, US/Eastern dates (${escapeHtml(labelDay(act.days[0]))} to ${escapeHtml(labelDay(act.days[29]))}). Opens are game link clicks; players are signed-in accounts only.</p>
+    <div class="stat-grid">${[
+      card("Opens, 30 days", sumA(act.opens)),
+      card("Opens, 7 days", act.opens7, `${delta(act.opens7, act.openPrev7)} vs prior 7 (${num(act.openPrev7)})`),
+      card("Players today (DAU)", act.dau[29]),
+      card("Players, 7 days (WAU)", act.wau),
+      card("Players, 30 days (MAU)", act.mau),
+      card("Stream sessions, 7 days", sumA(act.sessions.slice(-7)), "distinct list and day"),
+      card("Rotation adds, 7 days", act.favs7),
+      card("Rotation adds, 30 days", act.favs30)
+    ].join("")}</div>
+    <div class="stat-charts">${actChart("Opens per day", act.opens, `(${num(sumA(act.opens))} total)`)}${actChart("Signed-in players per day", act.dau, "(DAU)")}${actChart("Stream sessions per day", act.sessions, `(${num(sumA(act.sessions))} total)`)}</div>
+    <div class="stat-tops"><div class="stat-top"><h3>Top games by opens this week</h3>${act.topOpened.length ? `<ol>${act.topOpened.map((r) => `<li><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a> <span class="muted">${num(r.n)} <span title="Prior 7 days: ${num(r.prev)}">${delta(r.n, r.prev)}</span></span></li>`).join("")}</ol>` : `<p class="muted">Nothing yet.</p>`}</div>
+    <div class="stat-top"><h3>Most streamed this week</h3>${act.topStreamed.length ? `<ol>${act.topStreamed.map((r) => `<li><a href="/games/${encodeURIComponent(r.slug)}">${escapeHtml(r.title)}</a> <span class="muted">${num(r.n)} plays</span></li>`).join("")}</ol>` : `<p class="muted">Nothing yet.</p>`}</div></div></section>`;
 
   const accounts = s.usersTotal;
   const votesTotal = s.votesUser + s.votesAnon;
@@ -3697,6 +3717,7 @@ app.get("/admin/stats", async (c) => {
         card("Claims in progress", s.claimsOpen, `${num(s.claimsReview)} awaiting review`),
         card("Open reports", s.reportsOpen, `${num(s.reportsTotal)} in total`)
       ].join(""))}
+      ${activitySection}
       <section class="panel">
         <h2>Last 14 days</h2>
         <div class="stat-charts">${chart("New accounts", "users")}${chart("Votes", "votes")}${chart("Games submitted", "games")}</div>
@@ -3719,6 +3740,8 @@ app.get("/admin/stats", async (c) => {
       .bars-axis { display:flex; justify-content:space-between; font-size:0.72rem; color:var(--muted); margin-top:0.2rem; }
       .stat-top ol { margin:0; padding-left:1.3rem; display:flex; flex-direction:column; gap:0.25rem; }
       .stat-top li { overflow-wrap:anywhere; }
+      .act-svg { display:block; width:100%; height:90px; }
+      .stat-charts + .stat-tops { margin-top:1.2rem; }
     </style>
   `, c.env));
 });
