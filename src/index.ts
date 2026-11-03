@@ -24,6 +24,7 @@ import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
+import { buildServiceWorker, OFFLINE_SCRIPT } from "./lib/service-worker";
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
 import { loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
@@ -81,6 +82,13 @@ app.use("*", async (c, next) => {
 // middleware on purpose: no D1 lookup, no Set-Cookie (it would make the response uncacheable), no noindex header.
 app.get("/assets/:file", (c) => serveAsset(c.req.param("file"), c.req.method));
 
+// Service worker (offline support, src/lib/service-worker.ts). Root scope, always revalidated; never edge-cached.
+app.get("/sw.js", (c) => c.body(buildServiceWorker(appVersion(c.env), [ASSET.appJs, ASSET.headJs, ASSET.appCss]), 200, {
+  "Content-Type": "text/javascript; charset=utf-8",
+  "Cache-Control": "no-cache",
+  "X-Content-Type-Options": "nosniff"
+}));
+
 // Session bootstrap for every request.
 app.use("*", sessionMiddleware);
 
@@ -105,7 +113,7 @@ for (const [short, long] of SHORT_PATHS) {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|new|mod-log|changelog|embed\/lists\/[^/]+)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|new|mod-log|changelog|offline|embed\/lists\/[^/]+)?$/;
 
 // The embed widget never shows per-visitor state and sets no cookies, so it is cached whatever cookies the request has.
 function isEmbedPath(path: string): boolean {
@@ -2062,6 +2070,17 @@ app.get("/rotation/:shareToken", async (c) => {
     </script>
   `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.`, noindex: true }));
 });
+
+// Shown by the service worker when a page isn't cached and there's no connection. Always rendered logged-out (it is
+// precached by the worker and may be edge-cached), so it carries no per-visitor state.
+app.get("/offline", async (c) => c.html(await layout("Offline", null, `
+  <main class="narrow" data-offline-page>
+    <h1>You're offline</h1>
+    <p>This page isn't saved on your device yet. Check your connection and try again.</p>
+    <div class="actions"><button type="button" data-offline-retry>Retry</button></div>
+    <p><a href="/me/rotation">Your rotation, as of your last visit</a></p>
+  </main>
+`, c.env, { path: "/offline", description: "You're offline.", noindex: true })));
 
 app.get("/me/rotation", async (c) => {
   const user = c.get("user");
@@ -11168,7 +11187,7 @@ const ASSET = {
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(CSRF_FETCH_SCRIPT, GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
-  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
+  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, OFFLINE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   embedDialogJs: registerAsset("embed-dialog", "js", EMBED_DIALOG_SCRIPT),
   npCss: registerAsset("now-playing", "css", NOW_PLAYING_CSS),
