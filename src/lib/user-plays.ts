@@ -10,12 +10,26 @@ export const PLAYS_WINDOW_DAYS = 100;
 const DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
+const skipItem = z.object({ day: z.string().regex(DAY_KEY), gameId: z.string().min(1).max(64) });
+const utcDay = (offsetDays: number) => new Date(Date.now() + offsetDays * DAY_MS).toISOString().slice(0, 10);
+
 export const playsBodySchema = z.object({
   plays: z.array(z.object({ gameId: z.string().min(1).max(64), playedAt: z.string().max(40) })).max(200).optional(),
   unplayed: z.array(z.object({ gameId: z.string().min(1).max(64), since: z.string().max(40) })).max(200).optional(),
+  skipped: z.array(skipItem).max(200).optional(),
+  unskipped: z.array(skipItem).max(200).optional(),
   streak: z.object({ last: z.string().regex(DAY_KEY), count: z.number().int().min(0).max(100000) }).optional(),
   best: z.number().int().min(0).max(100000).optional(),
   log: z.record(z.string().regex(DAY_KEY), z.number().int().min(0).max(1000)).optional()
+}).superRefine((body, ctx) => {
+  // Viewer-local days: tolerate time zones by allowing yesterday..tomorrow relative to UTC now.
+  const lo = utcDay(-1), hi = utcDay(1);
+  for (const item of [...(body.skipped || []), ...(body.unskipped || [])]) {
+    if (item.day < lo || item.day > hi || Number.isNaN(Date.parse(item.day))) {
+      ctx.addIssue({ code: "custom", message: "Invalid skip day" });
+      return;
+    }
+  }
 });
 
 function isoOrNull(value: string): string | null {
@@ -50,8 +64,14 @@ export async function loadPlays(env: Env, userId: string, sinceParam: string | u
     .bind(userId, new Date(since).toISOString())
     .all<{ game_id: string; played_at: string }>();
   const streak = await loadStreak(env, userId);
+  const skipRows = await env.DB.prepare("SELECT day, game_id FROM user_skips WHERE user_id = ?1 AND day >= ?2 LIMIT 500")
+    .bind(userId, utcDay(-2))
+    .all<{ day: string; game_id: string }>();
+  const skips: Record<string, string[]> = {};
+  for (const r of skipRows.results) (skips[r.day] ||= []).push(r.game_id);
   return {
     userId,
+    skips,
     plays: rows.results.map((r) => ({ gameId: r.game_id, playedAt: r.played_at })),
     streak: { last: streak.last, count: streak.count, best: streak.best },
     log: streak.log
@@ -84,6 +104,16 @@ export async function savePlays(env: Env, userId: string, body: z.infer<typeof p
       ).bind(userId, item.gameId, at, near)
     );
   }
+  // Unskips first, like unplays.
+  for (const item of body.unskipped || []) {
+    stmts.push(env.DB.prepare("DELETE FROM user_skips WHERE user_id = ?1 AND day = ?2 AND game_id = ?3").bind(userId, item.day, item.gameId));
+  }
+  for (const item of body.skipped || []) {
+    stmts.push(
+      env.DB.prepare("INSERT OR IGNORE INTO user_skips (user_id, day, game_id) SELECT ?1, ?2, games.id FROM games WHERE games.id = ?3").bind(userId, item.day, item.gameId)
+    );
+  }
+  stmts.push(env.DB.prepare("DELETE FROM user_skips WHERE user_id = ?1 AND day < ?2").bind(userId, utcDay(-4)));
   stmts.push(env.DB.prepare("DELETE FROM user_plays WHERE user_id = ?1 AND played_at < ?2").bind(userId, new Date(now - PLAYS_KEEP_DAYS * DAY_MS).toISOString()));
   if (body.streak || body.log || body.best) {
     const cur = await loadStreak(env, userId);

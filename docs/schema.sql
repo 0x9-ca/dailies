@@ -315,6 +315,13 @@ CREATE TABLE user_plays (
 );
 CREATE INDEX idx_user_plays_user_played ON user_plays(user_id, played_at);
 
+CREATE TABLE user_skips (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, day, game_id)
+);
+
 CREATE TABLE user_streaks (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   last TEXT NOT NULL DEFAULT '',

@@ -7,6 +7,7 @@ export const CHANGELOG: ChangelogDay[] = [
     date: "2026-11-03",
     items: [
       "Go to /random, or use the app's Random game shortcut, to open a random game.",
+      "Skip today now syncs across your devices when you're signed in.",
       "Install 0x9 dles as an app from Settings, with shortcuts to your rotation, recap and new games.",
       "Submitting a game warns you if it's already on the site or waiting for review.",
       "Creator lists have a Stream history: every game set as Now playing, by day, for the last 90 days.",

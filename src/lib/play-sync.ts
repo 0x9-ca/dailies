@@ -1,7 +1,8 @@
 // Client side of the played-state sync for signed-in users (server: src/lib/user-plays.ts, GET/POST /api/me/plays).
 // Runs in app.js after RESET_LOCALIZE_SCRIPT. Signed in = the header has a Settings link (cached logged-out pages
 // never do), so logged-out visitors make no requests. dglMarkPlayed / dglUnmarkPlayed call dglPlaySync.marked /
-// .unmarked, which queue changes in localStorage dgl_plays_pending_v1 and POST them debounced (keepalive; the queue
+// .unmarked (dglSkip / dglUnskip call .skipped / .unskipped, synced as { day, gameId } pairs; the server's skips for today and
+// yesterday replace the local ones except changes still queued), which queue changes in localStorage dgl_plays_pending_v1 and POST them debounced (keepalive; the queue
 // survives failures and is retried on the next load, focus or change). The first sync after sign-in uploads the local
 // played map once (dgl_plays_synced_v1 = user id). After that the server's latest play per game replaces the local
 // played map (except changes still queued), so an unmark on one device reaches the others. Streak and heatmap counts
@@ -12,7 +13,7 @@ export const PLAY_SYNC_SCRIPT = `
   const DAY = 24 * 60 * 60 * 1000;
   const signedIn = !!document.querySelector('a[href="/me/settings"]');
   if (!signedIn) {
-    window.dglPlaySync = { marked() {}, unmarked() {} };
+    window.dglPlaySync = { marked() {}, unmarked() {}, skipped() {}, unskipped() {} };
     return;
   }
   const jget = (key, fallback) => {
@@ -21,7 +22,10 @@ export const PLAY_SYNC_SCRIPT = `
   const jset = (key, value) => { try { window.localStorage.setItem(key, JSON.stringify(value)); } catch {} };
   const readPending = () => {
     const p = jget(PENDING, {});
-    return { plays: Array.isArray(p.plays) ? p.plays : [], unplayed: Array.isArray(p.unplayed) ? p.unplayed : [] };
+    return {
+      plays: Array.isArray(p.plays) ? p.plays : [], unplayed: Array.isArray(p.unplayed) ? p.unplayed : [],
+      skipped: Array.isArray(p.skipped) ? p.skipped : [], unskipped: Array.isArray(p.unskipped) ? p.unskipped : []
+    };
   };
   const recentLog = () => {
     const log = jget(LOG, {});
@@ -44,28 +48,41 @@ export const PLAY_SYNC_SCRIPT = `
     const log = recentLog();
     const best = Math.max(readBest(), streak ? streak.count : 0);
     const state = JSON.stringify([streak, log, best]);
-    if (!p.plays.length && !p.unplayed.length && state === lastSent) return;
+    if (!p.plays.length && !p.unplayed.length && !p.skipped.length && !p.unskipped.length && state === lastSent) return;
     busy = true;
-    const plays = p.plays.slice(0, 200), unplayed = p.unplayed.slice(0, 200);
+    const plays = p.plays.slice(0, 200), unplayed = p.unplayed.slice(0, 200), skipped = p.skipped.slice(0, 200), unskipped = p.unskipped.slice(0, 200);
     try {
-      const body = { plays, unplayed, log, best };
+      const body = { plays, unplayed, skipped, unskipped, log, best };
       if (streak) body.streak = streak;
       const res = await fetch("/api/me/plays", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true, body: JSON.stringify(body) });
       if (!res.ok) throw new Error("sync");
-      const sent = new Set(plays.map((x) => "p" + x.gameId + x.playedAt).concat(unplayed.map((x) => "u" + x.gameId + x.since)));
+      const sent = new Set(plays.map((x) => "p" + x.gameId + x.playedAt).concat(unplayed.map((x) => "u" + x.gameId + x.since), skipped.map((x) => "s" + x.gameId + x.day), unskipped.map((x) => "k" + x.gameId + x.day)));
       const cur = readPending();
       cur.plays = cur.plays.filter((x) => !sent.has("p" + x.gameId + x.playedAt));
       cur.unplayed = cur.unplayed.filter((x) => !sent.has("u" + x.gameId + x.since));
+      cur.skipped = cur.skipped.filter((x) => !sent.has("s" + x.gameId + x.day));
+      cur.unskipped = cur.unskipped.filter((x) => !sent.has("k" + x.gameId + x.day));
       jset(PENDING, cur);
       lastSent = state;
-      if (cur.plays.length || cur.unplayed.length) schedule(200);
+      if (cur.plays.length || cur.unplayed.length || cur.skipped.length || cur.unskipped.length) schedule(200);
     } catch {
       // Offline or rate limited: the queue stays in localStorage for the next attempt.
     } finally {
       busy = false;
     }
   };
+  const queueSkip = (field, other, gameId, day) => {
+    const p = readPending();
+    p[other] = p[other].filter((x) => !(x.gameId === gameId && x.day === day));
+    p[field] = p[field].filter((x) => !(x.gameId === gameId && x.day === day));
+    p[field].push({ day, gameId });
+    p[field] = p[field].slice(-400);
+    jset(PENDING, p);
+    schedule(1000);
+  };
   window.dglPlaySync = {
+    skipped(gameId, day) { queueSkip("skipped", "unskipped", gameId, day); },
+    unskipped(gameId, day) { queueSkip("unskipped", "skipped", gameId, day); },
     marked(gameId, ms) {
       const p = readPending();
       const last = p.plays.filter((x) => x.gameId === gameId).pop();
@@ -135,7 +152,20 @@ export const PLAY_SYNC_SCRIPT = `
       const cutDay = window.dglDateKey(new Date(now - 119 * DAY));
       Object.keys(data.log || {}).forEach((day) => { const n = Math.floor(Number(data.log[day]) || 0); if (day >= cutDay && n > (Number(log[day]) || 0)) log[day] = n; });
       jset(LOG, log);
+      // Skips: the server's list for today and yesterday replaces the local one, keeping changes still queued.
+      if (data.skips && typeof data.skips === "object") {
+        const todayKey = window.dglDateKey(new Date(now)), yKey = window.dglDateKey(new Date(now - DAY));
+        const out = {};
+        [todayKey, yKey].forEach((day) => {
+          const ids = new Set(Array.isArray(data.skips[day]) ? data.skips[day].filter((id) => typeof id === "string") : []);
+          pending.unskipped.forEach((x) => { if (x.day === day) ids.delete(x.gameId); });
+          pending.skipped.forEach((x) => { if (x.day === day) ids.add(x.gameId); });
+          if (ids.size) out[day] = Array.from(ids);
+        });
+        jset("dgl_skipped_v1", out);
+      }
       window.dglLocalizeResets();
+      (window.dglPlayedHooks || []).forEach((hook) => { try { hook(); } catch {} });
       schedule(300);
     } catch {
       // Offline: try again on the next load or focus.
