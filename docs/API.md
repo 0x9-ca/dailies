@@ -45,6 +45,8 @@
 - `GET /api/me/favorites/export` (JSON export of rotation)
 - `POST /api/me/favorites/import` (JSON import of rotation)
 - `POST /api/me/favorites/import-local` (sync localStorage favorites to account)
+- `GET /api/me/plays?since=<ISO>` (signed in, 600/hour; default last 100 days): `{ userId, plays: [{ gameId, playedAt }], streak: { last, count }, log: { "YYYY-MM-DD": games } }`. `playedAt` is a UTC instant; `last` and `log` days are the player's local dates.
+- `POST /api/me/plays` (signed in, CSRF, 600/hour): `{ plays?: [{ gameId, playedAt }], unplayed?: [{ gameId, since }], streak?: { last, count }, log?: { day: games } }`, max 200 plays and 200 unplayed. `playedAt` is clamped to 100 days ago..now; a play within 10 minutes of an existing one for the same game is ignored. `unplayed` deletes that game's plays at or after `since` (its last reset) and runs before `plays`. `streak` keeps the later `last` (larger `count` on a tie); `log` keeps the larger count per day. Rows older than 120 days are pruned on write. The favorites export also carries `plays` and `streak`.
 - `POST /api/me/favorites/reorder`
 - `PATCH /api/me/favorites/:gameId`
 - `GET /api/me/rotation?weekday=1..7`

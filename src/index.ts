@@ -22,6 +22,8 @@ import { DEVELOPER_STATS_CSS, DEVELOPER_STATS_SCRIPT, loadDeveloperStats, render
 import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
+import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
+import { loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
 
 type Bindings = Env;
@@ -2182,6 +2184,7 @@ app.get("/me/settings", async (c) => {
       <h1>Account Settings</h1>
       <section class="panel">
         <h2>Profile</h2>
+        <p class="muted"><small>Your played games sync across devices while you're signed in.</small></p>
         <form id="profile-form" class="stack-form">
           <label for="display-name">Display name</label>
           <input id="display-name" name="displayName" maxlength="80" placeholder="Your name" value="${escapeHtml(auth.displayName || "")}" />
@@ -4847,6 +4850,35 @@ app.post("/api/me/favorites/import-local", async (c) => {
   return c.json({ ok: true, imported });
 });
 
+app.get("/api/me/plays", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `plays:get:${auth.id}`, 600, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  return c.json(await loadPlays(c.env, auth.id, c.req.query("since")), 200, { "Cache-Control": "no-store" });
+});
+
+app.post("/api/me/plays", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const rate = await enforceRateLimit(c.env, `plays:post:${auth.id}`, 600, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const parsed = playsBodySchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  await savePlays(c.env, auth.id, parsed.data);
+  return c.json({ ok: true });
+});
+
 app.get("/api/me/favorites/export", async (c) => {
   const auth = requireAuth(c);
   if (auth instanceof Response) {
@@ -4861,8 +4893,11 @@ app.get("/api/me/favorites/export", async (c) => {
   )
     .bind(auth.id)
     .all<{ id: string; slug: string; title: string; position: number; weekday_mask: number }>();
+  const playData = await loadPlays(c.env, auth.id, undefined);
   const exportData = {
     version: 1,
+    plays: playData.plays,
+    streak: playData.streak,
     items: rows.results.map((r) => ({
       id: r.id,
       slug: r.slug,
@@ -8806,14 +8841,22 @@ const RESET_LOCALIZE_SCRIPT = `
       } catch {}
     }
     window.dglLocalizeResets();
+    if (window.dglPlaySync) window.dglPlaySync.marked(gameId, now.getTime());
   };
   // Undoes a play for today (dgl_played_v1 only; the play log keeps the day's count).
-  window.dglUnmarkPlayed = (gameId) => {
+  // kind/min = the game's reset data (none: since local midnight); the synced undo deletes plays since that reset.
+  window.dglUnmarkPlayed = (gameId, kind, min) => {
     if (!gameId) return;
     const played = readPlayed();
     delete played[gameId];
     try { window.localStorage.setItem(PLAYED_KEY, JSON.stringify(played)); } catch {}
     window.dglLocalizeResets();
+    if (window.dglPlaySync) {
+      const reset = kind && min != null && min !== "" ? window.dglResetCountdown(kind, min) : null;
+      const midnight = new Date();
+      midnight.setHours(0, 0, 0, 0);
+      window.dglPlaySync.unmarked(gameId, reset ? reset.lastResetAt : midnight.getTime());
+    }
   };
   // "Mark as played" buttons ([data-played-toggle] = game id, data-played-kind/min = reset, game pages). Hidden
   // until their state is known, so a no-JS visitor never sees one.
@@ -8835,7 +8878,7 @@ const RESET_LOCALIZE_SCRIPT = `
     const button = event.target instanceof Element ? event.target.closest("[data-played-toggle]") : null;
     if (!button) return;
     const id = button.getAttribute("data-played-toggle") || "";
-    if (isPlayedFor(button)) window.dglUnmarkPlayed(id);
+    if (isPlayedFor(button)) window.dglUnmarkPlayed(id, button.getAttribute("data-played-kind") || "", button.getAttribute("data-played-min") || "");
     else window.dglMarkPlayed(id);
   });
   const cardGameId = (card) =>
@@ -10308,6 +10351,12 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
        SELECT ?2, game_id, value, created_at, updated_at FROM votes WHERE user_id = ?1`
     ).bind(fromId, intoId),
     env.DB.prepare("DELETE FROM votes WHERE user_id = ?1").bind(fromId),
+    env.DB.prepare("INSERT OR IGNORE INTO user_plays (user_id, game_id, played_at) SELECT ?2, game_id, played_at FROM user_plays WHERE user_id = ?1").bind(fromId, intoId),
+    env.DB.prepare(
+      `INSERT INTO user_streaks (user_id, last, count, day_log) SELECT ?2, last, count, day_log FROM user_streaks WHERE user_id = ?1
+       ON CONFLICT(user_id) DO UPDATE SET last = excluded.last, count = excluded.count, day_log = excluded.day_log
+       WHERE excluded.last > user_streaks.last OR (excluded.last = user_streaks.last AND excluded.count > user_streaks.count)`
+    ).bind(fromId, intoId),
     reassign("oauth_accounts", "user_id"),
     reassign("reports", "reported_by_user_id"),
     reassign("reports", "resolved_by_user_id"),
@@ -10483,7 +10532,7 @@ const ASSET = {
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
-  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT)),
+  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),

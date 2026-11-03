@@ -299,6 +299,21 @@ CREATE TABLE site_settings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE user_plays (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  played_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, game_id, played_at)
+);
+CREATE INDEX idx_user_plays_user_played ON user_plays(user_id, played_at);
+
+CREATE TABLE user_streaks (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  last TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 0,
+  day_log TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
