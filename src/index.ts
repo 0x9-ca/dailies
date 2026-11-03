@@ -1631,7 +1631,7 @@ app.get("/games/:slug", async (c) => {
       </section>` : ""}
       ${streamedBy.length > 0 ? `<section class="related-games recent-stream">
         <h2>Recently on stream</h2>
-        <ul>${streamedBy.map((row) => `<li><a href="/lists/${encodeURIComponent(row.slug)}/history">${escapeHtml(row.title)}</a>${row.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)} <time datetime="${escapeHtml(row.last_at)}">${escapeHtml(new Date(row.last_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }))}</time></li>`).join("")}</ul>
+        <ul>${streamedBy.map((row) => `<li><a href="/lists/${encodeURIComponent(row.slug)}/history">${escapeHtml(row.title)}</a>${row.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)} <time data-local-date datetime="${escapeHtml(row.last_at)}">${escapeHtml(new Date(row.last_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }))}</time></li>`).join("")}</ul>
       </section>` : ""}
       ${related.results.length > 0 ? `<section class="related-games">
         <h2>${escapeHtml(relatedHeading)}</h2>
@@ -11844,7 +11844,7 @@ const ROTATION_WEEK_SCRIPT = `
   if (!list) return;
   const KEY = "dgl_rotation_view_v1";
   const css = document.createElement("style");
-  css.textContent = ".rv-bar{display:flex;gap:.4rem;margin:.5rem 0}.rv-bar button[aria-pressed=true]{font-weight:700;text-decoration:underline}.rv-week ul{list-style:none;margin:0;padding:0}.rv-week li{padding:.15rem 0}.rv-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.5rem}.rv-col,.rv-every{border:1px solid currentColor;border-radius:6px;padding:.4rem .5rem;min-width:0;overflow-wrap:anywhere}.rv-col h3,.rv-every h3{margin:0 0 .3rem;font-size:.95rem}.rv-col.rv-today{border-width:3px;font-weight:600}.rv-every{margin-bottom:.5rem}.rv-every ul{columns:2}@media(max-width:639px){.rv-grid{grid-template-columns:1fr}.rv-every ul{columns:1}}";
+  css.textContent = ".rv-bar{display:flex;gap:.4rem;margin:.5rem 0}.rv-bar button[aria-pressed=true]{font-weight:700;text-decoration:underline}.rv-week ul{list-style:none;margin:0;padding:0}.rv-week li{padding:.15rem 0}.rv-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.5rem}.rv-col,.rv-every{border:1px solid currentColor;border-radius:6px;padding:.4rem .5rem;min-width:0;overflow-wrap:anywhere}.rv-col h3,.rv-every h3{margin:0 0 .3rem;font-size:.95rem}.rv-col.rv-today{border-width:3px;font-weight:600}.rv-every{margin-bottom:.5rem}.rv-edit{margin-left:.4rem;font-size:.8rem}.rv-hint{color:var(--muted)}.days-sum{color:var(--muted);font-size:.85rem}.days-ed{margin-top:.4rem;position:relative;z-index:2}.days-ed[hidden]{display:none}.days-ed .days-row{display:flex;flex-wrap:wrap;gap:.25rem;align-items:center}.days-ed button[aria-pressed=true]{font-weight:700;outline:2px solid currentColor}.days-ed .days-day{min-width:2.2rem;min-height:2.2rem;padding:.2rem}li.not-today{opacity:.7}.rotation-list li>.item-main>.days-sum{order:2;flex:1 1 100%}.rotation-list li>.item-main>.days-ed{order:5;flex:1 1 100%}.rv-every ul{columns:2}@media(max-width:639px){.rv-grid{grid-template-columns:1fr}.rv-every ul{columns:1}}";
   document.head.appendChild(css);
   const bar = document.createElement("div");
   bar.className = "rv-bar";
@@ -11861,16 +11861,101 @@ const ROTATION_WEEK_SCRIPT = `
   const names = [0, 1, 2, 3, 4, 5, 6].map((d) => new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(new Date(2023, 0, 1 + d)));
   const ul = (games) => {
     const el = document.createElement("ul");
-    games.forEach((g) => { const li = document.createElement("li"); const a = document.createElement("a"); a.textContent = g.title; if (g.url) { a.href = g.url; a.target = "_blank"; a.rel = "noopener noreferrer"; } li.appendChild(a); el.appendChild(li); });
+    games.forEach((g) => { const li = document.createElement("li"); const a = document.createElement("a"); a.textContent = g.title; if (g.url) { a.href = g.url; a.target = "_blank"; a.rel = "noopener noreferrer"; } li.appendChild(a);
+      if (signedIn && g.id) { const b = document.createElement("button"); b.type = "button"; b.className = "link-button rv-edit"; b.textContent = "Edit days"; b.setAttribute("aria-label", "Edit days for " + g.title); b.addEventListener("click", () => editDays(g.id)); li.appendChild(b); }
+      el.appendChild(li); });
     return el;
   };
   const games = () => Array.from(list.querySelectorAll("li[data-game-id]")).map((li) => {
     const link = li.querySelector("a.card-link, a.game-title");
     const m = li.getAttribute("data-weekday-mask");
-    return { title: li.getAttribute("data-game-title") || (link ? link.textContent.trim() : ""), url: link ? link.href : "", mask: m == null || m === "" ? 127 : Number(m) & 127 };
+    return { id: li.getAttribute("data-game-id"), title: li.getAttribute("data-game-title") || (link ? link.textContent.trim() : ""), url: link ? link.href : "", mask: m == null || m === "" ? 127 : Number(m) & 127 };
   });
+  const signedIn = list.id === "rotation-list";
+  const longNames = [0, 1, 2, 3, 4, 5, 6].map((d) => new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date(2023, 0, 1 + d)));
+  const letters = ["S", "M", "T", "W", "T", "F", "S"];
+  const bitOf = (d) => 1 << ((d + 6) % 7);
+  const summary = (mask) => {
+    if (mask === 127) return "";
+    if (mask === 31) return "Weekdays";
+    if (mask === 96) return "Weekends";
+    const out = [];
+    for (const d of [1, 2, 3, 4, 5, 6, 0]) if (mask & bitOf(d)) out.push(names[d]);
+    return out.join(", ");
+  };
+  const maskOf = (li) => { const m = li.getAttribute("data-weekday-mask"); return m == null || m === "" ? 127 : Number(m) & 127; };
+  const refreshRow = (li) => {
+    const mask = maskOf(li);
+    const sum = li.querySelector(".days-sum");
+    if (sum) { sum.textContent = summary(mask); sum.hidden = mask === 127; }
+    li.classList.toggle("not-today", (mask & bitOf(new Date().getDay())) === 0);
+    li.querySelectorAll(".days-day").forEach((b) => b.setAttribute("aria-pressed", String((mask & Number(b.dataset.bit)) !== 0)));
+    const every = li.querySelector(".days-all");
+    if (every) every.setAttribute("aria-pressed", String(mask === 127));
+  };
+  const notify = () => { (window.dglPlayedHooks || []).forEach((f) => { try { f(); } catch (e) {} }); };
+  const save = async (li, mask) => {
+    const prev = li.getAttribute("data-weekday-mask");
+    const status = li.querySelector(".days-status");
+    li.setAttribute("data-weekday-mask", String(mask)); refreshRow(li); notify();
+    try {
+      const r = await fetch("/api/me/favorites/" + encodeURIComponent(li.getAttribute("data-game-id")), { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ weekdayMask: mask }) });
+      if (!r.ok) throw new Error("save");
+      if (status) status.textContent = "Saved";
+    } catch (e) {
+      if (prev == null) li.removeAttribute("data-weekday-mask"); else li.setAttribute("data-weekday-mask", prev);
+      refreshRow(li); notify();
+      if (status) status.textContent = "Couldn't save days. Try again.";
+    }
+    if (!week.hidden) renderWeek();
+  };
+  const decorate = (li) => {
+    if (li.querySelector(".days-ed")) return;
+    const main = li.querySelector(".item-main"); const actions = li.querySelector(".card-actions");
+    if (!main || !actions) return;
+    const title = li.getAttribute("data-game-title") || "game";
+    const sum = document.createElement("div"); sum.className = "days-sum";
+    main.appendChild(sum);
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "days-toggle skip-btn"; toggle.textContent = "Days";
+    toggle.setAttribute("aria-expanded", "false"); toggle.setAttribute("aria-label", "Days you play " + title);
+    actions.insertBefore(toggle, actions.firstChild);
+    const ed = document.createElement("div"); ed.className = "days-ed"; ed.hidden = true;
+    ed.setAttribute("role", "group"); ed.setAttribute("aria-label", "Days you play " + title);
+    const row = document.createElement("div"); row.className = "days-row";
+    for (let d = 0; d < 7; d++) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "days-day"; b.textContent = letters[d];
+      b.dataset.bit = String(bitOf(d)); b.setAttribute("aria-label", longNames[d]); b.setAttribute("aria-pressed", "true");
+      b.addEventListener("click", () => {
+        const cur = maskOf(li); const next = cur ^ bitOf(d);
+        const status = ed.querySelector(".days-status");
+        if (next === 0) { status.textContent = "Pick at least one day."; return; }
+        status.textContent = ""; save(li, next);
+      });
+      row.appendChild(b);
+    }
+    const all = document.createElement("button"); all.type = "button"; all.className = "days-all"; all.textContent = "Every day";
+    all.addEventListener("click", () => { ed.querySelector(".days-status").textContent = ""; save(li, 127); });
+    row.appendChild(all);
+    const st = document.createElement("span"); st.className = "days-status days-sum"; st.setAttribute("role", "status"); st.setAttribute("aria-live", "polite");
+    row.appendChild(st); ed.appendChild(row); main.appendChild(ed);
+    toggle.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); const open = ed.hidden; ed.hidden = !open; toggle.setAttribute("aria-expanded", String(open)); });
+    ed.addEventListener("click", (e) => e.stopPropagation());
+    refreshRow(li);
+  };
+  const decorateAll = () => { if (signedIn) list.querySelectorAll("li[data-game-id]").forEach(decorate); };
+  const editDays = (id) => {
+    show("today", true);
+    const li = Array.from(list.querySelectorAll("li[data-game-id]")).find((x) => x.getAttribute("data-game-id") === id);
+    if (!li) return;
+    decorate(li);
+    const ed = li.querySelector(".days-ed"); const t = li.querySelector(".days-toggle");
+    ed.hidden = false; t.setAttribute("aria-expanded", "true");
+    li.scrollIntoView({ block: "center" });
+    const first = ed.querySelector(".days-day"); if (first) first.focus();
+  };
   const renderWeek = () => {
     week.textContent = "";
+    if (!signedIn) { const p = document.createElement("p"); p.className = "rv-hint"; p.textContent = "Sign in to pick days."; week.appendChild(p); }
     const all = games();
     if (!all.length) { const p = document.createElement("p"); p.textContent = "No games in your rotation yet."; week.appendChild(p); return; }
     const every = all.filter((g) => g.mask === 127);
@@ -11907,7 +11992,8 @@ const ROTATION_WEEK_SCRIPT = `
   let saved = "today";
   try { saved = localStorage.getItem(KEY) === "week" ? "week" : "today"; } catch (e) {}
   show(saved, false);
-  new MutationObserver(() => { if (!week.hidden) renderWeek(); }).observe(list, { childList: true });
+  decorateAll();
+  new MutationObserver(() => { decorateAll(); if (!week.hidden) renderWeek(); }).observe(list, { childList: true });
 })();
 `;
 const joinJs = (...parts: string[]) => parts.join(";\n");

@@ -1472,6 +1472,11 @@ export const PAGE_SCRIPTS: Record<string, string> = {
     `,
   "game-page": `
       const DATA_GAME_PAGE = JSON.parse(document.getElementById("data-game-page").textContent);
+      // "Recently on stream" dates: UTC text from the server, shown in the viewer's local time.
+      document.querySelectorAll("time[data-local-date]").forEach((t) => {
+        const d = new Date(t.getAttribute("datetime") || "");
+        if (!isNaN(d.getTime())) t.textContent = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      });
       // "(8:00 PM your time)" after a server-basis reset, only when the viewer's zone differs from the reset zone.
       document.querySelectorAll("[data-reset-minutes]").forEach((node) => {
         try {

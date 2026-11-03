@@ -8,6 +8,8 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "Show off your streak: turn it on for your public profile in Settings.",
       "Download your play history as JSON or CSV, or clear it, from Settings.",
+      "Pick which days you play each game in your rotation with the new Days control.",
+      "Recently on stream dates on game pages now show in your local time.",
       "Go to /random, or use the app's Random game shortcut, to open a random game.",
       "Skip today now syncs across your devices when you're signed in.",
       "Your rotation has a Week view showing which games you play on each day.",
