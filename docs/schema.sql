@@ -268,7 +268,7 @@ CREATE TABLE push_subscriptions (
   last_sent_day TEXT,
   lead_minutes INTEGER NOT NULL DEFAULT 60,
   tz TEXT NOT NULL
-);
+, label TEXT, last_sent_at TEXT);
 CREATE INDEX idx_push_subscriptions_user ON push_subscriptions(user_id);
 
 CREATE TABLE rate_limits (
