@@ -10,12 +10,13 @@ import type { AppUser, AppVariables, Env } from "./env";
 import { computeGameScore } from "./lib/ranking";
 import { EMBED_DIALOG_SCRIPT, parseEmbedOptions, renderEmbedDialog, renderEmbedNotFound, renderEmbedPage, type EmbedItem } from "./lib/embed";
 import { appOrigin, expandShortPath, isShortHost, SHORT_PATHS, shortOrigin } from "./lib/origins";
-import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify, urlLocationKey } from "./lib/url";
+import { canonicalizeUrl, normalizeTimeInput, normalizeUrlInput, slugify } from "./lib/url";
 import { createSession, destroySession, hashToken, randomToken, requireAuth, requireRole, sessionMiddleware, wantsSecureCookies } from "./lib/auth";
 import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/assets";
 import { getCachedJson, invalidateGameCaches, secondsUntilNextUtcDay, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { fuzzyTitleMatch } from "./lib/search";
+import { DuplicateIndex, type DuplicateGame } from "./lib/duplicates";
 import { IMPORT_MAX_BYTES, IMPORT_MAX_LINES, matchImportLines, parseImportText } from "./lib/import-match";
 import { RESET_SUGGESTION_DAILY_LIMIT, groupSuggestions, resetSuggestionSchema, type OpenSuggestionRow } from "./lib/reset-suggestions";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
@@ -839,6 +840,7 @@ app.get("/submit", async (c) => {
                    <p>Or submit without signing in. The game will be listed, but not verified.</p>`}
             </div>
           </fieldset>
+          <div id="duplicate-notice" class="duplicate-warning" aria-live="polite" hidden></div>
           <button type="submit" class="btn">Submit for review</button>
         </form>
         <p id="submission-status" class="status" aria-live="polite"></p>
@@ -3264,31 +3266,20 @@ app.get("/admin", async (c) => {
   `, c.env));
 });
 
-// Possible duplicates of pending submissions: a game at the same host and path (urlLocationKey) or with the same
-// title (lowercase, letters and digits only). One query over every non-rejected game, compared in the Worker.
+// Possible duplicates of pending submissions (normalized URL, title or near-identical title, see src/lib/duplicates.ts)
+// against every non-rejected game. One query, compared in memory.
 type DuplicateCandidate = { id: string; title: string; slug: string; status: string };
+async function loadDuplicateIndex(env: Env, statuses: string): Promise<DuplicateIndex> {
+  const games = await env.DB.prepare(`SELECT id, title, slug, url, status FROM games WHERE status IN (${statuses})`).all<DuplicateGame>();
+  return new DuplicateIndex(games.results);
+}
 async function findPossibleDuplicates(env: Env, pending: Array<{ id: string; title: string; url: string }>): Promise<Map<string, DuplicateCandidate[]>> {
   const found = new Map<string, DuplicateCandidate[]>();
   if (pending.length === 0) return found;
-  const games = await env.DB.prepare("SELECT id, title, slug, url, status FROM games WHERE status != 'rejected'").all<DuplicateCandidate & { url: string }>();
-  const titleKey = (title: string) => title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  const byLocation = new Map<string, DuplicateCandidate[]>();
-  const byTitle = new Map<string, DuplicateCandidate[]>();
-  const index = (map: Map<string, DuplicateCandidate[]>, key: string | null, game: DuplicateCandidate) => {
-    if (key) map.set(key, [...(map.get(key) ?? []), game]);
-  };
-  for (const game of games.results) {
-    index(byLocation, urlLocationKey(game.url), game);
-    index(byTitle, titleKey(game.title), game);
-  }
+  const index = await loadDuplicateIndex(env, "'approved','pending','disabled'");
   for (const row of pending) {
-    const location = urlLocationKey(row.url);
-    const title = titleKey(row.title);
-    const matches = new Map<string, DuplicateCandidate>();
-    for (const game of [...(location ? byLocation.get(location) ?? [] : []), ...(title ? byTitle.get(title) ?? [] : [])]) {
-      if (game.id !== row.id) matches.set(game.id, game);
-    }
-    if (matches.size > 0) found.set(row.id, [...matches.values()]);
+    const matches = index.find({ url: row.url, title: row.title }, row.id);
+    if (matches.length > 0) found.set(row.id, matches.map((m) => m.game));
   }
   return found;
 }
@@ -3350,7 +3341,7 @@ app.get("/admin/submissions", async (c) => {
               ${row.how_to_play ? `<details><summary>How to play</summary><p style="white-space:pre-wrap">${escapeHtml(row.how_to_play)}</p></details>` : ""}
               <p><a href="${escapeHtml(row.url)}" target="_blank" rel="noopener noreferrer">Visit game</a> · <a href="/games/${row.slug}">Detail page</a></p>
               <p>Status: <strong>${row.status}</strong>${row.moderation_note ? ` · Note: ${escapeHtml(row.moderation_note)}` : ""}</p>
-              ${(duplicates.get(row.id) ?? []).map((match) => `<p class="duplicate-warning">Possible duplicate: <a href="/games/${escapeHtml(encodeURIComponent(match.slug))}">${escapeHtml(match.title)}</a> (${escapeHtml(match.status)})</p>`).join("")}
+              ${(duplicates.get(row.id) ?? []).map((match) => `<p class="duplicate-warning">Possible duplicate of <a href="/games/${escapeHtml(encodeURIComponent(match.slug))}">${escapeHtml(match.title)}</a> (${escapeHtml(match.status)})</p>`).join("")}
               ${(() => {
                 const resetLabel = getResetMetaLabel(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
                 return resetLabel ? `<p>${escapeHtml(resetLabel)}</p>` : "";
@@ -3840,6 +3831,7 @@ app.get("/admin/health", async (c) => {
     return auth;
   }
   const h = await loadGameHealth(c.env.DB);
+  const dupGroups = (await loadDuplicateIndex(c.env, "'approved'")).exactGroups();
   const when = (iso: string | null) =>
     iso ? new Date(iso.replace(" ", "T") + "Z").toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "medium", timeStyle: "short" }) : "never";
   const gapSection = (title: string, g: { count: number; rows: { slug: string; title: string; description_length: number }[] }, showLen: boolean) =>
@@ -3871,6 +3863,13 @@ app.get("/admin/health", async (c) => {
         ${gapSection("Missing or short description (under 40 characters)", h.description, true)}
         ${gapSection("Missing reset schedule", h.reset, false)}
         ${gapSection("No categories", h.categories, false)}
+      </section>
+      <section>
+        <h2>Possible duplicates <span class="muted">(${dupGroups.length})</span></h2>
+        <p class="muted">Approved games sharing a normalized link (scheme, www, trailing slash and tracking parameters ignored) or title (case, punctuation, accents and a leading "the" ignored).</p>
+        ${dupGroups.length
+          ? `<div class="stack">${dupGroups.slice(0, 200).map((g) => `<article class="panel"><p><strong>Same ${g.reason === "url" ? "link" : "title"}:</strong> ${g.games.map((game) => `<a href="/games/${encodeURIComponent(game.slug)}">${escapeHtml(game.title)}</a>`).join(" · ")}</p>${g.reason === "url" ? `<p class="muted" style="overflow-wrap:anywhere">${escapeHtml(g.games[0].url)}</p>` : ""}</article>`).join("")}</div>${dupGroups.length > 200 ? `<p class="muted">Showing the first 200.</p>` : ""}`
+          : `<p class="muted">None found.</p>`}
       </section>
     </main>
   `, c.env));
@@ -4286,6 +4285,32 @@ app.get("/api/categories", async (c) => {
 // Random picks: optional filters from /games (category, hidePaywall) and the visitor's hidden games (exclude).
 // NSFW games are never picked, so hideNsfw=1 changes nothing; it is accepted so /games can pass its filters on.
 const RANDOM_EXCLUDE_MAX = 200;
+app.get("/api/games/duplicate-check", async (c) => {
+  const user = c.get("user");
+  const key = user ? `dupcheck:${user.id}` : `dupcheck:anon:${await getAnonymousVoteKey(c)}`;
+  const rate = await enforceRateLimit(c.env, key, 240, 60 * 60);
+  c.header("Cache-Control", "no-store");
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const url = (c.req.query("url") || "").trim().slice(0, 2000);
+  const title = (c.req.query("title") || "").trim().slice(0, 200);
+  if (!url && !title) return c.json({ matches: [] });
+  const index = await loadDuplicateIndex(c.env, "'approved','pending'");
+  const matches: Array<{ id?: string; title?: string; slug?: string; status: "approved" | "pending"; reason: string }> = [];
+  let pendingSeen = false;
+  for (const m of index.find({ url, title }).slice(0, 10)) {
+    if (m.game.status === "approved") {
+      matches.push({ id: m.game.id, title: m.game.title, slug: m.game.slug, status: "approved", reason: m.reason });
+    } else if (!pendingSeen) {
+      // Pending games stay private: no id, title or slug.
+      pendingSeen = true;
+      matches.push({ status: "pending", reason: m.reason });
+    }
+  }
+  return c.json({ matches });
+});
+
 app.get("/api/games/random", async (c) => {
   const category = c.req.query("category") || "";
   const hidePaywall = c.req.query("hidePaywall") === "1";
@@ -4377,10 +4402,16 @@ app.post("/api/games", async (c) => {
     return c.json({ error: "Invalid URL" }, 400);
   }
 
-  const duplicate = await c.env.DB.prepare("SELECT id, slug, status FROM games WHERE canonical_url = ?1").bind(canonicalUrl).first<{ id: string; slug: string; status: string }>();
+  const duplicate = (await loadDuplicateIndex(c.env, "'approved','pending','disabled'")).find({ url: parsed.data.url }).find((m) => m.reason === "url")?.game
+    ?? await c.env.DB.prepare("SELECT id, slug, status FROM games WHERE canonical_url = ?1 AND status != 'rejected'").bind(canonicalUrl).first<{ id: string; slug: string; status: string }>();
   if (duplicate) {
     // A listed game's page is where its developer can claim it.
-    return c.json({ error: "Game URL already submitted", code: "duplicate", ...(duplicate.status === "approved" ? { slug: duplicate.slug } : {}) }, 409);
+    const listed = duplicate.status === "approved";
+    return c.json({
+      error: listed ? "This game is already on 0x9 dles. If you made it, open its page to claim it." : "A game with this link was already submitted and is waiting for review.",
+      code: "duplicate",
+      ...(listed ? { slug: duplicate.slug } : {})
+    }, 409);
   }
 
   const resetBasis = parsed.data.resetBasis || null;
