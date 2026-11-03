@@ -41,6 +41,12 @@ export interface Env {
   /** Durable Object that keeps checking for verified developers who join the server later (see DeveloperRoleSync). */
   ROLE_SYNC: DurableObjectNamespace<DeveloperRoleSync>;
   SESSION_SECRET: string;
+  /** Web Push (VAPID, base64url). Public key and subject are vars (the public key also goes to the browser), the private key is a secret. Unset = push reminders off. */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
+  /** Dev/test only: allow http:// and any host for push endpoints (a fake push service). */
+  PUSH_ALLOW_HTTP?: string;
   /** Cloudflare's metadata for the running Worker version (version_metadata binding); id changes on every deploy. */
   CF_VERSION_METADATA?: WorkerVersionMetadata;
 }
