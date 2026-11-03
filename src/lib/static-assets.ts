@@ -865,6 +865,11 @@ export const SHARED_CSS = `      :root {
       .game-faq { margin-top: 1.5rem; }
       .game-faq h3 { font-size: 1rem; margin: 1rem 0 0.25rem; }
       .game-faq p { margin: 0; color: var(--muted); }
+      .related-categories { margin-top: 1.5rem; }
+      .category-index { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.75rem; }
+      .category-index .panel h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+      .category-index .panel p { margin: 0.25rem 0; }
+      .category-index-top { color: var(--muted); overflow-wrap: anywhere; }
       .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.25rem 0.75rem; margin: 1.25rem 0; }
       .pagination [aria-current] { font-weight: 700; }
       .game-facts dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.45rem 1rem; margin: 0.75rem 0 0; }

@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-02",
     items: [
+      "Every category has its own page, with an overview, its games and related categories.",
       "Know when a game resets? Suggest its reset time from the game page.",
       "Short links (d.0x9.ca) now forward to dailies.0x9.ca, so you stay signed in.",
       "Game pages show more details: reset schedule, ratings, lists and answers to common questions.",
