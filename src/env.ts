@@ -15,6 +15,9 @@ export interface Env {
   OAUTH_DISCORD_CLIENT_SECRET: string;
   OAUTH_TWITCH_CLIENT_ID?: string;
   OAUTH_TWITCH_CLIENT_SECRET?: string;
+  /** Test overrides for the Twitch Helix and OAuth base URLs (e.g. a fake server). Unset in real environments. */
+  TWITCH_API_BASE?: string;
+  TWITCH_ID_BASE?: string;
   DISCORD_GUILD_ID: string;
   DISCORD_ROLE_ADMIN: string;
   DISCORD_ROLE_EDITOR: string;

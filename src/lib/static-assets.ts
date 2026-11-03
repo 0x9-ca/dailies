@@ -290,6 +290,11 @@ export const SHARED_CSS = `      :root {
       /* Phones: the Twitch icon says where the button goes, so "on Twitch" is dropped to keep it on one line. */
       @media (max-width: 480px) { .btn-twitch .wide-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
       .live-badge { background: #eb0400; color: #fff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; padding: 0.15rem 0.4rem; border-radius: 4px; line-height: 1.2; }
+      a.live-badge-link { color: #fff; text-decoration: none; margin-left: 0.35rem; vertical-align: middle; display: inline-block; }
+      a.live-badge-link:hover, a.live-badge-link:focus-visible { filter: brightness(1.15); }
+      .live-badge[data-pulse] { animation: live-pulse 2s ease-in-out infinite; }
+      @keyframes live-pulse { 50% { opacity: 0.65; } }
+      @media (prefers-reduced-motion: reduce) { .live-badge[data-pulse] { animation: none; } }
       .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
       @media (min-width: 800px) {
         .home-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; align-items: start; }

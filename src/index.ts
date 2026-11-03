@@ -23,6 +23,7 @@ import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./
 import { loadStats } from "./lib/stats";
 import { DEVELOPER_STATS_CSS, DEVELOPER_STATS_SCRIPT, loadDeveloperStats, renderDeveloperStatsPanel } from "./lib/developer-stats";
 import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
+import { getLiveStatus, getTwitchAppToken } from "./lib/twitch-live";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
@@ -2001,7 +2002,7 @@ app.get("/u/:handle", async (c) => {
       ${ownedLists.length > 0 ? `<section>
         <h2>Lists</h2>
         <ul class="list-index">
-          ${ownedLists.map((row) => `<li><a href="/lists/${encodeURIComponent(row.slug)}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}
+          ${ownedLists.map((row) => `<li${row.twitch_login ? ` data-live-list="${escapeHtml(row.slug)}" data-live-login="${escapeHtml(row.twitch_login)}"` : ""}><a href="/lists/${encodeURIComponent(row.slug)}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}
             <br /><small class="muted">${row.game_count} game${row.game_count === 1 ? "" : "s"}</small></li>`).join("")}
         </ul>
       </section>` : ""}
@@ -2514,13 +2515,14 @@ app.get("/lists", async (c) => {
       ${visible.length > 0 ? `
         <ul class="list-index">
           ${visible
-            .map((row) => `<li><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}${row.visibility === "private" ? " <small>(private)</small>" : ""}
+            .map((row) => `<li${row.twitch_login && row.visibility === "public" ? ` data-live-list="${escapeHtml(row.slug)}" data-live-login="${escapeHtml(row.twitch_login)}"` : ""}><a href="/lists/${row.slug}">${escapeHtml(row.title)}</a>${row.is_creator_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)}${row.visibility === "private" ? " <small>(private)</small>" : ""}
               <br /><small class="muted">${row.game_count} game${row.game_count === 1 ? "" : "s"}${row.twitch_login ? ` · picked by ${escapeHtml(row.twitch_login)} on Twitch` : ""}${row.description ? ` · ${escapeHtml(row.description)}` : ""}</small></li>`)
             .join("")}
         </ul>
       ` : `<p>No curated lists yet.</p>`}
     </main>
     <script src="${ASSET.page_lists_page}"></script>
+    <script src="${ASSET.liveBadgesJs}"></script>
   `, c.env, { path: "/lists", description: "Curated lists of daily games picked by editors and Twitch streamers. See which dailies they play, then add them to your own rotation.", jsonLd: [breadcrumbLd([["Home", "/"], ["Lists", "/lists"]])] }));
 });
 
@@ -2690,7 +2692,6 @@ app.get("/lists/:slug", async (c) => {
     adminGames = games.results;
   }
 
-  const twitchLive = list.twitch_user_id ? await isTwitchUserLive(c.env, list.twitch_user_id) : false;
   // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get the
   // viewer's own; logged-out pages load theirs from the API.
   const suggestionsOn = !isAdminEditor && list.suggestions_enabled === 1;
@@ -2837,7 +2838,7 @@ app.get("/lists/:slug", async (c) => {
       <div class="list-head">
       <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}${isAdminEditor ? "" : `<span class="stream-pane-title" id="stream-pane-title"></span>`}</h1>
       ${showPlayed ? `<p class="played-count" id="played-count" hidden></p>` : ""}
-      ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
+      ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" data-live-list="${escapeHtml(list.slug)}" data-live-login="${escapeHtml(list.twitch_login)}" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span><span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <div class="list-head-actions" id="head-actions">
         <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
         ${canEdit ? `<a class="btn" data-head-item data-head-keep href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a>` : ""}
@@ -2974,6 +2975,7 @@ app.get("/lists/:slug", async (c) => {
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
     </main>
     <script src="${ASSET.listPageJs}"></script>
+    ${list.twitch_login ? `<script src="${ASSET.liveBadgesJs}"></script>` : ""}
     ${isAdminEditor || list.visibility !== "public" ? "" : `${renderEmbedDialog()}<script src="${ASSET.embedDialogJs}" data-origin="${escapeHtml(appOrigin(c.env))}" data-slug="${escapeHtml(list.slug)}" data-title="${escapeHtml(list.title)}"></script>`}
     ${isAdminEditor ? "" : `<link rel="stylesheet" href="${ASSET.npCss}" /><script type="application/json" id="data-now-playing">${scriptJson({ slug: list.slug, listId: list.id, canSet: canEdit, hasHistory })}</script><script src="${ASSET.npJs}"></script>`}
     ${layoutOn ? `<script src="${ASSET.page_list_layout}"></script>` : ""}
@@ -5925,6 +5927,27 @@ app.get("/api/lists", async (c) => {
   return c.json({ results: visible });
 });
 
+app.get("/api/lists/live", async (c) => {
+  const headers = { "Cache-Control": "public, max-age=60" };
+  try {
+    const rate = await enforceRateLimit(c.env, `lists-live:${await getAnonymousVoteKey(c)}`, 300, 60 * 60);
+    if (!rate.ok) return c.json({ live: {} }, 429, { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) });
+    const rows = await c.env.DB.prepare(
+      "SELECT slug, twitch_login FROM curated_lists WHERE visibility = 'public' AND twitch_login IS NOT NULL AND twitch_login != ''"
+    ).all<{ slug: string; twitch_login: string }>();
+    const status = await getLiveStatus(c.env, rows.results.map((r) => r.twitch_login));
+    const live: Record<string, { title: string; startedAt: string; viewerCount: number }> = {};
+    for (const row of rows.results) {
+      const info = status[row.twitch_login.toLowerCase()];
+      if (info) live[row.slug] = { title: info.title, startedAt: info.startedAt, viewerCount: info.viewerCount };
+    }
+    return c.json({ live }, 200, headers);
+  } catch (error) {
+    console.error("lists/live failed:", error instanceof Error ? error.message : error);
+    return c.json({ live: {} }, 200, { "Cache-Control": "public, max-age=30" });
+  }
+});
+
 app.get("/api/lists/:slug", async (c) => {
   const user = c.get("user");
   const list = await c.env.DB.prepare(
@@ -7308,77 +7331,13 @@ async function isCreatorListOwner(env: Env, listId: string, userId: string): Pro
   return !!row;
 }
 
-/** App access token for Twitch's Helix API (client credentials), cached in KV until shortly before expiry. */
-async function getTwitchAppToken(env: Env): Promise<string | null> {
-  if (!env.OAUTH_TWITCH_CLIENT_ID || !env.OAUTH_TWITCH_CLIENT_SECRET) {
-    return null;
-  }
-  const cached = await env.CACHE.get("twitch:app_token");
-  if (cached) {
-    return cached;
-  }
-  const res = await fetch("https://id.twitch.tv/oauth2/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: env.OAUTH_TWITCH_CLIENT_ID,
-      client_secret: env.OAUTH_TWITCH_CLIENT_SECRET,
-      grant_type: "client_credentials"
-    }),
-    signal: AbortSignal.timeout(2500)
-  });
-  if (!res.ok) {
-    console.error("Twitch app token request failed:", res.status, await res.text());
-    return null;
-  }
-  const json = (await res.json()) as { access_token?: string; expires_in?: number };
-  if (!json.access_token) {
-    return null;
-  }
-  await env.CACHE.put("twitch:app_token", json.access_token, { expirationTtl: Math.max(60, (json.expires_in ?? 3600) - 300) });
-  return json.access_token;
-}
-
-/**
- * Whether a Twitch user is streaming right now, for the LIVE tag on their list. Cached in KV for a minute per user
- * so list views don't each call Twitch. Any failure (no credentials, timeout, Twitch error) counts as not live.
- */
-async function isTwitchUserLive(env: Env, twitchUserId: string): Promise<boolean> {
-  const key = `twitch:live:${twitchUserId}`;
-  const cached = await env.CACHE.get(key);
-  if (cached !== null) {
-    return cached === "1";
-  }
-  try {
-    const token = await getTwitchAppToken(env);
-    if (!token) {
-      return false;
-    }
-    const res = await fetch(`https://api.twitch.tv/helix/streams?user_id=${encodeURIComponent(twitchUserId)}`, {
-      headers: { Authorization: `Bearer ${token}`, "Client-Id": env.OAUTH_TWITCH_CLIENT_ID! },
-      signal: AbortSignal.timeout(2500)
-    });
-    if (res.status === 401) {
-      await env.CACHE.delete("twitch:app_token");
-    }
-    if (!res.ok) {
-      return false;
-    }
-    const live = (((await res.json()) as { data?: unknown[] }).data?.length ?? 0) > 0;
-    await env.CACHE.put(key, live ? "1" : "0", { expirationTtl: 60 });
-    return live;
-  } catch {
-    return false;
-  }
-}
-
 /** Resolves a Twitch username to its stable id and canonical login. null = no such user; throws if Twitch is unreachable. */
 async function lookupTwitchUser(env: Env, login: string): Promise<{ id: string; login: string } | null> {
   const token = await getTwitchAppToken(env);
   if (!token) {
     throw new Error("twitch-unavailable");
   }
-  const res = await fetch(`https://api.twitch.tv/helix/users?login=${encodeURIComponent(login)}`, {
+  const res = await fetch(`${(env.TWITCH_API_BASE || "https://api.twitch.tv/helix").replace(/\/+$/, "")}/users?login=${encodeURIComponent(login)}`, {
     headers: { Authorization: `Bearer ${token}`, "Client-Id": env.OAUTH_TWITCH_CLIENT_ID! }
   });
   if (res.status === 401) {
@@ -11815,6 +11774,53 @@ const ROTATION_WEEK_SCRIPT = `
   new MutationObserver(() => { if (!week.hidden) renderWeek(); }).observe(list, { childList: true });
 })();
 `;
+// "LIVE" badges for creator lists. Pages are edge-cached, so live state is fetched here, never rendered into HTML.
+// Marks: [data-live-list=<slug>][data-live-login=<twitch login>]. A link element (the header's Twitch button) gets the
+// badge inside it; anything else (a list card's <li>) gets its own link to the channel.
+const LIVE_BADGES_SCRIPT = `      (() => {
+        if (window.__dglLiveBadges) return;
+        window.__dglLiveBadges = true;
+        const marks = () => Array.from(document.querySelectorAll("[data-live-list]"));
+        if (marks().length === 0) return;
+        const apply = (live) => {
+          marks().forEach((el) => {
+            const info = live[el.dataset.liveList];
+            let badge = el.querySelector(":scope > .live-badge, :scope > a.live-badge-link");
+            if (!info) { if (badge) badge.remove(); return; }
+            const viewers = Number(info.viewerCount) || 0;
+            const tip = (info.title ? info.title + " - " : "") + viewers.toLocaleString("en-US") + " viewer" + (viewers === 1 ? "" : "s");
+            if (!badge) {
+              const isLink = el.tagName === "A";
+              badge = document.createElement(isLink ? "span" : "a");
+              badge.className = "live-badge" + (isLink ? "" : " live-badge-link");
+              badge.setAttribute("data-pulse", "1");
+              if (!isLink) {
+                badge.href = "https://www.twitch.tv/" + encodeURIComponent(el.dataset.liveLogin || "");
+                badge.target = "_blank";
+                badge.rel = "noopener noreferrer";
+              }
+              badge.append("LIVE");
+              const hidden = document.createElement("span");
+              hidden.className = "visually-hidden";
+              hidden.textContent = " now on Twitch";
+              badge.append(hidden);
+              el.append(isLink ? " " : " ", badge);
+            }
+            badge.title = tip;
+          });
+        };
+        const load = async () => {
+          if (document.hidden) return;
+          try {
+            const res = await fetch("/api/lists/live", { credentials: "same-origin" });
+            if (res.ok) apply(((await res.json()) || {}).live || {});
+          } catch (e) {}
+        };
+        load();
+        setInterval(load, 120000);
+        document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+      })();
+`;
 const joinJs = (...parts: string[]) => parts.join(";\n");
 const ASSET = {
   page_submit_page: registerAsset("submit-page", "js", PAGE_SCRIPTS["submit-page"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT)),
@@ -11834,6 +11840,7 @@ const ASSET = {
   headJs: registerAsset("head", "js", joinJs(CSRF_FETCH_SCRIPT, GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
   appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, OFFLINE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
+  liveBadgesJs: registerAsset("live-badges", "js", LIVE_BADGES_SCRIPT),
   embedDialogJs: registerAsset("embed-dialog", "js", EMBED_DIALOG_SCRIPT),
   npCss: registerAsset("now-playing", "css", NOW_PLAYING_CSS),
   npJs: registerAsset("now-playing", "js", NOW_PLAYING_SCRIPT),
