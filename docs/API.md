@@ -13,6 +13,7 @@
 - `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
 - `GET /api/categories`
 - `GET /api/lists`
+- `GET /api/lists/:slug/now-playing` -> `{ gameId, title, startedAt }` or `{ gameId: null }` (null once set over 6 hours ago; 404 for a missing or unviewable list). `Cache-Control: no-store`; public lists are read through a ~10s KV cache (`np:v1:<slug>`)
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
 - `GET /api/games/new?days=14&categories=a,b,c&limit=12` → `{ games: [{ id, slug, title, url, paywall, categories: [{ slug, name }], listedAt }] }`: approved, non-NSFW games listed in the last `days` (1-60) in any of up to 5 categories, newest first (`limit` up to 24). Empty without valid categories. KV-cached for 5 minutes; used by the home page's "New in your categories" row.
@@ -110,6 +111,7 @@
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
 - `PUT /api/lists/:id/items/:gameId/played` (`{ played: boolean }`; the list's editors, same as the item routes. Sets or clears `last_played_at`; returns `{ ok, lastPlayedAt }`; 404 when the game isn't on the list. Not in the mod log. Played on stream applies to a viewer when the site setting `played_on_stream` is `on` or they are an admin; otherwise 403 `code: "disabled"`)
+- `PUT /api/lists/:id/now-playing` (`{ gameId: string | null }`; the list's editors, CSRF, 300/hour per user. The game must be on the list: main list, a suggestion or a Fan-dles game, else 400. `null` clears. Returns `{ gameId, title, startedAt }` or `{ gameId: null }`; drops the KV cache. Not in the mod log)
 - `PATCH /api/lists/:id/items/reorder`
 - `POST /api/lists/:id/suggestions/:gameId/accept` (moves a suggestion to the end of the list)
 - `DELETE /api/lists/:id/suggestions/:gameId` (dismisses a suggestion; the game can't be suggested for that list again)

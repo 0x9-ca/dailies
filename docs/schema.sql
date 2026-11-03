@@ -81,7 +81,7 @@ CREATE TABLE curated_lists (
   created_by_user_id TEXT NOT NULL,
   updated_by_user_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'curated' CHECK (kind IN ('curated', 'creator')), fandles_enabled INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')), twitch_login TEXT, twitch_user_id TEXT, suggestions_enabled INTEGER NOT NULL DEFAULT 1, kind TEXT NOT NULL DEFAULT 'curated' CHECK (kind IN ('curated', 'creator')), fandles_enabled INTEGER NOT NULL DEFAULT 1, now_playing_game_id TEXT REFERENCES games(id) ON DELETE SET NULL, now_playing_at TEXT,
   FOREIGN KEY (owner_user_id) REFERENCES users(id),
   FOREIGN KEY (created_by_user_id) REFERENCES users(id),
   FOREIGN KEY (updated_by_user_id) REFERENCES users(id)
