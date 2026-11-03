@@ -290,6 +290,12 @@ export const SHARED_CSS = `      :root {
       /* Phones: the Twitch icon says where the button goes, so "on Twitch" is dropped to keep it on one line. */
       @media (max-width: 480px) { .btn-twitch .wide-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
       .live-badge { background: #eb0400; color: #fff; font-size: 0.72rem; font-weight: 800; letter-spacing: 0.08em; padding: 0.15rem 0.4rem; border-radius: 4px; line-height: 1.2; }
+      .play-history-line { margin: 0.4rem 0 0; font-size: 0.88rem; opacity: 0.85; }
+      .live-now-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 0.6rem; }
+      .live-now-list li { display: flex; flex-direction: column; gap: 0.2rem; padding: 0.6rem 0.75rem; border: 1px solid #8884; border-left: 3px solid #eb0400; border-radius: 6px; }
+      .live-now-title { font-weight: 700; }
+      .live-now-meta, .live-now-game { font-size: 0.88rem; opacity: 0.85; }
+      .live-now-watch { align-self: flex-start; font-size: 0.88rem; font-weight: 700; }
       a.live-badge-link { color: #fff; text-decoration: none; margin-left: 0.35rem; vertical-align: middle; display: inline-block; }
       a.live-badge-link:hover, a.live-badge-link:focus-visible { filter: brightness(1.15); }
       .live-badge[data-pulse] { animation: live-pulse 2s ease-in-out infinite; }
@@ -1477,6 +1483,30 @@ export const PAGE_SCRIPTS: Record<string, string> = {
     `,
   "game-page": `
       const DATA_GAME_PAGE = JSON.parse(document.getElementById("data-game-page").textContent);
+      // "You played this N times in the last 35 days" from the local play log (dgl_play_games_v1), viewer-local days.
+      (() => {
+        const el = document.getElementById("play-history-line");
+        if (!el) return;
+        let byDay = {};
+        try { byDay = JSON.parse(window.localStorage.getItem("dgl_play_games_v1") || "{}") || {}; } catch (e) {}
+        const key = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+        const now = new Date();
+        const oldest = key(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 35));
+        let n = 0, last = "";
+        Object.keys(byDay).forEach((day) => {
+          if (day < oldest || !Array.isArray(byDay[day])) return;
+          const c = byDay[day].filter((id) => id === DATA_GAME_PAGE.id).length;
+          if (!c) return;
+          n += c;
+          if (day > last) last = day;
+        });
+        if (!n) return;
+        const when = last === key(now) ? "today"
+          : last === key(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)) ? "yesterday"
+          : new Date(+last.slice(0, 4), +last.slice(5, 7) - 1, +last.slice(8, 10)).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+        el.textContent = "You played this " + (n === 1 ? "once" : n + " times") + " in the last 35 days \u00b7 last played " + when;
+        el.hidden = false;
+      })();
       // "Recently on stream" dates: UTC text from the server, shown in the viewer's local time.
       document.querySelectorAll("time[data-local-date]").forEach((t) => {
         const d = new Date(t.getAttribute("datetime") || "");

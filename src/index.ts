@@ -739,6 +739,7 @@ app.get("/", async (c) => {
              </section>`
           : ""
       }
+      <section id="live-now" class="live-now" data-live-home hidden aria-labelledby="live-now-h"><h2 id="live-now-h">Live now</h2><ul class="live-now-list"></ul></section>
       <div class="home-columns">
         <section>
           <h2>Popular Today</h2>
@@ -766,6 +767,7 @@ app.get("/", async (c) => {
         <p>Browse the <a href="/games">full game list</a>, filter by category, or explore <a href="/lists">curated lists</a> put together by our editors. Some games are marked <span class="paywall-badge" title="This game requires payment to play">$</span> if they require payment, and NSFW games are labelled. Know a daily we're missing? <a href="/submit">Submit it</a> and, once reviewed, it will show up in the directory.</p>
       </section>
     </main>
+    <script src="${ASSET.liveBadgesJs}"></script>
     <script src="${ASSET.page_home_strip}"></script>
     <script src="${ASSET.page_home_new_cats}"></script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
@@ -1611,6 +1613,7 @@ app.get("/games/:slug", async (c) => {
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
       <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
+      <p class="play-history-line" id="play-history-line" hidden></p>
       ${linkNotice}
       <div class="game-actions" role="group" aria-label="Vote and favorite">
         <button type="button" id="vote-up" data-vote-button="up" class="${userVote === 1 ? "active" : ""}" aria-pressed="${userVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", game.title, game.vote_up_count))}" title="Vote up"><span aria-hidden="true">▲</span> <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
@@ -6028,13 +6031,20 @@ app.get("/api/lists/live", async (c) => {
     const rate = await enforceRateLimit(c.env, `lists-live:${await getAnonymousVoteKey(c)}`, 300, 60 * 60);
     if (!rate.ok) return c.json({ live: {} }, 429, { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) });
     const rows = await c.env.DB.prepare(
-      "SELECT slug, twitch_login FROM curated_lists WHERE visibility = 'public' AND twitch_login IS NOT NULL AND twitch_login != ''"
-    ).all<{ slug: string; twitch_login: string }>();
+      `SELECT l.slug, l.title, l.twitch_login, l.now_playing_game_id AS npId, l.now_playing_at AS npAt, g.title AS npTitle, g.slug AS npSlug
+       FROM curated_lists l LEFT JOIN games g ON g.id = l.now_playing_game_id AND g.status = 'approved'
+       WHERE l.visibility = 'public' AND l.twitch_login IS NOT NULL AND l.twitch_login != ''`
+    ).all<{ slug: string; title: string; twitch_login: string; npId: string | null; npAt: string | null; npTitle: string | null; npSlug: string | null }>();
     const status = await getLiveStatus(c.env, rows.results.map((r) => r.twitch_login));
-    const live: Record<string, { title: string; startedAt: string; viewerCount: number }> = {};
+    const live: Record<string, { title: string; startedAt: string; viewerCount: number; listTitle: string; login: string; nowPlaying: { title: string; slug: string } | null }> = {};
     for (const row of rows.results) {
       const info = status[row.twitch_login.toLowerCase()];
-      if (info) live[row.slug] = { title: info.title, startedAt: info.startedAt, viewerCount: info.viewerCount };
+      if (!info) continue;
+      const np = resolveNowPlaying({ gameId: row.npId, title: row.npTitle, at: row.npAt });
+      live[row.slug] = {
+        title: info.title, startedAt: info.startedAt, viewerCount: info.viewerCount, listTitle: row.title, login: row.twitch_login.toLowerCase(),
+        nowPlaying: np.gameId && row.npSlug ? { title: np.title, slug: row.npSlug } : null
+      };
     }
     return c.json({ live }, 200, headers);
   } catch (error) {
@@ -11962,8 +11972,43 @@ const LIVE_BADGES_SCRIPT = `      (() => {
         if (window.__dglLiveBadges) return;
         window.__dglLiveBadges = true;
         const marks = () => Array.from(document.querySelectorAll("[data-live-list]"));
-        if (marks().length === 0) return;
+        const home = document.querySelector("[data-live-home]");
+        if (marks().length === 0 && !home) return;
+        const ago = (iso) => {
+          const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000));
+          return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + (m % 60) + "m";
+        };
+        const renderHome = (live) => {
+          if (!home) return;
+          const rows = Object.keys(live).map((slug) => Object.assign({ slug }, live[slug])).filter((r) => r.login)
+            .sort((a, b) => (b.viewerCount || 0) - (a.viewerCount || 0)).slice(0, 6);
+          const ul = home.querySelector("ul");
+          ul.textContent = "";
+          rows.forEach((r) => {
+            const li = document.createElement("li");
+            const add = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; li.append(e); return e; };
+            const a = add("a", "live-now-title", r.listTitle || r.slug);
+            a.href = "/lists/" + encodeURIComponent(r.slug);
+            if (r.nowPlaying) {
+              const p = add("span", "live-now-game");
+              p.append("Playing ");
+              const g = document.createElement("a");
+              g.href = "/games/" + encodeURIComponent(r.nowPlaying.slug);
+              g.textContent = r.nowPlaying.title;
+              p.append(g);
+            }
+            const v = Number(r.viewerCount) || 0;
+            add("span", "live-now-meta", v.toLocaleString("en-US") + " watching" + (r.startedAt ? " \u00b7 live for " + ago(r.startedAt) : ""));
+            const w = add("a", "live-now-watch", "Watch");
+            w.href = "https://www.twitch.tv/" + encodeURIComponent(r.login);
+            w.target = "_blank";
+            w.rel = "noopener noreferrer";
+            ul.append(li);
+          });
+          home.hidden = rows.length === 0;
+        };
         const apply = (live) => {
+          renderHome(live);
           marks().forEach((el) => {
             const info = live[el.dataset.liveList];
             let badge = el.querySelector(":scope > .live-badge, :scope > a.live-badge-link");
