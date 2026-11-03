@@ -686,6 +686,10 @@ app.get("/", async (c) => {
       </script>
       ${HOME_ROTATION_MARKUP}
       ${gameOfTheDay ? renderGameOfTheDay(gameOfTheDay) : ""}
+      <section class="new-in-cats" id="new-in-cats" aria-labelledby="new-in-cats-title" hidden>
+        <h2 id="new-in-cats-title">New in your categories</h2>
+        <ul class="games compact" id="new-in-cats-list"></ul>
+      </section>
       <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -730,6 +734,7 @@ app.get("/", async (c) => {
       </section>
     </main>
     <script src="${ASSET.page_home_strip}"></script>
+    <script src="${ASSET.page_home_new_cats}"></script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
   `, c.env, { path: "/", description: `${roundedCount} free daily games like Wordle, Connections, Worldle and Bandle in one place: word, geography, music, trivia and logic puzzles. Vote, favorite and build your daily rotation.` }));
 });
@@ -3971,6 +3976,36 @@ app.get("/api/games/vote-counts", async (c) => {
     c.executionCtx.waitUntil(caches.default.put(cacheKey, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${VOTE_COUNTS_CACHE_SECONDS}` } })));
   }
   return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+});
+
+// Games listed in the last N days in the given categories (up to 5), card-ready, for the home page's "New in your
+// categories" row. NSFW games are left out. KV-cached for 5 minutes (the games: prefix is cleared on game changes).
+app.get("/api/games/new", async (c) => {
+  const days = Math.min(60, Math.max(1, parsePositiveInt(c.req.query("days"), 14)));
+  const limit = Math.min(24, Math.max(1, parsePositiveInt(c.req.query("limit"), 12)));
+  const slugs = [...new Set((c.req.query("categories") || "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9-]{1,64}$/.test(s)))].sort().slice(0, 5);
+  if (slugs.length === 0) return c.json({ games: [] });
+  const key = `games:new:${days}:${limit}:${slugs.join(",")}`;
+  const cached = await getCachedJson<unknown[]>(c.env, key);
+  if (cached) return c.json({ games: cached }, 200, { "Cache-Control": "public, max-age=300" });
+  const rows = await c.env.DB.prepare(
+    `SELECT DISTINCT games.id, games.title, games.slug, games.url, games.paywall, COALESCE(games.approved_at, games.created_at) AS listed_at
+     FROM games
+     JOIN game_categories ON game_categories.game_id = games.id
+     JOIN categories ON categories.id = game_categories.category_id
+     WHERE games.status = 'approved' AND games.nsfw = 0 AND categories.slug IN (${slugs.map((_, i) => `?${i + 3}`).join(",")})
+       AND COALESCE(games.approved_at, games.created_at) >= datetime('now', ?1)
+     ORDER BY listed_at DESC LIMIT ?2`
+  )
+    .bind(`-${days} days`, limit, ...slugs)
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; listed_at: string }>();
+  const categoriesByGameId = await getCategoriesForGames(c.env, rows.results.map((row) => row.id));
+  const games = rows.results.map((row) => ({
+    id: row.id, slug: row.slug, title: row.title, url: row.url, paywall: !!row.paywall,
+    categories: (categoriesByGameId.get(row.id) ?? []).slice(0, 2), listedAt: row.listed_at
+  }));
+  await setCachedJson(c.env, key, games, 300);
+  return c.json({ games }, 200, { "Cache-Control": "public, max-age=300" });
 });
 
 // Every approved game's id, slug and title, for the list suggestion search. Shared through the edge cache for 5 minutes.
@@ -7545,6 +7580,10 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
   <div class="heatmap-grid" id="play-heatmap-grid" role="img"></div>
   <div class="heatmap-legend" aria-hidden="true"><span>Less</span><span class="heat-cell" data-level="0"></span><span class="heat-cell" data-level="1"></span><span class="heat-cell" data-level="2"></span><span class="heat-cell" data-level="3"></span><span class="heat-cell" data-level="4"></span><span>More</span></div>
 </section>
+<details class="stats-card" id="play-stats" open hidden>
+  <summary>Your stats</summary>
+  <div class="stats-tiles" id="play-stats-tiles"></div>
+</details>
 <div class="reminder-opt" id="reminder-opt" hidden>
   <label><input type="checkbox" id="reminder-toggle"> Remind me before resets</label>
   <select id="reminder-minutes" aria-label="Minutes before reset"><option value="30">30 min before</option><option value="60">1 hour before</option><option value="120">2 hours before</option></select>
@@ -8726,6 +8765,83 @@ const DAILY_PROGRESS_SCRIPT = `
       window.dglPlayedHooks.push(renderHeat);
     }
 
+    // Stats card: streaks, recent plays, most-played game and full days, from the local play log. The longest streak
+    // is kept in dgl_streak_best_v1 (the streak itself in dgl_streak_v1 resets when it breaks).
+    const statsBox = document.getElementById("play-stats");
+    const statsTiles = document.getElementById("play-stats-tiles");
+    let titleMap = null;
+    const num = new Intl.NumberFormat("en-US");
+    const renderStats = () => {
+      let log = {};
+      let byDay = {};
+      let streak = { last: "", count: 0 };
+      let best = 0;
+      try { log = JSON.parse(window.localStorage.getItem("dgl_play_log_v1") || "{}") || {}; } catch {}
+      try { byDay = JSON.parse(window.localStorage.getItem("dgl_play_games_v1") || "{}") || {}; } catch {}
+      try { const parsed = JSON.parse(window.localStorage.getItem("dgl_streak_v1") || "{}"); if (parsed && typeof parsed.last === "string") streak = { last: parsed.last, count: Math.floor(Number(parsed.count)) || 0 }; } catch {}
+      try { best = Math.floor(Number(JSON.parse(window.localStorage.getItem("dgl_streak_best_v1") || "0"))) || 0; } catch {}
+      const now = new Date();
+      const today = window.dglDateKey(now);
+      const yesterday = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+      const current = streak.last === today || streak.last === yesterday ? streak.count : 0;
+      if (current > best) {
+        best = current;
+        try { window.localStorage.setItem("dgl_streak_best_v1", String(best)); } catch {}
+      }
+      const rotationSize = todayItems().length;
+      let week = 0;
+      let month = 0;
+      let full = 0;
+      const tally = {};
+      for (let i = 0; i < 30; i++) {
+        const key = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i));
+        const count = Math.max(0, Math.floor(Number(log[key]) || 0));
+        month += count;
+        if (i < 7) week += count;
+        if (rotationSize > 0 && count >= rotationSize) full++;
+        if (Array.isArray(byDay[key])) byDay[key].forEach((id) => { tally[id] = (tally[id] || 0) + 1; });
+      }
+      if (month === 0 && current === 0 && best === 0) { statsBox.hidden = true; return; }
+      statsBox.hidden = false;
+      let topId = "";
+      Object.keys(tally).forEach((id) => { if (!topId || tally[id] > tally[topId]) topId = id; });
+      const nameOf = (id) => {
+        const li = Array.from(list.querySelectorAll("li[data-game-id]")).find((row) => row.getAttribute("data-game-id") === id);
+        if (li) return li.getAttribute("data-game-title") || "";
+        return titleMap && titleMap[id] ? titleMap[id] : "";
+      };
+      if (topId && !nameOf(topId) && !titleMap) {
+        titleMap = {};
+        fetch("/api/games/titles").then((r) => (r.ok ? r.json() : null)).then((data) => {
+          ((data && data.games) || []).forEach((g) => { titleMap[g.id] = g.title; });
+          renderStats();
+        }).catch(() => {});
+      }
+      const tiles = [
+        ["Current streak", num.format(current) + (current === 1 ? " day" : " days")],
+        ["Longest streak", num.format(best) + (best === 1 ? " day" : " days")],
+        ["Plays, last 7 days", num.format(week)],
+        ["Plays, last 30 days", num.format(month)]
+      ];
+      if (topId && nameOf(topId)) tiles.push(["Most played, 30 days", nameOf(topId) + " (" + num.format(tally[topId]) + "x)"]);
+      tiles.push(["Full rotation days, 30 days", num.format(full)]);
+      statsTiles.replaceChildren(...tiles.map(([label, value]) => {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        const v = document.createElement("strong");
+        v.textContent = value;
+        const l = document.createElement("span");
+        l.textContent = label;
+        tile.append(v, l);
+        return tile;
+      }));
+    };
+    if (statsBox && statsTiles) {
+      renderStats();
+      window.dglPlayedHooks.push(renderStats);
+      new MutationObserver(renderStats).observe(list, { childList: true });
+    }
+
     // Reminder toggle (hidden where browser notifications don't exist).
     const opt = document.getElementById("reminder-opt");
     const toggle = document.getElementById("reminder-toggle");
@@ -8803,6 +8919,18 @@ const RESET_LOCALIZE_SCRIPT = `
         const today = window.dglDateKey(now);
         days[today] = (Number(days[today]) || 0) + 1;
         window.localStorage.setItem(PLAY_LOG_KEY, JSON.stringify(days));
+      } catch {}
+      // Which games, per day (dgl_play_games_v1, { "YYYY-MM-DD": [game ids] }, 35 days): for the rotation stats.
+      try {
+        const raw = JSON.parse(window.localStorage.getItem("dgl_play_games_v1") || "{}");
+        const byDay = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+        const oldestDay = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 35));
+        Object.keys(byDay).forEach((day) => { if (day < oldestDay || !Array.isArray(byDay[day])) delete byDay[day]; });
+        const todayKey = window.dglDateKey(now);
+        const ids = byDay[todayKey] || [];
+        if (!ids.includes(gameId)) ids.push(gameId);
+        byDay[todayKey] = ids;
+        window.localStorage.setItem("dgl_play_games_v1", JSON.stringify(byDay));
       } catch {}
     }
     window.dglLocalizeResets();
@@ -10601,6 +10729,7 @@ const ASSET = {
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
+  page_home_new_cats: registerAsset("home-new-cats", "js", PAGE_SCRIPTS["home-new-cats"]),
   page_games_page: registerAsset("games-page", "js", PAGE_SCRIPTS["games-page"]),
   page_lists_page: registerAsset("lists-page", "js", PAGE_SCRIPTS["lists-page"]),
   page_settings_hidden: registerAsset("settings-hidden", "js", PAGE_SCRIPTS["settings-hidden"]),
