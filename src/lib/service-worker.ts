@@ -1,20 +1,36 @@
 // Offline support. buildServiceWorker() returns the text of GET /sw.js; OFFLINE_SCRIPT is the client part (in app.js):
 // registers the worker, shows the offline banner and wipes the cached pages on sign-out.
-// Cached pages can hold a signed-in user's rotation, so they are deleted on logout and by every deploy (cache names carry the version).
+// Cached pages can hold a signed-in user's rotation, so they are deleted on logout (cache names are unversioned so they survive deploys).
 
 export function buildServiceWorker(version: string, precache: string[]): string {
   return `"use strict";
+// Deploy version (makes this file differ per deploy so the browser installs the new worker). Cache names are NOT
+// versioned: saved pages must survive deploys, and their hashed assets stay in the static cache (capped below).
 const VERSION = ${JSON.stringify(version)};
-const STATIC = "dgl-static-" + VERSION;
-const PAGES = "dgl-pages-" + VERSION;
+const STATIC = "dgl-static-v1";
+const PAGES = "dgl-pages-v1";
+const MAX_STATIC = 40;
 const PRECACHE = ${JSON.stringify(["/offline", ...precache])};
 const KEEP_NO_STORE = ["/", "/me/rotation"];
 const SKIP = /^\\/(api|auth|admin|embed)\\//;
 
+async function trimStatic(cache) {
+  const keys = await cache.keys();
+  let extra = keys.length - MAX_STATIC;
+  for (const req of keys) {
+    if (extra <= 0) break;
+    const u = new URL(req.url);
+    if (PRECACHE.includes(u.pathname)) continue;
+    await cache.delete(req);
+    extra--;
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(STATIC)
-      .then((cache) => Promise.all(PRECACHE.map((url) => cache.add(new Request(url, { credentials: "omit" })).catch(() => {}))))
+      .then((cache) => Promise.all(PRECACHE.map((url) => cache.add(new Request(url, { credentials: "omit" })).catch(() => {}))).then(() => cache))
+      .then((cache) => trimStatic(cache))
       .then(() => self.skipWaiting())
   );
 });
@@ -66,7 +82,7 @@ async function assetFirst(request) {
   const response = await fetch(request);
   if (response.ok && response.type === "basic") {
     const copy = response.clone();
-    caches.open(STATIC).then((cache) => cache.put(request, copy)).catch(() => {});
+    caches.open(STATIC).then((cache) => cache.put(request, copy).then(() => trimStatic(cache))).catch(() => {});
   }
   return response;
 }
