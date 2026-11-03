@@ -683,6 +683,23 @@ export const SHARED_CSS = `      :root {
       html.dgl-stream .stream-top:empty { display: none; }
       html.dgl-stream .stream-top li { display: flex; gap: 0.6rem; align-items: baseline; }
       html.dgl-stream .stream-top .st-votes { color: var(--stream-accent); font-variant-numeric: tabular-nums; }
+      /* Stream panes: Suggestions and Fan-dles reuse the list's row look in #stream-pane. The switcher is invisible until the mouse moves. */
+      .stream-pane-title, #stream-pane, .stream-panes { display: none; }
+      html.dgl-stream .stream-pane-title:not(:empty) { display: inline; font-weight: inherit; }
+      html.dgl-stream.dgl-pane-alt #list-items { display: none !important; }
+      html.dgl-stream.dgl-pane-alt #stream-pane { display: flex; }
+      html.dgl-stream.dgl-grid.dgl-pane-alt .rotation-list#stream-pane { display: grid; grid-auto-flow: column; grid-template-columns: repeat(var(--stream-cols, 1), minmax(0, 1fr)); grid-template-rows: repeat(var(--stream-rows, 1), auto); align-content: start; gap: 0.33em 0.7em; overflow-y: auto; scrollbar-width: none; }
+      html.dgl-stream.dgl-grid .rotation-list#stream-pane::-webkit-scrollbar { display: none; }
+      html.dgl-stream.dgl-pane-suggestions .stream-top { display: none; }
+      html.dgl-stream #stream-pane .sp-votes { flex: none; margin-left: auto; padding-left: 0.5em; color: var(--stream-accent); font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      html.dgl-stream #stream-pane .sp-dev { display: inline-flex; align-items: center; gap: 0.3em; margin-right: 0.6em; padding: 0 0.5em; border: max(1.5px, 0.07em) solid var(--stream-sep); border-radius: 999px; font-weight: 700; color: var(--stream-ink); }
+      html.dgl-stream .stream-panes:not([hidden]) { display: flex; position: fixed; top: 0.75rem; right: 22.5rem; z-index: 50; gap: 0; padding: 3px; border: 2px solid var(--stream-sep); border-radius: 999px; background: var(--stream-bar); opacity: 0; pointer-events: none; transition: opacity 0.25s ease; }
+      html.dgl-stream .stream-panes.show, html.dgl-stream .stream-panes:has(:focus-visible) { opacity: 1; pointer-events: auto; }
+      html.dgl-stream .stream-panes button { min-height: 40px; padding: 0 1.1rem; border: 0; border-radius: 999px; background: transparent; color: var(--stream-ink); font-size: 1rem; font-weight: 700; line-height: 1; cursor: pointer; white-space: nowrap; }
+      html.dgl-stream .stream-panes button[hidden] { display: none; }
+      html.dgl-stream .stream-panes button[aria-pressed="true"] { background: var(--stream-accent); color: var(--stream-bg); }
+      html.dgl-stream .stream-panes button:focus-visible { outline: 3px solid var(--stream-ink); outline-offset: 1px; }
+      @media (prefers-reduced-motion: reduce) { html.dgl-stream .stream-panes { transition: none; } }
       html.dgl-stream .stream-exit { display: inline-flex; position: fixed; top: 0.75rem; right: 0.75rem; z-index: 50; min-height: 44px; opacity: 0; transition: opacity 0.15s ease; }
       html.dgl-stream .stream-exit:hover, html.dgl-stream .stream-exit:focus-visible { opacity: 1; }
       html.dgl-stream .stream-settings-btn { right: 11.5rem; white-space: nowrap; }
@@ -816,6 +833,7 @@ export const SHARED_CSS = `      :root {
       .shortcuts-dialog h2 { margin: 0 0 0.6rem; font-size: 1.2rem; }
       .shortcut-list { margin: 0; }
       .shortcut-list > div { display: grid; grid-template-columns: minmax(7.5rem, max-content) minmax(0, 1fr); gap: 0.4rem 0.8rem; align-items: center; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+      .shortcut-list > div[hidden] { display: none; }
       .shortcut-list dt, .shortcut-list dd { margin: 0; }
       .shortcut-note { color: var(--muted); font-size: 0.9rem; margin: 0.75rem 0 0; }
       .shortcuts-dialog kbd { display: inline-block; min-width: 1.6rem; padding: 0.1rem 0.4rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--bg-soft); color: var(--ink); font: 700 0.9rem/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; text-align: center; }
@@ -2526,6 +2544,7 @@ export const PAGE_SCRIPTS: Record<string, string> = {
               return li;
             }));
           };
+          window.dglStreamPanes?.suggestions(suggestions);
           fillTop(streamTop, topN < 0 ? 3 : topN);
           fillTop(document.getElementById("ov-top"), topN < 0 ? 5 : topN);
           const rows = shown.map((item) => {
@@ -2678,6 +2697,7 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         // Turned off while the page is open: back to the list alone, in a single column.
         const hidePanel = () => {
           window.clearInterval(timer);
+          window.dglStreamPanes?.suggestions([]);
           document.removeEventListener("visibilitychange", refresh);
           document.getElementById("ov-top")?.remove();
           const ovLabel = document.getElementById("ov-label");

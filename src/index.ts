@@ -2522,7 +2522,7 @@ app.get("/lists/:slug", async (c) => {
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
-      <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}</h1>
+      <h1>${escapeHtml(list.title)}${list.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(list.twitch_login)}${isAdminEditor ? "" : `<span class="stream-pane-title" id="stream-pane-title"></span>`}</h1>
       ${showPlayed ? `<p class="played-count" id="played-count" hidden></p>` : ""}
       ${list.twitch_login ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(list.twitch_login)}" target="_blank" rel="noopener noreferrer" title="${twitchLive ? `${escapeHtml(list.twitch_login)} is live now. ` : ""}Opens Twitch in a new tab">${TWITCH_ICON_SVG}<span>Watch ${escapeHtml(list.twitch_login)}<span class="wide-only"> on Twitch</span></span>${twitchLive ? `<span class="live-badge">LIVE<span class="visually-hidden"> now</span></span>` : ""}<span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
       <div class="list-head-actions" id="head-actions">
@@ -2652,7 +2652,7 @@ app.get("/lists/:slug", async (c) => {
         ${suggestPanelHtml}
         ${fandleSection}
       </aside></div>`}
-      ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions)}
+      ${isAdminEditor ? "" : renderStreamBar(streamHost, list.slug, suggestionsOn, suggestions, !!fandleSection)}
       ${isAdminEditor ? "" : renderStreamSettings(canMarkPlayed, list.visibility === "public" ? { slug: list.slug, title: list.title, appUrl: c.env.APP_URL.replace(/\/$/, ""), shortUrl: (shortOrigin(c.env) ?? c.env.APP_URL).replace(/\/$/, "") } : null)}
       ${isAdminEditor ? "" : renderOverlayPanel(list.title, suggestionsOn, suggestions, showPlayed)}
       ${fandleNotice && !fandleSection ? `<p class="panel fandle-notice" role="status">${escapeHtml(fandleNotice)}</p>` : ""}
@@ -9642,17 +9642,25 @@ function renderListSortControl(options: { votes?: boolean; rotation?: boolean } 
 
 // Curated list pages: set before first paint (no layout jump). The sidebar collapse is remembered per browser
 // (dgl_list_sidebar_v1); stream mode comes from ?view=stream (never remembered) or the remembered toggle (dgl_list_stream_v1).
-// Also parses the stream/overlay params (fit, scroll, top, cols, theme, pos) into window.DGL_STREAM.
+// Also parses the stream/overlay params (fit, scroll, top, cols, theme, pos, pane, cycle) into window.DGL_STREAM.
 // Handled client-side because the edge-cached HTML is the same for every query string.
-const LIST_PAGE_HEAD_SCRIPT = `<script>(function(){var h=document.documentElement,P={view:"",fit:1,scroll:1,top:-1,cols:0,theme:"",pos:"bl"};try{if(localStorage.getItem("dgl_list_sidebar_v1")==="collapsed")h.classList.add("dgl-sb-collapsed")}catch(e){}try{var q=new URLSearchParams(location.search),v=q.get("view"),n=function(k,lo,hi){var x=parseInt(q.get(k),10);return isNaN(x)?-1:Math.max(lo,Math.min(hi,x))};P.fit=q.get("fit")==="0"?0:1;P.scroll=q.get("scroll")==="0"?0:1;P.top=n("top",0,10);P.cols=Math.max(0,n("cols",1,4));var t=q.get("theme");P.theme=t==="dark"||t==="light"?t:"";var ps=q.get("pos");P.pos=/^(br|bl|tr|tl)$/.test(ps)?ps:"bl";if(v==="stream"){P.view="stream";h.classList.add("dgl-stream","dgl-stream-forced")}else if(v==="overlay"){P.view="overlay";h.classList.add("dgl-overlay","dgl-pos-"+P.pos)}else if(localStorage.getItem("dgl_list_stream_v1")==="1")h.classList.add("dgl-stream");if(P.theme&&P.view){if(P.theme==="light")h.dataset.theme="light";else delete h.dataset.theme}}catch(e){}window.DGL_STREAM=P})()</script>`;
+const LIST_PAGE_HEAD_SCRIPT = `<script>(function(){var h=document.documentElement,P={view:"",fit:1,scroll:1,top:-1,cols:0,theme:"",pos:"bl",pane:"",cycle:0};try{if(localStorage.getItem("dgl_list_sidebar_v1")==="collapsed")h.classList.add("dgl-sb-collapsed")}catch(e){}try{var q=new URLSearchParams(location.search),v=q.get("view"),n=function(k,lo,hi){var x=parseInt(q.get(k),10);return isNaN(x)?-1:Math.max(lo,Math.min(hi,x))};P.fit=q.get("fit")==="0"?0:1;P.scroll=q.get("scroll")==="0"?0:1;P.top=n("top",0,10);P.cols=Math.max(0,n("cols",1,4));var t=q.get("theme");P.theme=t==="dark"||t==="light"?t:"";var ps=q.get("pos");P.pos=/^(br|bl|tr|tl)$/.test(ps)?ps:"bl";var pn=q.get("pane");P.pane=/^(list|suggestions|fandles)$/.test(pn)?pn:"";var cy=parseInt(q.get("cycle"),10);P.cycle=cy>0?Math.max(10,Math.min(600,cy)):0;if(v==="stream"){P.view="stream";h.classList.add("dgl-stream","dgl-stream-forced")}else if(v==="overlay"){P.view="overlay";h.classList.add("dgl-overlay","dgl-pos-"+P.pos)}else if(localStorage.getItem("dgl_list_stream_v1")==="1")h.classList.add("dgl-stream");if(P.theme&&P.view){if(P.theme==="light")h.dataset.theme="light";else delete h.dataset.theme}}catch(e){}window.DGL_STREAM=P})()</script>`;
 
 const SIDE_ICON_FANDLES = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><circle cx="7.5" cy="6.5" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M2 16c0-3 2.4-5 5.5-5s5.5 2 5.5 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="14.5" cy="7.5" r="2.4" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M15 11.3c2 .2 3.6 1.7 3.6 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
 const SIDE_ICON_SUGGEST = `<svg class="side-ico" viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 4.5h14v9H9l-4 3v-3H3z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M10 7v4M8 9h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>`;
 
 // Stream mode footer: where to suggest, and the three leading suggestions (the suggestions script keeps them current).
-function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>): string {
+function renderStreamBar(host: string, slug: string, suggestionsOn: boolean, suggestions: Array<{ title: string; votes: number }>, fandlesOn = false): string {
   const address = `${host}/c/${slug}`;
-  return `<div class="stream-bar" id="stream-bar">
+  // Pane switcher: invisible until the mouse moves (stream CSS); the list script hides the panes that have nothing to show.
+  const paneControl = suggestionsOn || fandlesOn
+    ? `<div class="stream-panes" id="stream-panes" role="group" aria-label="Stream pane" hidden>
+    <button type="button" data-pane="list" aria-pressed="true">List</button>
+    ${suggestionsOn ? `<button type="button" data-pane="suggestions" aria-pressed="false" hidden>Suggestions</button>` : ""}
+    ${fandlesOn ? `<button type="button" data-pane="fandles" aria-pressed="false" hidden>Fan-dles</button>` : ""}
+  </div>`
+    : "";
+  return `${paneControl}<div class="stream-bar" id="stream-bar">
     <p class="stream-cta">${suggestionsOn ? "Suggest games at " : ""}<strong>${escapeHtml(address)}</strong></p>
     ${suggestionsOn ? `<ol class="stream-top" id="stream-top" aria-label="Top suggestions">${suggestions.slice(0, 3).map((item) => `<li><span class="st-title">${escapeHtml(item.title)}</span><span class="st-votes">▲ ${item.votes}</span></li>`).join("")}</ol>` : ""}
   </div>
@@ -9688,11 +9696,13 @@ function renderStreamSettings(canMark: boolean, badge: { slug: string; title: st
   <div class="stream-settings" id="stream-settings" role="dialog" aria-label="Stream settings" hidden>
     <h2>Stream settings</h2>
     ${canMark ? `<p class="ss-note">Click a row, or press its number (1-9), to mark it played on stream. Click again to undo.</p>` : ""}
-    <p class="ss-note">Pick options, then copy the link into an OBS browser source. Link params: <code>fit=0</code> <code>scroll=0</code> <code>top=N</code> <code>cols=N</code> <code>theme=dark|light</code></p>
+    <p class="ss-note">Pick options, then copy the link into an OBS browser source. Link params: <code>fit=0</code> <code>scroll=0</code> <code>top=N</code> <code>cols=N</code> <code>theme=dark|light</code> <code>pane=list|suggestions|fandles</code> <code>cycle=SECONDS</code></p>
     <label class="ss-check"><input type="checkbox" id="ss-fit" checked> Fit all rows to the screen</label>
     <label class="ss-check"><input type="checkbox" id="ss-scroll" checked> Auto-scroll if they still don't fit</label>
     <label>Columns <select id="ss-cols"><option value="">Auto</option><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
     <label>Suggestions shown <input type="number" id="ss-top" min="0" max="10" value="3"></label>
+    <label>Pane <select id="ss-pane"><option value="list">List</option><option value="suggestions">Suggestions</option><option value="fandles">Fan-dles</option></select></label>
+    <label>Auto-rotate panes every N seconds (0 = off) <input type="number" id="ss-cycle" min="0" max="600" value="0"></label>
     <label>Theme <select id="ss-theme"><option value="">Your setting</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
     <div class="ss-url"><input type="text" id="ss-stream-url" readonly aria-label="Stream mode link"><button type="button" class="ss-copy" data-copy="ss-stream-url">Copy</button></div>
     <h3>Overlay <span>(transparent, over gameplay)</span></h3>
@@ -9818,10 +9828,16 @@ const LIST_PAGE_SCRIPT = `
     // Stream mode layout: fit every row above the bottom bar (columns + scale), auto-scroll what still overflows,
     // highlight rows that join while the page is open, and the settings popover. Params: window.DGL_STREAM.
     (() => {
-      const P = window.DGL_STREAM || { fit: 1, scroll: 1, top: -1, cols: 0, pos: "bl", theme: "" };
+      const P = window.DGL_STREAM || { fit: 1, scroll: 1, top: -1, cols: 0, pos: "bl", theme: "", pane: "", cycle: 0 };
       const list = document.getElementById("list-items");
       const bar = document.getElementById("stream-bar");
       if (!list) return;
+      // Suggestions and Fan-dles panes render into a second rows container next to the list; "box" is the visible one.
+      const pane = document.createElement("ol");
+      pane.className = "rotation-list";
+      pane.id = "stream-pane";
+      list.after(pane);
+      let box = list;
       const reduce = window.matchMedia("(prefers-reduced-motion: reduce)");
       const isStream = () => root.classList.contains("dgl-stream");
       const rowsOf = () => Array.from(list.children).filter((li) => li.hasAttribute("data-game-id") && !li.classList.contains("row-leave"));
@@ -9829,10 +9845,13 @@ const LIST_PAGE_SCRIPT = `
 
       // Auto-scroll of the rows container (never the page).
       let hovered = false, sc = null;
-      list.addEventListener("pointerenter", (event) => { if (event.pointerType === "mouse") hovered = true; });
-      list.addEventListener("pointerleave", () => { hovered = false; });
-      const stopScroll = () => { if (sc) window.cancelAnimationFrame(sc.raf); sc = null; list.style.opacity = ""; };
+      [list, pane].forEach((el) => {
+        el.addEventListener("pointerenter", (event) => { if (event.pointerType === "mouse") hovered = true; });
+        el.addEventListener("pointerleave", () => { hovered = false; });
+      });
+      const stopScroll = () => { if (sc) window.cancelAnimationFrame(sc.raf); sc = null; list.style.opacity = ""; pane.style.opacity = ""; };
       const startScroll = () => {
+        const list = box;
         const over = isStream() && P.scroll !== 0 && list.scrollHeight > list.clientHeight + 2;
         if (!over) { stopScroll(); if (list.scrollTop) list.scrollTop = 0; return; }
         if (sc) return;
@@ -9871,13 +9890,14 @@ const LIST_PAGE_SCRIPT = `
       // then a short verify loop.
       let raf = 0, timer = 0;
       const pass = () => {
+        const list = box;
         if (!isStream()) {
           if (root.classList.contains("dgl-lock")) root.classList.remove("dgl-grid", "dgl-lock");
-          list.style.removeProperty("max-height");
+          box.style.removeProperty("max-height");
           stopScroll();
           return;
         }
-        const n = rowsOf().length;
+        const n = Array.from(list.children).filter((li) => li.hasAttribute("data-game-id") && !li.classList.contains("row-leave")).length;
         if (n === 0) return;
         // Only touch the class when needed: classList.add on a present class still fires the class observer below.
         if (!root.classList.contains("dgl-lock")) { window.scrollTo(0, 0); root.classList.add("dgl-grid", "dgl-lock"); }
@@ -9936,6 +9956,161 @@ const LIST_PAGE_SCRIPT = `
       new MutationObserver(schedule).observe(root, { attributes: true, attributeFilter: ["class"] });
       if (reduce.addEventListener) reduce.addEventListener("change", () => { stopScroll(); schedule(); });
 
+      // Panes: List (default), Suggestions, Fan-dles. ?pane= pins one, ?cycle=N rotates through the non-empty ones; otherwise
+      // the last pane picked is remembered (dgl_stream_pane_v1). Keys: 1/2/3 (not for editors, whose digits mark rows), arrows, [ ].
+      {
+        const NAMES = ["list", "suggestions", "fandles"];
+        const LABELS = { list: "List", suggestions: "Suggestions", fandles: "Fan-dles" };
+        const PANE_KEY = "dgl_stream_pane_v1";
+        const ctl = document.getElementById("stream-panes");
+        const title = document.getElementById("stream-pane-title");
+        let sugg = [];
+        let want = P.pane || "";
+        if (!want) { try { want = window.localStorage.getItem(PANE_KEY) || ""; } catch {} }
+        if (NAMES.indexOf(want) < 0) want = "list";
+        let eff = "list", sig = "", cycleTimer = 0, hideTimer = 0;
+        const fandleRows = () => Array.from(document.querySelectorAll("#fandles ul.games > li")).map((li) => {
+          const link = li.querySelector("a.game-title");
+          const reset = li.querySelector("[data-reset-at]");
+          return {
+            id: (li.querySelector("[data-game-row]") || li).getAttribute("data-game-row") || "",
+            title: link ? (link.textContent || "").trim() : "",
+            url: link ? link.getAttribute("href") || "#" : "#",
+            paywall: !!li.querySelector(".paywall-badge"),
+            nsfw: !!li.querySelector(".nsfw-badge"),
+            dev: (li.querySelector(".dev-pill-name") || {}).textContent || "",
+            reset: reset ? { kind: reset.getAttribute("data-reset-at-kind"), at: reset.getAttribute("data-reset-at"), text: reset.textContent } : null
+          };
+        }).filter((row) => row.title);
+        const avail = (name) => name === "list" || (name === "suggestions" && sugg.length > 0) || (name === "fandles" && fandleRows().length > 0);
+        const availNames = () => NAMES.filter(avail);
+        const mkRow = (row) => {
+          const li = document.createElement("li");
+          li.setAttribute("data-game-id", row.id);
+          const main = document.createElement("div");
+          main.className = "item-main";
+          const link = document.createElement("a");
+          link.className = "game-title";
+          link.href = row.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          const text = document.createElement("span");
+          text.className = "title-text";
+          text.textContent = row.title;
+          link.appendChild(text);
+          if (row.paywall) { const b = document.createElement("span"); b.className = "paywall-badge"; b.textContent = "$"; link.appendChild(b); }
+          if (row.nsfw) { const b = document.createElement("span"); b.className = "nsfw-badge"; b.textContent = "nsfw"; link.appendChild(b); }
+          main.appendChild(link);
+          if (row.dev || row.reset) {
+            const meta = document.createElement("div");
+            meta.className = "meta";
+            if (row.dev) { const d = document.createElement("span"); d.className = "sp-dev"; d.textContent = (row.kind === "sugg" ? "by " : "✓ ") + row.dev; meta.appendChild(d); }
+            if (row.reset) {
+              const r = document.createElement("span");
+              r.setAttribute("data-reset-at-kind", row.reset.kind || "");
+              r.setAttribute("data-reset-at", row.reset.at || "");
+              r.setAttribute("data-reset-format", "short");
+              r.textContent = row.reset.text;
+              meta.appendChild(r);
+            }
+            main.appendChild(meta);
+          }
+          li.appendChild(main);
+          if (row.votes != null) { const v = document.createElement("span"); v.className = "sp-votes"; v.textContent = "▲ " + row.votes; li.appendChild(v); }
+          return li;
+        };
+        const rowsFor = (name) => name === "suggestions"
+          ? sugg.map((s) => ({ id: s.gameId, title: s.title, url: s.url, paywall: !!s.paywall, nsfw: !!s.nsfw, votes: s.votes, kind: "sugg", dev: s.developer ? s.developer.name : "" }))
+          : fandleRows();
+        const sync = () => {
+          eff = avail(want) ? want : "list";
+          const names = availNames();
+          if (ctl) {
+            ctl.hidden = names.length < 2;
+            ctl.querySelectorAll("[data-pane]").forEach((btn) => {
+              const name = btn.getAttribute("data-pane");
+              btn.hidden = !avail(name);
+              btn.setAttribute("aria-pressed", name === eff ? "true" : "false");
+            });
+          }
+          if (title) title.textContent = eff === "list" ? "" : " · " + LABELS[eff];
+          root.classList.toggle("dgl-pane-alt", eff !== "list");
+          root.classList.toggle("dgl-pane-suggestions", eff === "suggestions");
+          let changed = false;
+          if (eff !== "list") {
+            const rows = rowsFor(eff);
+            const next = eff + "|" + rows.map((r) => r.id + ":" + r.votes + ":" + r.title).join(",");
+            if (next !== sig) {
+              sig = next;
+              pane.replaceChildren(...rows.map(mkRow));
+              if (window.dglLocalizeResets) window.dglLocalizeResets(pane);
+              changed = true;
+            }
+          }
+          const nextBox = eff === "list" ? list : pane;
+          if (nextBox !== box || changed) {
+            stopScroll();
+            list.style.removeProperty("max-height");
+            pane.style.removeProperty("max-height");
+            box = nextBox;
+          }
+          schedule();
+        };
+        const startCycle = () => {
+          window.clearTimeout(cycleTimer);
+          if (!P.cycle) return;
+          cycleTimer = window.setTimeout(() => {
+            const names = availNames();
+            if (isStream() && names.length > 1) { want = names[(names.indexOf(eff) + 1) % names.length]; sync(); }
+            startCycle();
+          }, P.cycle * 1000);
+        };
+        const pick = (name) => {
+          want = name;
+          try { window.localStorage.setItem(PANE_KEY, name); } catch {}
+          sync();
+          startCycle();
+        };
+        const step = (dir) => {
+          const names = availNames();
+          if (names.length > 1) pick(names[(names.indexOf(eff) + dir + names.length) % names.length]);
+        };
+        window.dglStreamPanes = {
+          suggestions: (rows) => { sugg = Array.isArray(rows) ? rows : []; sync(); }
+        };
+        if (ctl) ctl.addEventListener("click", (event) => {
+          const btn = event.target instanceof Element ? event.target.closest("[data-pane]") : null;
+          if (btn) pick(btn.getAttribute("data-pane"));
+        });
+        document.addEventListener("keydown", (event) => {
+          if (!isStream() || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.defaultPrevented) return;
+          const target = event.target;
+          if (target instanceof Element && target.closest("input, textarea, select, [contenteditable]")) return;
+          if (document.querySelector("dialog[open]")) return;
+          const k = event.key;
+          if (/^[1-3]$/.test(k) && !list.hasAttribute("data-can-mark-played")) {
+            if (avail(NAMES[Number(k) - 1])) { event.preventDefault(); pick(NAMES[Number(k) - 1]); }
+          } else if (k === "ArrowRight" || k === "]") { event.preventDefault(); step(1); }
+          else if (k === "ArrowLeft" || k === "[") { event.preventDefault(); step(-1); }
+        });
+        // The switcher shows on mouse movement or focus anywhere, and fades out after 3 seconds of stillness.
+        const reveal = () => {
+          if (!ctl || !isStream()) return;
+          ctl.classList.add("show");
+          window.clearTimeout(hideTimer);
+          hideTimer = window.setTimeout(() => ctl.classList.remove("show"), 3000);
+        };
+        // Zero-movement events are the browser re-hit-testing after a layout change, not a person.
+        document.addEventListener("mousemove", (event) => { if (event.movementX || event.movementY) reveal(); });
+        document.addEventListener("focusin", reveal);
+        // The "?" dialog is parsed after this script; list its stream keys while stream mode is on.
+        const dialogRows = () => document.querySelectorAll("[data-stream-shortcut]").forEach((row) => { row.hidden = !isStream(); });
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", dialogRows); else dialogRows();
+        new MutationObserver(dialogRows).observe(root, { attributes: true, attributeFilter: ["class"] });
+        sync();
+        startCycle();
+      }
+
       // Rows that join while the page is open (live refresh) glow briefly; the overlay shows a one-line notice.
       const seen = new Set(rowsOf().map((li) => li.getAttribute("data-game-id")));
       let sig = Array.from(seen).join(",");
@@ -9976,6 +10151,8 @@ const LIST_PAGE_SCRIPT = `
         $("ss-cols").value = P.cols ? String(P.cols) : "";
         $("ss-theme").value = P.theme || "";
         $("ss-pos").value = P.pos || "bl";
+        $("ss-pane").value = P.pane || "list";
+        $("ss-cycle").value = String(P.cycle || 0);
         if (P.top >= 0) { $("ss-top").value = String(P.top); $("ss-otop").value = String(P.top); }
         const build = () => {
           const base = (window.DGL_SHORT_ORIGIN || window.location.origin) + window.location.pathname;
@@ -9985,6 +10162,9 @@ const LIST_PAGE_SCRIPT = `
           if ($("ss-cols").value) a.push("cols=" + $("ss-cols").value);
           if (num($("ss-top"), 3) !== 3) a.push("top=" + num($("ss-top"), 3));
           if ($("ss-theme").value) a.push("theme=" + $("ss-theme").value);
+          if ($("ss-pane").value !== "list") a.push("pane=" + $("ss-pane").value);
+          const cy = parseInt($("ss-cycle").value, 10);
+          if (cy > 0) a.push("cycle=" + Math.max(10, Math.min(600, cy)));
           const o = ["view=overlay"];
           if ($("ss-pos").value !== "bl") o.push("pos=" + $("ss-pos").value);
           if (num($("ss-otop"), 5) !== 5) o.push("top=" + num($("ss-otop"), 5));
@@ -10388,6 +10568,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
           <div><dt><kbd>g</kbd> then <kbd>h</kbd></dt><dd>Go to Home</dd></div>
           <div><dt><kbd>g</kbd> then <kbd>b</kbd></dt><dd>Go to Browse</dd></div>
           <div><dt><kbd>g</kbd> then <kbd>r</kbd></dt><dd>Go to Rotation</dd></div>
+          <div data-stream-shortcut hidden><dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Stream mode: show the list, suggestions or Fan-dles (editors use the arrows)</dd></div>
+          <div data-stream-shortcut hidden><dt><kbd>←</kbd> <kbd>→</kbd> or <kbd>[</kbd> <kbd>]</kbd></dt><dd>Stream mode: previous or next pane</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>Close this list</dd></div>
         </dl>
         <p class="shortcut-note">Shortcuts are off while you type in a field.</p>
