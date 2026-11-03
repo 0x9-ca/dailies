@@ -30,6 +30,7 @@ import { categoryHue, renderGameOgPng } from "./lib/og";
 import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
 import { buildServiceWorker, OFFLINE_SCRIPT } from "./lib/service-worker";
 import { PLAY_HISTORY_CSS, PLAY_HISTORY_KEEP_DAYS, PLAY_HISTORY_PAGE_DAYS, PLAY_HISTORY_SCRIPT, recordPlay } from "./lib/play-history";
+import { withDbTrace } from "./lib/db-trace";
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
 import { PUSH_MAX_PER_USER, isAllowedEndpoint, pendingReminder, pushEnabled, runPushReminders, validTimeZone } from "./lib/push";
 import { clearPlays, loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
@@ -667,31 +668,38 @@ app.get("/", async (c) => {
   const user = c.get("user");
   const shouldPromptImport = c.req.query("importLocal") === "1";
   // 8 per list for the two-column desktop layout; narrower screens show the first 5 (see .home-columns CSS).
-  const topGames = await listGames(c.env, { sort: "top", limit: 8 });
+  const famousTitles = ["NYT Wordle", "NYT Connections", "NYT Strands", "Worldle", "Globle", "Bandle", "Framed", "Costcodle"];
+  // Independent reads run together; the viewer's votes and favorites follow once the game ids are known.
+  const [topGames, newGames, popularGames, playableRow, famousRows, homeCategoryRows, gameOfTheDay] = await Promise.all([
+    listGames(c.env, { sort: "top", limit: 8 }),
+    listGames(c.env, { sort: "new", limit: 8 }),
+    listGames(c.env, { sort: "popular", limit: 8, openedThisWeek: true }),
+    c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>(),
+    c.env.DB.prepare(
+      `SELECT slug, title FROM games WHERE status = 'approved' AND title IN (${famousTitles.map((_, i) => `?${i + 1}`).join(",")})`
+    ).bind(...famousTitles).all<{ slug: string; title: string }>(),
+    c.env.DB.prepare(
+      `SELECT categories.slug, categories.name, COUNT(*) AS n
+       FROM categories
+       JOIN game_categories ON game_categories.category_id = categories.id
+       JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
+       WHERE categories.is_active = 1
+       GROUP BY categories.id
+       ORDER BY n DESC, categories.name ASC`
+    ).all<{ slug: string; name: string; n: number }>(),
+    getGameOfTheDay(c.env)
+  ]);
   const topGameIds = topGames.map((game) => game.id);
-  const newGames = await listGames(c.env, { sort: "new", limit: 8 });
-  const popularGames = await listGames(c.env, { sort: "popular", limit: 8, openedThisWeek: true });
   const newGameIds = newGames.map((game) => game.id);
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds, ...popularGames.map((game) => game.id)])]);
-  const playableCount = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
+  const playableCount = playableRow?.n ?? 0;
   // For the title, description and "What is a dle?": a rounded-down count ("800+") and well-known games people search
   // for, linked only when they're listed.
   const roundedCount = playableCount >= 100 ? `${Math.floor(playableCount / 100) * 100}+` : String(playableCount);
-  const famousTitles = ["NYT Wordle", "NYT Connections", "NYT Strands", "Worldle", "Globle", "Bandle", "Framed", "Costcodle"];
-  const famousGames = (await c.env.DB.prepare(
-    `SELECT slug, title FROM games WHERE status = 'approved' AND title IN (${famousTitles.map((_, i) => `?${i + 1}`).join(",")})`
-  ).bind(...famousTitles).all<{ slug: string; title: string }>()).results
+  const famousGames = famousRows.results
     .sort((a, b) => famousTitles.indexOf(a.title) - famousTitles.indexOf(b.title));
   const famousGamesMarkup = famousGames.map((game) => `<a href="/games/${escapeHtml(game.slug)}">${escapeHtml(game.title.replace(/^NYT /, ""))}</a>`);
-  const homeCategories = (await c.env.DB.prepare(
-    `SELECT categories.slug, categories.name, COUNT(*) AS n
-     FROM categories
-     JOIN game_categories ON game_categories.category_id = categories.id
-     JOIN games ON games.id = game_categories.game_id AND games.status = 'approved'
-     WHERE categories.is_active = 1
-     GROUP BY categories.id
-     ORDER BY n DESC, categories.name ASC`
-  ).all<{ slug: string; name: string; n: number }>()).results;
+  const homeCategories = homeCategoryRows.results;
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites, { hideable: true });
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites, { hideable: true });
@@ -702,7 +710,6 @@ app.get("/", async (c) => {
         <p><a href="/games?sort=popular">See more popular games</a></p>
       </section>`
     : "";
-  const gameOfTheDay = await getGameOfTheDay(c.env);
   return c.html(await layout(`0x9 dles – ${roundedCount} Free Daily Games like Wordle & Connections`, user, `
     <main>
       ${user ? "" : `<p class="intro" id="home-intro">0x9 dles collects the best daily games, the Wordle-style puzzles that reset every day. Vote, favorite and build your own daily rotation, no account needed.</p>
@@ -991,20 +998,20 @@ app.get("/games", async (c) => {
     ${countWhereSql}
   `;
 
-  const countResult = await c.env.DB.prepare(countSql).bind(...countParams).first<{ total: number }>();
+  // Fetch one extra to check if there are more pages. Count, games and categories are independent reads.
+  const [countResult, gamesWithExtra, categories] = await Promise.all([
+    c.env.DB.prepare(countSql).bind(...countParams).first<{ total: number }>(),
+    listGames(c.env, { sort, category, q, hidePaywall, hideNsfw, limit: perPage + 1, offset }),
+    c.env.DB.prepare("SELECT slug, name, description FROM categories WHERE is_active = 1 ORDER BY name ASC").all<{
+      slug: string;
+      name: string;
+      description: string | null;
+    }>()
+  ]);
   const totalGames = countResult?.total || 0;
   const totalPages = Math.ceil(totalGames / perPage);
-
-  // Fetch one extra to check if there are more pages
-  const gamesWithExtra = await listGames(c.env, { sort, category, q, hidePaywall, hideNsfw, limit: perPage + 1, offset });
   const hasMore = gamesWithExtra.length > perPage;
   const games = gamesWithExtra.slice(0, perPage);
-  
-  const categories = await c.env.DB.prepare("SELECT slug, name, description FROM categories WHERE is_active = 1 ORDER BY name ASC").all<{
-    slug: string;
-    name: string;
-    description: string | null;
-  }>();
 
   if (page > 1 && games.length === 0) {
     return notFoundPage(c);
@@ -1284,7 +1291,8 @@ app.get("/categories/:slug", async (c) => {
     .bind(slug)
     .first<{ id: string; slug: string; name: string; description: string | null }>();
   if (!category) return notFoundPage(c);
-  const stats = await c.env.DB.prepare(
+  // Everything below depends only on the category row, so the reads go out together.
+  const statsP = c.env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(games.reset_basis = 'server') AS fixed_reset,
             SUM(games.reset_basis = 'local') AS local_reset,
@@ -1293,22 +1301,15 @@ app.get("/categories/:slug", async (c) => {
      JOIN game_categories ON game_categories.game_id = games.id AND game_categories.category_id = ?1
      WHERE games.status = 'approved'`
   ).bind(category.id).first<{ total: number; fixed_reset: number | null; local_reset: number | null; paid: number | null }>();
-  const totalGames = stats?.total ?? 0;
-  if (totalGames === 0) return notFoundPage(c);
-  const totalPages = Math.ceil(totalGames / CATEGORY_PER_PAGE);
-  const gamesWithExtra = await listGames(c.env, { sort: "top", category: slug, limit: CATEGORY_PER_PAGE + 1, offset });
-  const hasMore = gamesWithExtra.length > CATEGORY_PER_PAGE;
-  const games = gamesWithExtra.slice(0, CATEGORY_PER_PAGE);
-  if (page > 1 && games.length === 0) return notFoundPage(c);
-
-  const leaders = page === 1 ? games.slice(0, 3) : await listGames(c.env, { sort: "top", category: slug, limit: 3 });
-  const newest = await c.env.DB.prepare(
+  const gamesWithExtraP = listGames(c.env, { sort: "top", category: slug, limit: CATEGORY_PER_PAGE + 1, offset });
+  const leadersP = page === 1 ? null : listGames(c.env, { sort: "top", category: slug, limit: 3 });
+  const newestP = c.env.DB.prepare(
     `SELECT games.title, games.slug FROM games
      JOIN game_categories ON game_categories.game_id = games.id AND game_categories.category_id = ?1
      WHERE games.status = 'approved'
      ORDER BY COALESCE(games.approved_at, games.created_at) DESC LIMIT 1`
   ).bind(category.id).first<{ title: string; slug: string }>();
-  const related = (await c.env.DB.prepare(
+  const relatedP = c.env.DB.prepare(
     `SELECT other.slug, other.name, COUNT(DISTINCT mine.game_id) AS shared
      FROM game_categories mine
      JOIN game_categories theirs ON theirs.game_id = mine.game_id AND theirs.category_id != mine.category_id
@@ -1318,7 +1319,17 @@ app.get("/categories/:slug", async (c) => {
      GROUP BY other.id
      ORDER BY shared DESC, other.name ASC
      LIMIT 6`
-  ).bind(category.id).all<{ slug: string; name: string; shared: number }>()).results;
+  ).bind(category.id).all<{ slug: string; name: string; shared: number }>();
+  const [stats, gamesWithExtra, newest, relatedRows] = await Promise.all([statsP, gamesWithExtraP, newestP, relatedP]);
+  const totalGames = stats?.total ?? 0;
+  if (totalGames === 0) return notFoundPage(c);
+  const totalPages = Math.ceil(totalGames / CATEGORY_PER_PAGE);
+  const hasMore = gamesWithExtra.length > CATEGORY_PER_PAGE;
+  const games = gamesWithExtra.slice(0, CATEGORY_PER_PAGE);
+  if (page > 1 && games.length === 0) return notFoundPage(c);
+
+  const leaders = leadersP ? await leadersP : games.slice(0, 3);
+  const related = relatedRows.results;
 
   const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
   const gamesMarkup = renderCompactGameList(games, user, userVotes, userFavorites, { hideable: true });
@@ -1436,11 +1447,12 @@ app.get("/games/:slug", async (c) => {
     return notFoundPage(c);
   }
 
-  const allCategories = await c.env.DB.prepare(
+  // Everything below depends only on the game row, so the reads go out together.
+  const allCategoriesP = c.env.DB.prepare(
     `SELECT id, slug, name FROM categories WHERE is_active = 1 ORDER BY name ASC`
   ).all<{ id: string; slug: string; name: string }>();
 
-  const categories = await c.env.DB.prepare(
+  const categoriesP = c.env.DB.prepare(
     `SELECT categories.slug, categories.name, categories.description
      FROM game_categories
      JOIN categories ON categories.id = game_categories.category_id
@@ -1449,7 +1461,7 @@ app.get("/games/:slug", async (c) => {
   )
     .bind(game.id)
     .all<{ slug: string; name: string; description: string | null }>();
-  const publicLists = await c.env.DB.prepare(
+  const publicListsP = c.env.DB.prepare(
     `SELECT curated_lists.slug, curated_lists.title
      FROM curated_list_items
      JOIN curated_lists ON curated_lists.id = curated_list_items.curated_list_id
@@ -1459,21 +1471,19 @@ app.get("/games/:slug", async (c) => {
     .bind(game.id)
     .all<{ slug: string; title: string }>();
 
-  const viewer = await getViewerGameState(c, [game.id]);
-  const userVote: -1 | 0 | 1 = viewer.votes.get(game.id) ?? 0;
-  const userFavorite = viewer.favorites.has(game.id);
+  const viewerP = getViewerGameState(c, [game.id]);
 
   // The game's verified developer is public. The viewer's own claim only exists for signed-in visitors, who never get the cached page.
-  const developer = await c.env.DB.prepare(
+  const developerP = c.env.DB.prepare(
     `SELECT game_claims.user_id, users.display_name, users.profile_handle, users.profile_public FROM game_claims JOIN users ON users.id = game_claims.user_id
      WHERE game_claims.game_id = ?1 AND game_claims.status = 'verified'`
   )
     .bind(game.id)
     .first<{ user_id: string; display_name: string | null; profile_handle: string | null; profile_public: number }>();
-  const ownClaim = user ? await getOwnClaim(c.env, game.id, user.id) : null;
+  const ownClaimP = user ? getOwnClaim(c.env, game.id, user.id) : Promise.resolve(null);
 
   // Other well-liked games sharing a category: useful next stops for visitors and internal links for crawlers.
-  const related = await c.env.DB.prepare(
+  const relatedP = c.env.DB.prepare(
     `SELECT games.slug, games.title
      FROM games
      JOIN game_categories ON game_categories.game_id = games.id
@@ -1488,6 +1498,7 @@ app.get("/games/:slug", async (c) => {
   // Games that most often share a rotation with this one. Not per-visitor; cached in KV (stale is fine, so
   // invalidateGameCaches doesn't touch the "coplay:" prefix).
   const coplayKey = `coplay:v1:${game.id}:${game.nsfw}`;
+  const alsoPlayP = (async () => {
   let alsoPlay = await getCachedJson<Array<{ slug: string; title: string }>>(c.env, coplayKey).catch(() => null);
   if (!alsoPlay) {
     const coplay = await c.env.DB.prepare(
@@ -1513,6 +1524,27 @@ app.get("/games/:slug", async (c) => {
     alsoPlay = coplay.results;
     await setCachedJson(c.env, coplayKey, alsoPlay, 6 * 3600).catch(() => undefined);
   }
+  return alsoPlay;
+  })();
+  // Public creator lists that put this game on stream in the last 30 days (same for every visitor).
+  const streamedByP = game.status === "approved"
+    ? c.env.DB.prepare(
+        `SELECT curated_lists.slug, curated_lists.title, curated_lists.twitch_login, MAX(h.started_at) AS last_at,
+                CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_verified_list
+         FROM list_play_history h
+         JOIN curated_lists ON curated_lists.id = h.list_id AND curated_lists.visibility = 'public'
+         LEFT JOIN users ON users.id = curated_lists.owner_user_id
+         WHERE h.game_id = ?1 AND h.started_at >= ?2
+         GROUP BY curated_lists.id
+         ORDER BY last_at DESC
+         LIMIT 5`
+      ).bind(game.id, new Date(Date.now() - 30 * 86400000).toISOString()).all<{ slug: string; title: string; twitch_login: string | null; last_at: string; is_verified_list: number }>().then((r) => r.results)
+    : Promise.resolve([] as Array<{ slug: string; title: string; twitch_login: string | null; last_at: string; is_verified_list: number }>);
+  const [allCategories, categories, publicLists, viewer, developer, ownClaim, related, alsoPlay, streamedBy] = await Promise.all([
+    allCategoriesP, categoriesP, publicListsP, viewerP, developerP, ownClaimP, relatedP, alsoPlayP, streamedByP
+  ]);
+  const userVote: -1 | 0 | 1 = viewer.votes.get(game.id) ?? 0;
+  const userFavorite = viewer.favorites.has(game.id);
   const relatedHeading = `Daily games like ${game.title}`;
 
   const gameLd = {
@@ -1603,20 +1635,6 @@ app.get("/games/:slug", async (c) => {
   const linkNotice = game.link_fail_count >= 3
     ? `<p class="game-actions-note link-down-note" role="note">Our link checker couldn't reach this game recently. It may be down or moved.${linkCheckedOn && !Number.isNaN(linkCheckedOn.getTime()) ? ` Last checked ${escapeHtml(linkCheckedOn.toLocaleDateString("en-US", { timeZone: "America/New_York", dateStyle: "medium" }))} ET.` : ""}${ownClaim?.status === "verified" ? " If the game moved, update its URL below." : ""}</p>`
     : "";
-  // Public creator lists that put this game on stream in the last 30 days (same for every visitor).
-  const streamedBy = game.status === "approved"
-    ? (await c.env.DB.prepare(
-        `SELECT curated_lists.slug, curated_lists.title, curated_lists.twitch_login, MAX(h.started_at) AS last_at,
-                CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_verified_list
-         FROM list_play_history h
-         JOIN curated_lists ON curated_lists.id = h.list_id AND curated_lists.visibility = 'public'
-         LEFT JOIN users ON users.id = curated_lists.owner_user_id
-         WHERE h.game_id = ?1 AND h.started_at >= ?2
-         GROUP BY curated_lists.id
-         ORDER BY last_at DESC
-         LIMIT 5`
-      ).bind(game.id, new Date(Date.now() - 30 * 86400000).toISOString()).all<{ slug: string; title: string; twitch_login: string | null; last_at: string; is_verified_list: number }>()).results
-    : [];
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}" data-game-title="${escapeHtml(game.title)}">
       <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
@@ -2244,6 +2262,11 @@ app.get("/me/rotation", async (c) => {
   `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
   }
 
+  const userWithTokenP = c.env.DB.prepare(
+    "SELECT rotation_share_token FROM users WHERE id = ?1"
+  )
+    .bind(user.id)
+    .first<{ rotation_share_token: string | null }>();
   const favorites = await c.env.DB.prepare(
     `SELECT games.id, games.title, games.slug, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone, favorites.position, favorites.weekday_mask
      FROM favorites
@@ -2254,14 +2277,11 @@ app.get("/me/rotation", async (c) => {
     .bind(user.id)
     .all<{ id: string; title: string; slug: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; position: number; weekday_mask: number }>();
 
-  const categoriesByGameId = await getCategoriesForGames(c.env, favorites.results.map((item) => item.id));
-  const developersByGameId = await getDevelopersForGames(c.env, favorites.results.map((item) => item.id));
-
-  const userWithToken = await c.env.DB.prepare(
-    "SELECT rotation_share_token FROM users WHERE id = ?1"
-  )
-    .bind(user.id)
-    .first<{ rotation_share_token: string | null }>();
+  const [categoriesByGameId, developersByGameId, userWithToken] = await Promise.all([
+    getCategoriesForGames(c.env, favorites.results.map((item) => item.id)),
+    getDevelopersForGames(c.env, favorites.results.map((item) => item.id)),
+    userWithTokenP
+  ]);
 
   const shareToken = userWithToken?.rotation_share_token;
   const shareUrl = shareToken ? `${shortOrigin(c.env) ?? appOrigin(c.env)}/r/${shareToken}` : null;
@@ -2685,7 +2705,8 @@ app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
   const isStaff = !!user && (user.role === "editor" || user.role === "admin");
-  const list = await c.env.DB.prepare(
+  const userTwitchIdP = getUserTwitchId(c.env, user);
+  const listP = c.env.DB.prepare(
     `SELECT curated_lists.id, curated_lists.slug, curated_lists.title, curated_lists.description, curated_lists.visibility, curated_lists.owner_user_id,
             curated_lists.twitch_login, curated_lists.twitch_user_id, curated_lists.suggestions_enabled, curated_lists.fandles_enabled,
             CASE WHEN curated_lists.kind = 'creator' AND users.creator_type IS NOT NULL THEN 1 ELSE 0 END AS is_creator_list,
@@ -2696,7 +2717,7 @@ app.get("/lists/:slug", async (c) => {
   )
     .bind(slug)
     .first<{ id: string; slug: string; title: string; description: string | null; visibility: "public" | "private"; owner_user_id: string; twitch_login: string | null; twitch_user_id: string | null; is_creator_list: number; is_verified_list: number; fandles_enabled: number; suggestions_enabled: number }>();
-  const userTwitchId = await getUserTwitchId(c.env, user);
+  const [list, userTwitchId] = await Promise.all([listP, userTwitchIdP]);
   if (!list || !canViewList(list.visibility, list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId })) {
     return notFoundPage(c);
   }
@@ -2709,9 +2730,17 @@ app.get("/lists/:slug", async (c) => {
   // Everyone who can edit views the list normally and opts in to edit mode with ?edit=1.
   const isAdminEditor = canEdit && c.req.query("edit") === "1";
   // Played on stream: admins always; everyone once the site setting is on. Editors mark games when it applies to them.
-  const showPlayed = !isAdminEditor && (await playedOnStreamFor(c.env, user));
-  const canMarkPlayed = showPlayed && canEdit;
-  const items = await c.env.DB.prepare(
+  // Reads that need only the list row go out together; those that need the game ids follow.
+  const showPlayedP = isAdminEditor ? Promise.resolve(false) : playedOnStreamFor(c.env, user);
+  const suggestionsOn = !isAdminEditor && list.suggestions_enabled === 1;
+  const suggestionsP = suggestionsOn ? getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null) : Promise.resolve([] as Awaited<ReturnType<typeof getListSuggestions>>);
+  const fandlesAvailable = !!list.is_verified_list && !!list.twitch_user_id && list.visibility === "public";
+  const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
+  const fandleLimitsP = fandlesOn ? getFandleLimits(c.env) : Promise.resolve({ perDeveloper: null, shown: null, membershipDays: null });
+  const lastOnStreamP = !isAdminEditor && list.visibility === "public"
+    ? c.env.DB.prepare("SELECT game_id, MAX(started_at) AS last_at FROM list_play_history WHERE list_id = ?1 GROUP BY game_id").bind(list.id).all<{ game_id: string; last_at: string }>()
+    : Promise.resolve(null);
+  const itemsP = c.env.DB.prepare(
     `SELECT games.id, games.slug, games.title, games.url, games.paywall, games.nsfw, games.reset_basis, games.reset_time_minutes, games.reset_timezone,
             games.vote_up_count, games.vote_down_count, curated_list_items.position,
             curated_list_items.last_played_at, curated_list_items.created_at AS added_at
@@ -2722,20 +2751,23 @@ app.get("/lists/:slug", async (c) => {
   )
     .bind(list.id)
     .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number; last_played_at: string | null; added_at: string }>();
+  const [showPlayed, items, suggestions, fandleLimits, lastOnStreamRows] = await Promise.all([showPlayedP, itemsP, suggestionsP, fandleLimitsP, lastOnStreamP]);
+  const canMarkPlayed = showPlayed && canEdit;
 
-  const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
-  const developersByGameId = await getDevelopersForGames(c.env, items.results.map((item) => item.id));
   // When each game was last set as Now playing (same for every viewer; the page script turns it into a viewer-local date).
   const lastOnStream = new Map<string, string>();
-  if (!isAdminEditor && list.visibility === "public") {
-    const rows = await c.env.DB.prepare("SELECT game_id, MAX(started_at) AS last_at FROM list_play_history WHERE list_id = ?1 GROUP BY game_id").bind(list.id).all<{ game_id: string; last_at: string }>();
-    for (const row of rows.results) lastOnStream.set(row.game_id, row.last_at);
-  }
+  for (const row of lastOnStreamRows?.results ?? []) lastOnStream.set(row.game_id, row.last_at);
 
   // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
-  const { votes: userVotes, favorites: userFavorites } = isAdminEditor
-    ? { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() }
-    : await getViewerGameState(c, items.results.map((item) => item.id));
+  const [categoriesByGameId, developersByGameId, viewerState, fandleGames] = await Promise.all([
+    getCategoriesForGames(c.env, items.results.map((item) => item.id)),
+    getDevelopersForGames(c.env, items.results.map((item) => item.id)),
+    isAdminEditor
+      ? Promise.resolve({ votes: new Map<string, -1 | 1>(), favorites: new Set<string>() })
+      : getViewerGameState(c, items.results.map((item) => item.id)),
+    fandlesOn && !isAdminEditor ? listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper, fandleMembershipDays: fandleLimits.membershipDays }) : Promise.resolve([] as Awaited<ReturnType<typeof listGames>>)
+  ]);
+  const { votes: userVotes, favorites: userFavorites } = viewerState;
 
   let adminGames: Array<{ id: string; title: string; slug: string }> = [];
   if (isAdminEditor) {
@@ -2747,14 +2779,8 @@ app.get("/lists/:slug", async (c) => {
 
   // Suggestions sit beside the list in view mode. Votes are per visitor, so only signed-in (uncached) views get the
   // viewer's own; logged-out pages load theirs from the API.
-  const suggestionsOn = !isAdminEditor && list.suggestions_enabled === 1;
-  const suggestions = suggestionsOn ? await getListSuggestions(c.env, list.id, user ? `user:${user.id}` : null) : [];
 
   // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
-  const fandlesAvailable = !!list.is_verified_list && !!list.twitch_user_id && list.visibility === "public";
-  const fandlesOn = fandlesAvailable && list.fandles_enabled === 1;
-  const fandleLimits = fandlesOn ? await getFandleLimits(c.env) : { perDeveloper: null, shown: null, membershipDays: null };
-  const fandleGames = fandlesOn && !isAdminEditor ? await listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper, fandleMembershipDays: fandleLimits.membershipDays }) : [];
   const fandleViewer = fandleGames.length > 0 ? await getViewerGameState(c, fandleGames.map((game) => game.id)) : { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() };
   const fandleNotice = (({
     joined: "You're in. Your verified games now show in Fan-dles below.",
@@ -6152,6 +6178,10 @@ app.get("/api/lists", async (c) => {
 app.get("/api/lists/live", async (c) => {
   const headers = { "Cache-Control": "public, max-age=60" };
   try {
+    // The answer is the same for everyone: a KV copy (with its own timestamp, KV's minimum TTL is 60s) serves polls for
+    // 15s without touching D1, including the rate-limit write.
+    const cachedLive = await getCachedJson<{ at: number; live: unknown }>(c.env, "lists-live:v1").catch(() => null);
+    if (cachedLive && Date.now() - cachedLive.at < 15_000) return c.json({ live: cachedLive.live }, 200, headers);
     const rate = await enforceRateLimit(c.env, `lists-live:${await getAnonymousVoteKey(c)}`, 300, 60 * 60);
     if (!rate.ok) return c.json({ live: {} }, 429, { "Cache-Control": "no-store", "Retry-After": String(rate.retryAfterSeconds) });
     const rows = await c.env.DB.prepare(
@@ -6170,6 +6200,7 @@ app.get("/api/lists/live", async (c) => {
         nowPlaying: np.gameId && row.npSlug ? { title: np.title, slug: row.npSlug } : null
       };
     }
+    await setCachedJson(c.env, "lists-live:v1", { at: Date.now(), live }, 60).catch(() => undefined);
     return c.json({ live }, 200, headers);
   } catch (error) {
     console.error("lists/live failed:", error instanceof Error ? error.message : error);
@@ -7357,7 +7388,13 @@ app.onError((error, c) => {
 });
 
 export default {
-  fetch: app.fetch,
+  fetch: async (req: Request, env: Env, ctx: ExecutionContext) => {
+    if (!env.DB_TRACE) return app.fetch(req, env, ctx);
+    const trace = withDbTrace(env, req);
+    const res = await app.fetch(req, trace.env, ctx);
+    trace.done(res.status);
+    return res;
+  },
   scheduled: async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
     // Every 15 minutes: push reminders only. The daily cron (15 8 * * *) runs the maintenance jobs below.
     if (event.cron === "*/15 * * * *") {
@@ -7611,36 +7648,20 @@ async function enforceRateLimit(
   // Fixed-window rate limiting in D1 keeps behavior deterministic across instances.
   const now = Math.floor(Date.now() / 1000);
   const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
-  const row = await env.DB.prepare("SELECT window_start, count FROM rate_limits WHERE key = ?1")
-    .bind(key)
-    .first<{ window_start: number; count: number }>();
-
-  if (!row) {
-    await env.DB.prepare(
-      "INSERT INTO rate_limits (key, window_start, count, updated_at) VALUES (?1, ?2, 1, datetime('now'))"
-    )
-      .bind(key, windowStart)
-      .run();
-    return { ok: true, retryAfterSeconds: 0 };
+  // One atomic upsert (a new window resets the count to 1) instead of a read followed by a write.
+  const row = await env.DB.prepare(
+    `INSERT INTO rate_limits (key, window_start, count, updated_at) VALUES (?1, ?2, 1, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET
+       count = CASE WHEN window_start = ?2 THEN count + 1 ELSE 1 END,
+       window_start = ?2,
+       updated_at = datetime('now')
+     RETURNING count`
+  )
+    .bind(key, windowStart)
+    .first<{ count: number }>();
+  if ((row?.count ?? 1) > maxRequests) {
+    return { ok: false, retryAfterSeconds: Math.max(1, windowStart + windowSeconds - now) };
   }
-
-  if (row.window_start !== windowStart) {
-    await env.DB.prepare(
-      "UPDATE rate_limits SET window_start = ?1, count = 1, updated_at = datetime('now') WHERE key = ?2"
-    )
-      .bind(windowStart, key)
-      .run();
-    return { ok: true, retryAfterSeconds: 0 };
-  }
-
-  if (row.count >= maxRequests) {
-    const retryAfter = Math.max(1, windowStart + windowSeconds - now);
-    return { ok: false, retryAfterSeconds: retryAfter };
-  }
-
-  await env.DB.prepare("UPDATE rate_limits SET count = count + 1, updated_at = datetime('now') WHERE key = ?1")
-    .bind(key)
-    .run();
   return { ok: true, retryAfterSeconds: 0 };
 }
 
@@ -7653,11 +7674,12 @@ async function getCategoriesForGames(
     return map;
   }
   const uniqueIds = [...new Set(gameIds)];
-  // D1 allows 100 bind parameters per statement, so look up in chunks.
-  for (let i = 0; i < uniqueIds.length; i += 90) {
-    const chunk = uniqueIds.slice(i, i + 90);
+  // D1 allows 100 bind parameters per statement, so look up in chunks (sent together, merged in order).
+  const chunks: string[][] = [];
+  for (let i = 0; i < uniqueIds.length; i += 90) chunks.push(uniqueIds.slice(i, i + 90));
+  const results = await Promise.all(chunks.map((chunk) => {
     const placeholders = chunk.map((_id, index) => `?${index + 1}`).join(", ");
-    const rows = await env.DB.prepare(
+    return env.DB.prepare(
       `SELECT game_categories.game_id, categories.slug, categories.name
        FROM game_categories
        JOIN categories ON categories.id = game_categories.category_id
@@ -7666,6 +7688,8 @@ async function getCategoriesForGames(
     )
       .bind(...chunk)
       .all<{ game_id: string; slug: string; name: string }>();
+  }));
+  for (const rows of results) {
     for (const row of rows.results) {
       const list = map.get(row.game_id) ?? [];
       list.push({ slug: row.slug, name: row.name });
@@ -7690,9 +7714,10 @@ type GameDeveloper = { handle: string | null; name: string };
 async function getDevelopersForGames(env: Env, gameIds: string[]): Promise<Map<string, GameDeveloper>> {
   const result = new Map<string, GameDeveloper>();
   const ids = [...new Set(gameIds)];
-  for (let i = 0; i < ids.length; i += 90) {
-    const chunk = ids.slice(i, i + 90);
-    const rows = await env.DB.prepare(
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += 90) chunks.push(ids.slice(i, i + 90));
+  const results = await Promise.all(chunks.map((chunk) =>
+    env.DB.prepare(
       `SELECT game_claims.game_id,
               CASE WHEN users.profile_public = 1 THEN users.profile_handle END AS handle,
               COALESCE(users.display_name, CASE WHEN users.profile_public = 1 THEN users.profile_handle END, 'Developer') AS name
@@ -7701,7 +7726,9 @@ async function getDevelopersForGames(env: Env, gameIds: string[]): Promise<Map<s
          AND game_claims.game_id IN (${chunk.map((_, index) => `?${index + 1}`).join(",")})`
     )
       .bind(...chunk)
-      .all<{ game_id: string; handle: string | null; name: string }>();
+      .all<{ game_id: string; handle: string | null; name: string }>()
+  ));
+  for (const rows of results) {
     for (const row of rows.results) result.set(row.game_id, { handle: row.handle, name: row.name });
   }
   return result;
@@ -7870,7 +7897,7 @@ async function listGames(
     const start7 = easternDay(6);
     clicksJoinSql = `LEFT JOIN (
       SELECT game_id, SUM(CASE WHEN day >= ? THEN clicks ELSE 0 END) AS last7, SUM(CASE WHEN day < ? THEN clicks ELSE 0 END) AS prev7
-      FROM game_click_days WHERE day >= ? GROUP BY game_id
+      FROM game_click_days INDEXED BY idx_game_click_days_day WHERE day >= ? GROUP BY game_id
     ) cd ON cd.game_id = games.id`;
     params.push(start7, start7, opts.sort === "popular" ? start7 : easternDay(13));
   }
@@ -7955,8 +7982,10 @@ async function listGames(
       listed_at: string;
     }>();
 
-  const categoriesByGameId = await getCategoriesForGames(env, rows.results.map((row) => row.id));
-  const developersByGameId = await getDevelopersForGames(env, rows.results.map((row) => row.id));
+  const [categoriesByGameId, developersByGameId] = await Promise.all([
+    getCategoriesForGames(env, rows.results.map((row) => row.id)),
+    getDevelopersForGames(env, rows.results.map((row) => row.id))
+  ]);
 
   return rows.results.map((row) => ({
     id: row.id,
@@ -8251,29 +8280,31 @@ async function getViewerGameState(
     return { votes, favorites };
   }
   const viewerKey = user ? user.id : await getAnonymousVoteKey(c);
-  // D1 allows 100 bound parameters per query: 1 for the viewer plus up to 98 game ids.
+  // D1 allows 100 bound parameters per query: 1 for the viewer plus up to 98 game ids. Votes and favorites go out together.
+  const queries: Array<Promise<void>> = [];
   for (let i = 0; i < gameIds.length; i += 98) {
     const ids = gameIds.slice(i, i + 98);
     const placeholders = ids.map((_id, index) => `?${index + 2}`).join(", ");
-    const voteRows = await c.env.DB.prepare(
-      user
-        ? `SELECT game_id, value FROM votes WHERE user_id = ?1 AND game_id IN (${placeholders})`
-        : `SELECT game_id, value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
-    )
-      .bind(viewerKey, ...ids)
-      .all<{ game_id: string; value: -1 | 1 }>();
-    for (const row of voteRows.results) {
-      votes.set(row.game_id, row.value);
-    }
+    queries.push(
+      c.env.DB.prepare(
+        user
+          ? `SELECT game_id, value FROM votes WHERE user_id = ?1 AND game_id IN (${placeholders})`
+          : `SELECT game_id, value FROM anonymous_votes WHERE anon_ip_hash = ?1 AND game_id IN (${placeholders})`
+      )
+        .bind(viewerKey, ...ids)
+        .all<{ game_id: string; value: -1 | 1 }>()
+        .then((voteRows) => { for (const row of voteRows.results) votes.set(row.game_id, row.value); })
+    );
     if (user) {
-      const favoriteRows = await c.env.DB.prepare(`SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (${placeholders})`)
-        .bind(user.id, ...ids)
-        .all<{ game_id: string }>();
-      for (const row of favoriteRows.results) {
-        favorites.add(row.game_id);
-      }
+      queries.push(
+        c.env.DB.prepare(`SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (${placeholders})`)
+          .bind(user.id, ...ids)
+          .all<{ game_id: string }>()
+          .then((favoriteRows) => { for (const row of favoriteRows.results) favorites.add(row.game_id); })
+      );
     }
   }
+  await Promise.all(queries);
   return { votes, favorites };
 }
 
@@ -11476,18 +11507,31 @@ function breadcrumbLd(items: Array<[string, string]>) {
   };
 }
 
+let hasListsCache: { value: boolean; until: number } | null = null;
+async function hasAnyCuratedLists(env: Env): Promise<boolean> {
+  const now = Date.now();
+  if (hasListsCache && hasListsCache.until > now) return hasListsCache.value;
+  const row = await env.DB.prepare("SELECT EXISTS(SELECT 1 FROM curated_lists) AS ok").first<{ ok: number }>();
+  const value = (row?.ok ?? 0) > 0;
+  hasListsCache = { value, until: now + 30_000 };
+  return value;
+}
+
 async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string }; headHtml?: string }): Promise<string> {
-  const listCount = await env.DB.prepare("SELECT COUNT(*) as cnt FROM curated_lists").first<{ cnt: number }>();
-  const hasLists = (listCount?.cnt ?? 0) > 0;
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
+  // The lists link only needs to know whether any list exists: remembered per isolate for 30s instead of a query per page.
+  const hasListsPromise = hasAnyCuratedLists(env);
   let pendingSubmissionCount = 0;
   let openReportCount = 0;
   if (isAdminEditor) {
-    const pendingSubmissions = await env.DB.prepare("SELECT COUNT(*) as cnt FROM games WHERE status = 'pending'").first<{ cnt: number }>();
-    const openReports = await env.DB.prepare("SELECT COUNT(*) as cnt FROM reports WHERE status = 'open'").first<{ cnt: number }>();
+    const [pendingSubmissions, openReports] = await Promise.all([
+      env.DB.prepare("SELECT COUNT(*) as cnt FROM games WHERE status = 'pending'").first<{ cnt: number }>(),
+      env.DB.prepare("SELECT COUNT(*) as cnt FROM reports WHERE status = 'open'").first<{ cnt: number }>()
+    ]);
     pendingSubmissionCount = pendingSubmissions?.cnt ?? 0;
     openReportCount = openReports?.cnt ?? 0;
   }
+  const hasLists = await hasListsPromise;
   const description = opts?.description || "Find the best daily games. Browse, vote, favorite, and explore curated lists.";
   const pagePath = opts?.path || "/";
   // Marks the header link for the page being viewed (screen readers announce it; CSS underlines it).

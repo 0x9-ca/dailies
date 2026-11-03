@@ -58,18 +58,21 @@ export async function loadPlays(env: Env, userId: string, sinceParam: string | u
   let since = Date.now() - PLAYS_WINDOW_DAYS * DAY_MS;
   const parsed = sinceParam ? Date.parse(sinceParam) : NaN;
   if (Number.isFinite(parsed)) since = Math.max(parsed, floor);
-  const rows = await env.DB.prepare(
-    "SELECT game_id, played_at FROM user_plays WHERE user_id = ?1 AND played_at >= ?2 ORDER BY played_at ASC LIMIT 5000"
-  )
-    .bind(userId, new Date(since).toISOString())
-    .all<{ game_id: string; played_at: string }>();
-  const streak = await loadStreak(env, userId);
-  const skipRows = await env.DB.prepare("SELECT day, game_id FROM user_skips WHERE user_id = ?1 AND day >= ?2 LIMIT 500")
-    .bind(userId, utcDay(-2))
-    .all<{ day: string; game_id: string }>();
+  // Four independent reads, sent together.
+  const [rows, streak, skipRows, resetRow] = await Promise.all([
+    env.DB.prepare(
+      "SELECT game_id, played_at FROM user_plays WHERE user_id = ?1 AND played_at >= ?2 ORDER BY played_at ASC LIMIT 5000"
+    )
+      .bind(userId, new Date(since).toISOString())
+      .all<{ game_id: string; played_at: string }>(),
+    loadStreak(env, userId),
+    env.DB.prepare("SELECT day, game_id FROM user_skips WHERE user_id = ?1 AND day >= ?2 LIMIT 500")
+      .bind(userId, utcDay(-2))
+      .all<{ day: string; game_id: string }>(),
+    env.DB.prepare("SELECT reset_at FROM user_plays_reset WHERE user_id = ?1").bind(userId).first<{ reset_at: string }>()
+  ]);
   const skips: Record<string, string[]> = {};
   for (const r of skipRows.results) (skips[r.day] ||= []).push(r.game_id);
-  const resetRow = await env.DB.prepare("SELECT reset_at FROM user_plays_reset WHERE user_id = ?1").bind(userId).first<{ reset_at: string }>();
   return {
     userId,
     resetAt: resetRow?.reset_at || "",

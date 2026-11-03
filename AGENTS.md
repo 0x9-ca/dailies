@@ -128,6 +128,11 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - `anonymous_favorites` table: `anon_id`, `game_id` (no position or weekday_mask).
 - Local favorites in localStorage key `dgl_local_favorites_v1`: `[{ id, slug, title }]`.
 
+## D1 query tracing
+
+- `DB_TRACE=1` (dev only, e.g. `wrangler dev --var DB_TRACE:1`; unset in deployed envs, where `fetch` skips `src/lib/db-trace.ts` entirely) wraps `env.DB` and logs one `DB_TRACE {...}` JSON line per request: route, round trips (`queries`), statements, summed D1 ms, wall ms, repeated SQL and a per-query list. A value above 1 (`DB_TRACE:30`) also adds that many ms per round trip to mimic remote D1; `dbMs` then overlaps for parallel queries, so compare `totalMs`.
+- Keep independent reads in one `Promise.all` (or `db.batch`) rather than sequential awaits; local D1 is sub-millisecond, production round trips are not.
+
 ## Safe editing notes for agents
 
 - Keep SQL parameterized with D1 prepared statements.
