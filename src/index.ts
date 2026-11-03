@@ -2489,6 +2489,11 @@ app.get("/me/settings", async (c) => {
           <button type="button" id="plays-clear" class="danger">Clear play history</button>
         </div>
       </section>
+      <section class="panel" id="push-devices-panel" hidden>
+        <h2>Reminder notifications</h2>
+        <p>Devices that get your reset reminders. <a href="/me/rotation">Turn on reminders</a> on a device from your rotation.</p>
+        <ul id="push-devices-list" class="stack"></ul>
+      </section>
       <section class="panel" id="hidden-games-panel" hidden>
         <h2>Hidden games</h2>
         <p>Games you hid from the home page and Browse. This is saved in this browser only.</p>
@@ -5973,7 +5978,8 @@ const pushSubscribeSchema = z.object({
   endpoint: z.string().min(10).max(1000),
   keys: z.object({ p256dh: z.string().max(200), auth: z.string().max(100) }).partial().optional(),
   leadMinutes: z.number().int().refine((n) => [30, 60, 120].includes(n)),
-  tz: z.string().min(1).max(64)
+  tz: z.string().min(1).max(64),
+  label: z.string().max(200).optional()
 });
 
 app.post("/api/me/push/subscribe", async (c) => {
@@ -5985,15 +5991,16 @@ app.post("/api/me/push/subscribe", async (c) => {
   const parsed = pushSubscribeSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success || !isAllowedEndpoint(c.env, parsed.data.endpoint) || !validTimeZone(parsed.data.tz)) return c.json({ error: "Invalid subscription" }, 400);
   const { endpoint, leadMinutes, tz } = parsed.data;
+  const label = parsed.data.label?.replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 60) || null;
   const existing = await c.env.DB.prepare("SELECT id FROM push_subscriptions WHERE endpoint = ?1").bind(endpoint).first<{ id: string }>();
   if (existing) {
     // Same browser, possibly a different account: the endpoint moves to the current user.
-    await c.env.DB.prepare("UPDATE push_subscriptions SET user_id = ?2, lead_minutes = ?3, tz = ?4 WHERE id = ?1").bind(existing.id, auth.id, leadMinutes, tz).run();
+    await c.env.DB.prepare("UPDATE push_subscriptions SET user_id = ?2, lead_minutes = ?3, tz = ?4, label = COALESCE(?5, label) WHERE id = ?1").bind(existing.id, auth.id, leadMinutes, tz, label).run();
   } else {
     const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?1").bind(auth.id).first<{ n: number }>();
     if ((count?.n ?? 0) >= PUSH_MAX_PER_USER) return c.json({ error: `You can have reminders on up to ${PUSH_MAX_PER_USER} devices.` }, 409);
-    await c.env.DB.prepare("INSERT INTO push_subscriptions (id, user_id, endpoint, created_at, lead_minutes, tz) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
-      .bind(crypto.randomUUID(), auth.id, endpoint, new Date().toISOString(), leadMinutes, tz).run();
+    await c.env.DB.prepare("INSERT INTO push_subscriptions (id, user_id, endpoint, created_at, lead_minutes, tz, label) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
+      .bind(crypto.randomUUID(), auth.id, endpoint, new Date().toISOString(), leadMinutes, tz, label).run();
   }
   return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
 });
@@ -6004,6 +6011,36 @@ app.post("/api/me/push/unsubscribe", async (c) => {
   const body = z.object({ endpoint: z.string().min(1).max(1000) }).safeParse(await c.req.json().catch(() => null));
   if (!body.success) return c.json({ error: "Invalid payload" }, 400);
   await c.env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id = ?1 AND endpoint = ?2").bind(auth.id, body.data.endpoint).run();
+  return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
+});
+
+app.get("/api/me/push/subscriptions", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  const rows = await c.env.DB.prepare("SELECT id, label, created_at, last_sent_at, lead_minutes, tz FROM push_subscriptions WHERE user_id = ?1 ORDER BY created_at ASC")
+    .bind(auth.id).all<{ id: string; label: string | null; created_at: string; last_sent_at: string | null; lead_minutes: number; tz: string }>();
+  return c.json(
+    rows.results.map((r) => ({ id: r.id, label: r.label, createdAt: r.created_at, lastSentAt: r.last_sent_at, leadMinutes: r.lead_minutes, tz: r.tz, current: false })),
+    200,
+    { "Cache-Control": "no-store" }
+  );
+});
+
+// Lets a browser find which of its user's devices it is: { endpoint } -> { id } (or null).
+app.post("/api/me/push/subscriptions/current", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  const body = z.object({ endpoint: z.string().min(1).max(1000) }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Invalid payload" }, 400);
+  const row = await c.env.DB.prepare("SELECT id FROM push_subscriptions WHERE user_id = ?1 AND endpoint = ?2").bind(auth.id, body.data.endpoint).first<{ id: string }>();
+  return c.json({ id: row?.id ?? null }, 200, { "Cache-Control": "no-store" });
+});
+
+app.delete("/api/me/push/subscriptions/:id", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  const res = await c.env.DB.prepare("DELETE FROM push_subscriptions WHERE id = ?1 AND user_id = ?2").bind(c.req.param("id"), auth.id).run();
+  if (!res.meta.changes) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
 });
 
@@ -9636,11 +9673,17 @@ const DAILY_PROGRESS_SCRIPT = `
         const padded = (s + "=".repeat((4 - (s.length % 4)) % 4)).split("-").join("+").split("_").join("/");
         return Uint8Array.from(atob(padded), (ch) => ch.charCodeAt(0));
       };
+      const deviceLabel = () => {
+        const ua = navigator.userAgent || "";
+        const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /CrOS/.test(ua) ? "ChromeOS" : /Linux/.test(ua) ? "Linux" : "";
+        const br = /Edg\\//.test(ua) ? "Edge" : /OPR\\/|Opera/.test(ua) ? "Opera" : /Firefox\\/|FxiOS/.test(ua) ? "Firefox" : /SamsungBrowser/.test(ua) ? "Samsung Internet" : /Chrome\\/|CriOS/.test(ua) ? "Chrome" : /Safari\\//.test(ua) ? "Safari" : "Browser";
+        return (os ? br + " on " + os : br).slice(0, 60);
+      };
       const sendSub = async (sub) => {
         const res = await fetch("/api/me/push/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys || {}, leadMinutes: Number(minutes.value), tz: Intl.DateTimeFormat().resolvedOptions().timeZone })
+          body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys || {}, leadMinutes: Number(minutes.value), tz: Intl.DateTimeFormat().resolvedOptions().timeZone, label: deviceLabel() })
         });
         if (!res.ok) { const err = await res.json().catch(() => null); throw new Error((err && err.error) || "Could not turn on background reminders."); }
       };

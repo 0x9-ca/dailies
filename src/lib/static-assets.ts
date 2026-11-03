@@ -3767,6 +3767,83 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         }
       });
 
+      (async () => {
+        const panel = document.getElementById("push-devices-panel");
+        const list = document.getElementById("push-devices-list");
+        if (!panel || !list) return;
+        try {
+          const cfg = await fetch("/api/me/push/config").then((r) => (r.ok ? r.json() : null));
+          if (!cfg || !cfg.publicKey) return;
+          let localSub = null;
+          let currentId = null;
+          try {
+            if ("serviceWorker" in navigator && "PushManager" in window) {
+              const reg = await navigator.serviceWorker.ready;
+              localSub = await reg.pushManager.getSubscription();
+              if (localSub) {
+                const cur = await fetch("/api/me/push/subscriptions/current", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: localSub.endpoint }) }).then((r) => (r.ok ? r.json() : null));
+                currentId = cur && cur.id;
+              }
+            }
+          } catch {}
+          const dateFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+          const timeFmt = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+          const dayKey = (d) => d.getFullYear() + "-" + d.getMonth() + "-" + d.getDate();
+          const lastText = (iso) => {
+            if (!iso) return "no reminders sent yet";
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return "no reminders sent yet";
+            const now = new Date();
+            const yest = new Date(now.getTime() - 86400000);
+            const day = dayKey(d) === dayKey(now) ? "today" : dayKey(d) === dayKey(yest) ? "yesterday" : dateFmt.format(d);
+            return "last reminder " + day + " at " + timeFmt.format(d);
+          };
+          let items = [];
+          const render = () => {
+            list.textContent = "";
+            if (items.length === 0) {
+              const li = document.createElement("li");
+              li.className = "muted";
+              li.textContent = "No devices yet.";
+              list.appendChild(li);
+              return;
+            }
+            items.forEach((item) => {
+              const li = document.createElement("li");
+              const text = document.createElement("span");
+              const added = new Date(item.createdAt);
+              text.textContent = (item.label || "Unknown device") + (item.id === currentId ? " (This device)" : "") + " · added " + (isNaN(added.getTime()) ? "" : dateFmt.format(added)) + " · " + lastText(item.lastSentAt) + " ";
+              const btn = document.createElement("button");
+              btn.type = "button";
+              btn.textContent = "Remove";
+              btn.addEventListener("click", async () => {
+                btn.disabled = true;
+                try {
+                  const res = await fetch("/api/me/push/subscriptions/" + encodeURIComponent(item.id), { method: "DELETE" });
+                  if (!res.ok && res.status !== 404) throw new Error("remove");
+                  if (item.id === currentId && localSub) {
+                    try { await localSub.unsubscribe(); } catch {}
+                    try { window.localStorage.removeItem("dgl_push_v1"); } catch {}
+                    currentId = null;
+                  }
+                  items = items.filter((x) => x.id !== item.id);
+                  render();
+                  if (window.appToast) window.appToast("Device removed.", "success");
+                } catch {
+                  btn.disabled = false;
+                  setStatus("Could not remove device.");
+                }
+              });
+              li.append(text, btn);
+              list.appendChild(li);
+            });
+          };
+          items = await fetch("/api/me/push/subscriptions").then((r) => (r.ok ? r.json() : []));
+          panel.hidden = false;
+          render();
+        } catch {}
+      })();
+
       const profileForm = document.getElementById("profile-form");
       profileForm?.addEventListener("submit", async (event) => {
         event.preventDefault();

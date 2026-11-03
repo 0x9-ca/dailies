@@ -222,7 +222,7 @@ export async function runPushReminders(env: Env): Promise<{ checked: number; sen
       if (status >= 200 && status < 300) {
         sent++;
         const today = localDay(now, tzOffsetMinutes(t.sub.tz, now));
-        records.push(env.DB.prepare("UPDATE push_subscriptions SET last_sent_day = ?2 WHERE id = ?1").bind(t.sub.id, today));
+        records.push(env.DB.prepare("UPDATE push_subscriptions SET last_sent_day = ?2, last_sent_at = ?3 WHERE id = ?1").bind(t.sub.id, today, new Date(now).toISOString()));
         for (const g of t.fresh) records.push(env.DB.prepare("INSERT OR IGNORE INTO push_sent (subscription_id, game_id, day) VALUES (?1, ?2, ?3)").bind(t.sub.id, g.gameId, g.day));
       } else if (status === 404 || status === 410) {
         gone.push(t.sub.id);
