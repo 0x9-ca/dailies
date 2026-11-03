@@ -2022,7 +2022,7 @@ app.get("/rotation/:shareToken", async (c) => {
     <main class="narrow">
       <h1>${escapeHtml(ownerName)}'s Daily Rotation</h1>
       <p>This is a shared view of ${escapeHtml(ownerName)}'s favorite daily games.</p>
-      ${favorites.results.length > 0 && user?.id !== owner.id ? `<p><button type="button" id="copy-rotation-btn">Copy to my rotation</button></p>` : ""}
+      ${favorites.results.length > 0 && user?.id !== owner.id ? `<div id="rotation-compare" class="muted" hidden></div><p><button type="button" id="copy-rotation-btn">Copy to my rotation</button> <label id="only-new-label" hidden><input type="checkbox" id="only-new-toggle"> Show only new to you</label></p>` : ""}
       ${favorites.results.length > 0 ? `
         ${renderListSortControl({ rotation: true })}
         <ol class="rotation-list" id="shared-rotation-list">
@@ -2053,11 +2053,64 @@ app.get("/rotation/:shareToken", async (c) => {
         const button = document.getElementById("copy-rotation-btn");
         if (!button) return;
         const games = ${scriptJson(favorites.results.map((item) => ({ id: item.id, slug: item.slug, title: item.title })))};
+        let missing = games;
         button.addEventListener("click", async () => {
           button.disabled = true;
-          await window.dglAddManyToRotation(games);
-          button.disabled = false;
+          const result = await window.dglAddManyToRotation(missing);
+          if (result && result.ok && result.added > 0) {
+            // Re-run the comparison so pills, counts and the button reflect the new rotation.
+            compare();
+          } else {
+            button.disabled = false;
+          }
         });
+        // Per-visitor comparison runs client-side so this page carries no visitor state.
+        const compare = async () => {
+          let mine = [];
+          try {
+            const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
+            if (!session) return;
+            if (session.signedIn) {
+              const r = await fetch("/api/me/favorites/export");
+              const body = r.ok ? await r.json() : null;
+              mine = body && Array.isArray(body.items) ? body.items.map((i) => i.id) : [];
+            } else {
+              mine = window.dglGames.readLocalFavorites().map((i) => i.id);
+            }
+          } catch { return; }
+          if (mine.length === 0) return;
+          const have = new Set(mine);
+          const theirs = new Set(games.map((g) => g.id));
+          const both = games.filter((g) => have.has(g.id)).length;
+          missing = games.filter((g) => !have.has(g.id));
+          const yoursOnly = mine.filter((id) => !theirs.has(id)).length;
+          document.querySelectorAll("#shared-rotation-list > li").forEach((li) => {
+            const has = have.has(li.dataset.gameId);
+            li.dataset.inYours = has ? "1" : "0";
+            const existing = li.querySelector(".in-rotation-pill");
+            if (has && !existing) {
+              const pill = document.createElement("span");
+              pill.className = "tag in-rotation-pill";
+              pill.textContent = "In your rotation";
+              li.querySelector(".item-main").appendChild(pill);
+            }
+          });
+          const box = document.getElementById("rotation-compare");
+          const plural = (n) => n + (n === 1 ? " game" : " games");
+          box.textContent = missing.length === 0 && yoursOnly === 0
+            ? "This matches your rotation."
+            : "You both play " + plural(both) + " \u00b7 " + missing.length + " new to you \u00b7 " + yoursOnly + " of yours " + (yoursOnly === 1 ? "isn't" : "aren't") + " in this one";
+          box.hidden = false;
+          if (both > 0) button.textContent = missing.length === 0 ? "You have all of these" : "Add the " + missing.length + " new " + (missing.length === 1 ? "game" : "games");
+          button.disabled = missing.length === 0;
+          const label = document.getElementById("only-new-label");
+          const toggle = document.getElementById("only-new-toggle");
+          label.hidden = both === 0 || missing.length === 0;
+          const apply = () => document.querySelectorAll("#shared-rotation-list > li").forEach((li) => { li.hidden = toggle.checked && li.dataset.inYours === "1"; });
+          if (!toggle.dataset.bound) { toggle.dataset.bound = "1"; toggle.addEventListener("change", apply); }
+          apply();
+        };
+        compare();
       })();
     </script>
   `, c.env, { path: `/rotation/${shareToken}`, description: `${ownerName}'s shared daily game rotation.`, noindex: true }));
