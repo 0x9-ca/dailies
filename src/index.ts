@@ -670,8 +670,9 @@ app.get("/", async (c) => {
   const topGames = await listGames(c.env, { sort: "top", limit: 8 });
   const topGameIds = topGames.map((game) => game.id);
   const newGames = await listGames(c.env, { sort: "new", limit: 8 });
+  const popularGames = await listGames(c.env, { sort: "popular", limit: 8, openedThisWeek: true });
   const newGameIds = newGames.map((game) => game.id);
-  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds])]);
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, [...new Set([...topGameIds, ...newGameIds, ...popularGames.map((game) => game.id)])]);
   const playableCount = (await c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>())?.n ?? 0;
   // For the title, description and "What is a dle?": a rounded-down count ("800+") and well-known games people search
   // for, linked only when they're listed.
@@ -694,6 +695,13 @@ app.get("/", async (c) => {
 
   const topGamesMarkup = renderCompactGameList(topGames, user, userVotes, userFavorites, { hideable: true });
   const newGamesMarkup = renderCompactGameList(newGames, user, userVotes, userFavorites, { hideable: true });
+  const popularMarkup = popularGames.length >= 3
+    ? `<section class="popular-week" aria-labelledby="popular-week-title">
+        <h2 id="popular-week-title">Popular this week</h2>
+        ${renderCompactGameList(popularGames, user, userVotes, userFavorites, { hideable: true })}
+        <p><a href="/games?sort=popular">See more popular games</a></p>
+      </section>`
+    : "";
   const gameOfTheDay = await getGameOfTheDay(c.env);
   return c.html(await layout(`0x9 dles – ${roundedCount} Free Daily Games like Wordle & Connections`, user, `
     <main>
@@ -720,6 +728,7 @@ app.get("/", async (c) => {
       </script>
       ${HOME_ROTATION_MARKUP}
       ${gameOfTheDay ? renderGameOfTheDay(gameOfTheDay) : ""}
+      ${popularMarkup}
       <section class="new-in-cats" id="new-in-cats" aria-labelledby="new-in-cats-title" hidden>
         <h2 id="new-in-cats-title">New in your categories</h2>
         <ul class="games compact" id="new-in-cats-list"></ul>
@@ -947,7 +956,7 @@ app.get("/changelog", async (c) => {
 
 app.get("/games", async (c) => {
   const user = c.get("user");
-  const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "reset";
+  const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "popular" | "reset";
   const category = c.req.query("category") || undefined;
   const q = c.req.query("q") || undefined;
   const hidePaywall = c.req.query("hidePaywall") === "1";
@@ -1068,7 +1077,7 @@ app.get("/games", async (c) => {
     : page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
   const categoryDescription = activeCategory?.description && !activeCategory.description.startsWith("Imported from") ? activeCategory.description : "";
   const activeFilterCount = [sort !== "top", !!category, hidePaywall, hideNsfw].filter(Boolean).length;
-  const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", reset: "Resetting soonest" };
+  const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", popular: "Popular this week", reset: "Resetting soonest" };
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
   if (activeCategory) crumbs.push([activeCategory.name, categoryPagePath]);
   const categoryFeedPath = activeCategory ? `/feed.xml?category=${encodeURIComponent(activeCategory.slug)}` : "";
@@ -1087,7 +1096,7 @@ app.get("/games", async (c) => {
           <summary>Filters${activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}</summary>
           <div class="filters-body">
             <select name="sort" aria-label="Sort">
-              ${["top", "new", "trending", "reset"]
+              ${["top", "new", "trending", "popular", "reset"]
                 .map((s) => `<option value="${s}" ${s === sort ? "selected" : ""}>${sortLabels[s]}</option>`)
                 .join("")}
             </select>
@@ -3334,7 +3343,7 @@ app.get("/llms.txt", async (c) => {
     "",
     "## Browse",
     "",
-    `- [All daily games](${base}/games): every game, sortable by rating, newest, trending or resetting soonest`,
+    `- [All daily games](${base}/games): every game, sortable by rating, newest, trending, popular this week or resetting soonest`,
     `- [All categories](${base}/categories): every category with its games and related categories`,
     `- [New daily games](${base}/new): games added in the last 30 days, week by week`,
     `- [Curated lists](${base}/lists): lists of games picked by editors and Twitch streamers`,
@@ -4294,7 +4303,7 @@ const submissionSchema = z.object({
 });
 
 app.get("/api/games", async (c) => {
-  const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "reset";
+  const sort = (c.req.query("sort") || "top") as "top" | "new" | "trending" | "popular" | "reset";
   const category = c.req.query("category") || undefined;
   const q = c.req.query("q") || undefined;
   const hidePaywall = c.req.query("hidePaywall") === "1";
@@ -7740,11 +7749,13 @@ async function findSimilarGameIds(
 async function listGames(
   env: Env,
   opts: {
-    sort: "top" | "new" | "trending" | "reset";
+    sort: "top" | "new" | "trending" | "popular" | "reset";
     category?: string;
     q?: string;
     limit: number;
     offset?: number;
+    /** With sort "popular": only games opened at least once in the last 7 days. */
+    openedThisWeek?: boolean;
     hidePaywall?: boolean;
     hideNsfw?: boolean;
     /** Only games listed (approved) within this many days. */
@@ -7799,7 +7810,10 @@ async function listGames(
     opts.sort === "new"
       ? "games.created_at DESC"
       : opts.sort === "trending"
-      ? "games.updated_at DESC, games.score DESC"
+      ? // 10+ opens in the last 7 days qualify and rank by (last7+5)/(prev7+5); the rest keep the old recency order.
+        "CASE WHEN COALESCE(cd.last7, 0) >= 10 THEN 0 ELSE 1 END ASC, CASE WHEN COALESCE(cd.last7, 0) >= 10 THEN (cd.last7 + 5.0) / (COALESCE(cd.prev7, 0) + 5.0) END DESC, games.updated_at DESC, games.score DESC"
+      : opts.sort === "popular"
+      ? "COALESCE(cd.last7, 0) DESC, games.score DESC, games.vote_up_count DESC"
       : opts.sort === "reset"
       ? `CASE WHEN games.reset_time_minutes IS NULL THEN 1 ELSE 0 END ASC,
          CASE
@@ -7809,7 +7823,20 @@ async function listGames(
          games.title ASC`
       : "games.score DESC, games.vote_up_count DESC";
 
+  // One aggregate over game_click_days (US/Eastern day buckets, like the recorder): last 7 days and the 7 before.
+  const usesClicks = opts.sort === "trending" || opts.sort === "popular";
   const params: Array<string | number> = [];
+  let clicksJoinSql = "";
+  if (usesClicks) {
+    const easternDay = (offset: number) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() - offset * 86400000));
+    const start7 = easternDay(6);
+    clicksJoinSql = `LEFT JOIN (
+      SELECT game_id, SUM(CASE WHEN day >= ? THEN clicks ELSE 0 END) AS last7, SUM(CASE WHEN day < ? THEN clicks ELSE 0 END) AS prev7
+      FROM game_click_days WHERE day >= ? GROUP BY game_id
+    ) cd ON cd.game_id = games.id`;
+    params.push(start7, start7, opts.sort === "popular" ? start7 : easternDay(13));
+  }
   let whereSql = "WHERE games.status = 'approved'";
 
   if (opts.category) {
@@ -7825,6 +7852,9 @@ async function listGames(
   }
   if (opts.hideNsfw) {
     whereSql += " AND games.nsfw = 0";
+  }
+  if (opts.openedThisWeek && opts.sort === "popular") {
+    whereSql += " AND COALESCE(cd.last7, 0) > 0";
   }
   if (opts.listedWithinDays) {
     whereSql += ` AND datetime(COALESCE(games.approved_at, games.created_at)) >= datetime('now', '-${Math.trunc(opts.listedWithinDays)} days')`;
@@ -7862,6 +7892,7 @@ async function listGames(
     FROM games
     LEFT JOIN game_categories ON games.id = game_categories.game_id
     LEFT JOIN categories ON categories.id = game_categories.category_id
+    ${clicksJoinSql}
     ${whereSql}
     ORDER BY ${sortSql}
     LIMIT ?

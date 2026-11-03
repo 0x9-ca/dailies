@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-03",
     items: [
+      "Browse has a Popular this week sort, and the home page shows this week's most-played games.",
       "The home page shows which creators are live right now and what they're playing.",
       "Game pages show how often you've played a game lately.",
       "Reset reminders now arrive even when 0x9 dles isn't open, if you're signed in and allow notifications.",
