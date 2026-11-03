@@ -15,6 +15,7 @@
 - `GET /embed/lists/:slug?theme=dark|light|auto&limit=1-50&title=0&transparent=1` → standalone HTML widget of a public list for iframes (numbered games linking out in a new tab, paywall badge, reset countdown, suggest/footer links). Framing allowed anywhere (`frame-ancestors *`, no `X-Frame-Options`), `X-Robots-Tag: noindex`, canonical to `/lists/:slug`, no cookies, edge-cached 60s (`Cache-Control: public, max-age=60`). Skips unapproved and NSFW games. Private or unknown lists get an embed-styled 404. The list page's Embed menu item builds the snippet.
 - `GET /api/categories`
 - `GET /api/lists`
+- `GET /lists/:slug/history[?before=<ISO>]` -> HTML "Stream history" page for a public list with at least one `list_play_history` row (else 404): 30 days per page, newest day first, grouped client-side in the viewer's time zone, "Show older" via `before`. noindex; not in the edge cache; signed-out `Cache-Control: public, max-age=60`, signed-in `private, no-cache` (editors see x buttons and Clear history).
 - `GET /api/lists/:slug/now-playing` -> `{ gameId, title, startedAt }` or `{ gameId: null }` (null once set over 6 hours ago; 404 for a missing or unviewable list). `Cache-Control: no-store`; public lists are read through a ~10s KV cache (`np:v1:<slug>`)
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
 - `GET /api/games/random?category=<slug>&hidePaywall=1&hideNsfw=1&exclude=<id>,<id>,...` → one random approved game `{ id, slug, url }`, or 404 `{ error }` when none match. Never returns NSFW games, so `hideNsfw=1` changes nothing. `exclude` takes up to 200 game ids (400 otherwise). Not cached.
@@ -116,6 +117,7 @@
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
 - `PUT /api/lists/:id/items/:gameId/played` (`{ played: boolean }`; the list's editors, same as the item routes. Sets or clears `last_played_at`; returns `{ ok, lastPlayedAt }`; 404 when the game isn't on the list. Not in the mod log. Played on stream applies to a viewer when the site setting `played_on_stream` is `on` or they are an admin; otherwise 403 `code: "disabled"`)
+- `DELETE /api/lists/:id/history/:entryId` and `DELETE /api/lists/:id/history` (remove one Stream history entry / clear all; list editors via `requireListEditor`, CSRF). `PUT .../now-playing` with a game also records a history row (skipped if the same game is the latest row under 30 minutes old; rows over 90 days are pruned).
 - `PUT /api/lists/:id/now-playing` (`{ gameId: string | null }`; the list's editors, CSRF, 300/hour per user. The game must be on the list: main list, a suggestion or a Fan-dles game, else 400. `null` clears. Returns `{ gameId, title, startedAt }` or `{ gameId: null }`; drops the KV cache. Not in the mod log)
 - `PATCH /api/lists/:id/items/reorder`
 - `POST /api/lists/:id/suggestions/:gameId/accept` (moves a suggestion to the end of the list)

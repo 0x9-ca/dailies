@@ -213,6 +213,14 @@ CREATE TABLE list_blocked_games (
   FOREIGN KEY (blocked_by_user_id) REFERENCES users(id)
 );
 
+CREATE TABLE list_play_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  list_id TEXT NOT NULL REFERENCES curated_lists(id) ON DELETE CASCADE,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  started_at TEXT NOT NULL
+);
+CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
+
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,
   game_id TEXT NOT NULL,

@@ -63,6 +63,7 @@ export async function gameInList(env: Env, listId: string, gameId: string, fandl
 
 export const NOW_PLAYING_CSS = `
 .np-pill { display: inline-flex; align-items: center; gap: 0.45em; margin: 0 0 var(--sp-3, 0.75rem); padding: 0.25em 0.8em; border: 1.5px solid var(--stream-accent, #38bdf8); border-radius: 999px; font-size: 0.9rem; font-weight: 700; }
+.np-pill .np-history { font-weight: 600; }
 .np-pill[hidden] { display: none; }
 .np-pill::before { content: "\\25B6"; font-size: 0.75em; color: var(--stream-accent, #38bdf8); }
 html.dgl-stream .np-pill, html.dgl-overlay .np-pill { display: none !important; }
@@ -153,6 +154,13 @@ export const NOW_PLAYING_SCRIPT = `
     });
     const text = cur ? "Now playing: " + cur.title : "";
     pill.textContent = text;
+    if (cur && D.hasHistory) {
+      const a = document.createElement("a");
+      a.href = "/lists/" + encodeURIComponent(D.slug) + "/history";
+      a.textContent = "History";
+      a.className = "np-history";
+      pill.append(" \\u00B7 ", a);
+    }
     pill.hidden = !cur;
     if (ovLine) { ovLine.textContent = text; ovLine.hidden = !cur || !showOverlayLine; }
     if (id !== lastShown) {

@@ -27,6 +27,7 @@ import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FAND
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
 import { buildServiceWorker, OFFLINE_SCRIPT } from "./lib/service-worker";
+import { PLAY_HISTORY_CSS, PLAY_HISTORY_KEEP_DAYS, PLAY_HISTORY_PAGE_DAYS, PLAY_HISTORY_SCRIPT, recordPlay } from "./lib/play-history";
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
 import { loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
@@ -2552,6 +2553,59 @@ app.get("/embed/lists/:slug", async (c) => {
   }));
 });
 
+// Stream history. Not in PUBLIC_CACHE_PATHS (the × buttons are per-visitor), so it is rendered for each request;
+// signed-in visitors get private/no-cache, anonymous ones a 60s public copy (identical for everyone without a session).
+app.get("/lists/:slug/history", async (c) => {
+  const user = c.get("user");
+  const list = await c.env.DB.prepare("SELECT id, slug, title, visibility FROM curated_lists WHERE slug = ?1")
+    .bind(c.req.param("slug"))
+    .first<{ id: string; slug: string; title: string; visibility: string }>();
+  if (!list || list.visibility !== "public") return notFoundPage(c);
+  const total = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM list_play_history WHERE list_id = ?1").bind(list.id).first<{ n: number }>();
+  if (!total?.n) return notFoundPage(c);
+  const nowMs = Date.now();
+  const beforeParam = c.req.query("before");
+  const beforeMs = beforeParam && !Number.isNaN(Date.parse(beforeParam)) ? Math.min(Date.parse(beforeParam), nowMs + 60_000) : nowMs + 60_000;
+  const before = new Date(beforeMs).toISOString();
+  const from = new Date(beforeMs - PLAY_HISTORY_PAGE_DAYS * 86400000).toISOString();
+  const rows = await c.env.DB.prepare(
+    `SELECT h.id, h.started_at, g.slug, g.title FROM list_play_history h JOIN games g ON g.id = h.game_id AND g.status = 'approved'
+     WHERE h.list_id = ?1 AND h.started_at < ?2 AND h.started_at >= ?3 ORDER BY h.started_at DESC, h.id DESC LIMIT 1000`
+  )
+    .bind(list.id, before, from)
+    .all<{ id: number; started_at: string; slug: string; title: string }>();
+  const older = await c.env.DB.prepare("SELECT 1 AS ok FROM list_play_history WHERE list_id = ?1 AND started_at < ?2 LIMIT 1").bind(list.id, from).first();
+  let canManage = false;
+  if (user) {
+    canManage = user.role === "editor" || user.role === "admin" || (await isCreatorListOwner(c.env, list.id, user.id));
+    if (!canManage) {
+      const twitchId = await getUserTwitchId(c.env, user);
+      canManage = !!twitchId && !!(await c.env.DB.prepare("SELECT 1 AS ok FROM curated_lists WHERE id = ?1 AND twitch_user_id = ?2").bind(list.id, twitchId).first());
+    }
+  }
+  const listHref = `/lists/${encodeURIComponent(list.slug)}`;
+  const entries = rows.results.map((r) => ({ id: r.id, at: r.started_at, slug: r.slug, title: r.title }));
+  const html = await layout(`Stream history – ${list.title} | 0x9 dles`, user, `
+    <main class="narrow">
+      <h1>Stream history</h1>
+      <p><a href="${listHref}">${escapeHtml(list.title)}</a> · every game set as Now playing, kept for ${PLAY_HISTORY_KEEP_DAYS} days. Times are in your time zone.</p>
+      <p id="ph-empty"${entries.length ? " hidden" : ""}>Nothing in this stretch.${before !== new Date(nowMs + 60_000).toISOString() ? "" : ""}</p>
+      <div id="ph-days"></div>
+      <div class="ph-actions">
+        ${older ? `<a class="btn secondary" rel="nofollow" href="${listHref}/history?before=${encodeURIComponent(from)}">Show older</a>` : ""}
+        ${beforeParam ? `<a class="btn secondary" href="${listHref}/history">Back to latest</a>` : ""}
+        ${canManage ? `<button type="button" class="secondary" id="ph-clear">Clear history</button>` : ""}
+      </div>
+    </main>
+    <link rel="stylesheet" href="${ASSET.phCss}" />
+    <script type="application/json" id="data-play-history">${scriptJson({ slug: list.slug, listId: list.id, canManage, entries })}</script>
+    <script src="${ASSET.phJs}"></script>
+  `, c.env, { path: `${listHref}/history`, noindex: true, description: `Games ${list.title} has played on stream.` });
+  c.header("Vary", "Cookie");
+  c.header("Cache-Control", user ? "private, no-cache" : "public, max-age=60");
+  return c.html(html);
+});
+
 app.get("/lists/:slug", async (c) => {
   const slug = c.req.param("slug");
   const user = c.get("user");
@@ -2751,6 +2805,7 @@ app.get("/lists/:slug", async (c) => {
   const streamHost = new URL(shortOrigin(c.env) ?? c.env.APP_URL).host;
   // The side-by-side / tabbed layout applies whenever there is a second section: suggestions, Fan-dles, or both.
   const layoutOn = suggestionsOn || !!fandleSection;
+  const hasHistory = !isAdminEditor && list.visibility === "public" && !!(await c.env.DB.prepare("SELECT 1 AS ok FROM list_play_history WHERE list_id = ?1 LIMIT 1").bind(list.id).first());
   return c.html(await layout(`${list.title} – Daily Game List | 0x9 dles`, user, `
     <main class="narrow${layoutOn ? " list-page" : ""}">
       <div class="list-head">
@@ -2761,6 +2816,7 @@ app.get("/lists/:slug", async (c) => {
         <button type="button" class="secondary" data-head-item data-share data-share-title="${escapeHtml(list.title)}">Share</button>
         ${canEdit ? `<a class="btn" data-head-item data-head-keep href="/lists/${encodeURIComponent(list.slug)}${isAdminEditor ? "" : "?edit=1"}">${isAdminEditor ? "Done editing" : "Edit list"}</a>` : ""}
         ${isAdminEditor || list.visibility !== "public" ? "" : `<button type="button" class="secondary" data-head-item id="embed-btn">Embed</button>`}
+        ${hasHistory ? `<a class="btn secondary" data-head-item href="/lists/${encodeURIComponent(list.slug)}/history">Stream history</a>` : ""}
         ${isAdminEditor || items.results.length === 0 ? "" : `<button type="button" class="secondary" data-head-item id="add-all-btn">Add all to my rotation</button>`}
         ${isAdminEditor ? "" : `<button type="button" class="secondary" data-head-item id="stream-toggle" aria-pressed="false" title="Large-type view for streaming (Esc exits)">Stream mode</button>`}
         <div class="head-more" id="head-more" hidden>
@@ -2892,7 +2948,7 @@ app.get("/lists/:slug", async (c) => {
     </main>
     <script src="${ASSET.listPageJs}"></script>
     ${isAdminEditor || list.visibility !== "public" ? "" : `${renderEmbedDialog()}<script src="${ASSET.embedDialogJs}" data-origin="${escapeHtml(appOrigin(c.env))}" data-slug="${escapeHtml(list.slug)}" data-title="${escapeHtml(list.title)}"></script>`}
-    ${isAdminEditor ? "" : `<link rel="stylesheet" href="${ASSET.npCss}" /><script type="application/json" id="data-now-playing">${scriptJson({ slug: list.slug, listId: list.id, canSet: canEdit })}</script><script src="${ASSET.npJs}"></script>`}
+    ${isAdminEditor ? "" : `<link rel="stylesheet" href="${ASSET.npCss}" /><script type="application/json" id="data-now-playing">${scriptJson({ slug: list.slug, listId: list.id, canSet: canEdit, hasHistory })}</script><script src="${ASSET.npJs}"></script>`}
     ${layoutOn ? `<script src="${ASSET.page_list_layout}"></script>` : ""}
     ${!isAdminEditor ? `<script>
       (() => {
@@ -6326,7 +6382,28 @@ app.put("/api/lists/:id/now-playing", async (c) => {
   const at = gameId ? new Date().toISOString() : null;
   await c.env.DB.prepare("UPDATE curated_lists SET now_playing_game_id = ?1, now_playing_at = ?2 WHERE id = ?3").bind(gameId, at, listId).run();
   await c.env.CACHE.delete(nowPlayingKey(list.slug)).catch(() => undefined);
+  if (gameId) await recordPlay(c.env, listId, gameId).catch(() => undefined);
   return c.json(resolveNowPlaying({ gameId, title, at }));
+});
+
+// Stream history: editors (owner, Twitch-tagged user, staff) remove one entry or all of them.
+app.delete("/api/lists/:id/history/:entryId", async (c) => {
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) return auth;
+  const entryId = Number(c.req.param("entryId"));
+  if (!Number.isSafeInteger(entryId) || entryId < 1) return c.json({ error: "Invalid id" }, 400);
+  const result = await c.env.DB.prepare("DELETE FROM list_play_history WHERE id = ?1 AND list_id = ?2").bind(entryId, listId).run();
+  if (!result.meta.changes) return c.json({ error: "Not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/lists/:id/history", async (c) => {
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) return auth;
+  const result = await c.env.DB.prepare("DELETE FROM list_play_history WHERE list_id = ?1").bind(listId).run();
+  return c.json({ ok: true, deleted: result.meta.changes ?? 0 });
 });
 
 async function purgeListPageCache(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<void> {
@@ -11630,6 +11707,8 @@ const ASSET = {
   embedDialogJs: registerAsset("embed-dialog", "js", EMBED_DIALOG_SCRIPT),
   npCss: registerAsset("now-playing", "css", NOW_PLAYING_CSS),
   npJs: registerAsset("now-playing", "js", NOW_PLAYING_SCRIPT),
+  phCss: registerAsset("play-history", "css", PLAY_HISTORY_CSS),
+  phJs: registerAsset("play-history", "js", PLAY_HISTORY_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   recapJs: registerAsset("recap", "js", RECAP_SCRIPT),
   installJs: registerAsset("install-app", "js", INSTALL_APP_SCRIPT),
