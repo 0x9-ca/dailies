@@ -8,6 +8,7 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "The home page shows which creators are live right now and what they're playing.",
       "Game pages show how often you've played a game lately.",
+      "Reset reminders now arrive even when 0x9 dles isn't open, if you're signed in and allow notifications.",
       "Show off your streak: turn it on for your public profile in Settings.",
       "Download your play history as JSON or CSV, or clear it, from Settings.",
       "Pick which days you play each game in your rotation with the new Days control.",

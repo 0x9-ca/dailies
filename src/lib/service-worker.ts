@@ -87,6 +87,37 @@ async function assetFirst(request) {
   return response;
 }
 
+// Web Push (empty payload): ask the server what to show; browsers require showing something, so fall back to a generic text.
+const GENERIC = { title: "Games in your rotation reset soon", body: "Open 0x9 dles to see what's left today.", url: "/me/rotation" };
+
+async function reminderText() {
+  try {
+    const res = await fetch("/api/me/reminders/pending", { credentials: "include", cache: "no-store" });
+    if (!res.ok) return GENERIC;
+    const data = await res.json();
+    if (!data || typeof data.title !== "string" || !data.title) return GENERIC;
+    return { title: data.title, body: typeof data.body === "string" ? data.body : "", url: GENERIC.url };
+  } catch (err) {
+    return GENERIC;
+  }
+}
+
+self.addEventListener("push", (event) => {
+  event.waitUntil(reminderText().then((n) => self.registration.showNotification(n.title, {
+    body: n.body, tag: "dgl-reminder", renotify: true, icon: "/icon-192.png", data: { url: n.url }
+  })));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = new URL((event.notification.data && event.notification.data.url) || "/me/rotation", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+    const open = clients.find((c) => c.url === target) || clients.find((c) => c.url.startsWith(self.location.origin));
+    if (open && "focus" in open) return open.focus().then((c) => (c.url === target || !("navigate" in c) ? c : c.navigate(target)));
+    return self.clients.openWindow(target);
+  }));
+});
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
@@ -111,13 +142,23 @@ export const OFFLINE_SCRIPT = `      (() => {
           if (!window.caches) return Promise.resolve();
           return caches.keys().then((names) => Promise.all(names.filter((n) => n.indexOf("dgl-pages-") === 0).map((n) => caches.delete(n)))).catch(() => {});
         };
+        // On sign-out: drop this browser's push subscription (server first, while still signed in), so reminders stop.
+        const dropPush = () => {
+          try { window.localStorage.removeItem("dgl_push_v1"); } catch (e) {}
+          if (!("serviceWorker" in navigator) || !("PushManager" in window)) return Promise.resolve();
+          return navigator.serviceWorker.getRegistration().then((reg) => (reg ? reg.pushManager.getSubscription() : null)).then((sub) => {
+            if (!sub) return null;
+            return fetch("/api/me/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) })
+              .catch(() => {}).then(() => sub.unsubscribe());
+          }).catch(() => {});
+        };
         document.addEventListener("submit", (event) => {
           const form = event.target;
           if (!form || !form.matches || !form.matches('form[action="/auth/logout"]') || form.dataset.cleared) return;
           event.preventDefault();
           form.dataset.cleared = "1";
           const submit = () => { if (form.requestSubmit) form.requestSubmit(); else form.submit(); };
-          Promise.race([clearPages(), new Promise((resolve) => setTimeout(resolve, 1500))]).then(submit, submit);
+          Promise.race([Promise.all([clearPages(), dropPush()]), new Promise((resolve) => setTimeout(resolve, 1500))]).then(submit, submit);
         }, true);
         document.addEventListener("click", (event) => {
           if (event.target && event.target.closest && event.target.closest("[data-offline-retry]")) window.location.reload();

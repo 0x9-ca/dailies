@@ -31,6 +31,7 @@ import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
 import { buildServiceWorker, OFFLINE_SCRIPT } from "./lib/service-worker";
 import { PLAY_HISTORY_CSS, PLAY_HISTORY_KEEP_DAYS, PLAY_HISTORY_PAGE_DAYS, PLAY_HISTORY_SCRIPT, recordPlay } from "./lib/play-history";
 import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
+import { PUSH_MAX_PER_USER, isAllowedEndpoint, pendingReminder, pushEnabled, runPushReminders, validTimeZone } from "./lib/push";
 import { clearPlays, loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
 
@@ -5967,6 +5968,60 @@ async function recordGameClick(c: Context<{ Bindings: Bindings; Variables: AppVa
   return c.json({ ok: true });
 }
 
+// Web Push reset reminders (src/lib/push.ts). Subscribing is a 404 unless the VAPID vars/secret are set.
+const pushSubscribeSchema = z.object({
+  endpoint: z.string().min(10).max(1000),
+  keys: z.object({ p256dh: z.string().max(200), auth: z.string().max(100) }).partial().optional(),
+  leadMinutes: z.number().int().refine((n) => [30, 60, 120].includes(n)),
+  tz: z.string().min(1).max(64)
+});
+
+app.post("/api/me/push/subscribe", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  if (!pushEnabled(c.env)) return c.json({ error: "Push reminders are not enabled" }, 404);
+  const rate = await enforceRateLimit(c.env, `push:sub:${auth.id}`, 60, 60 * 60);
+  if (!rate.ok) return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  const parsed = pushSubscribeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success || !isAllowedEndpoint(c.env, parsed.data.endpoint) || !validTimeZone(parsed.data.tz)) return c.json({ error: "Invalid subscription" }, 400);
+  const { endpoint, leadMinutes, tz } = parsed.data;
+  const existing = await c.env.DB.prepare("SELECT id FROM push_subscriptions WHERE endpoint = ?1").bind(endpoint).first<{ id: string }>();
+  if (existing) {
+    // Same browser, possibly a different account: the endpoint moves to the current user.
+    await c.env.DB.prepare("UPDATE push_subscriptions SET user_id = ?2, lead_minutes = ?3, tz = ?4 WHERE id = ?1").bind(existing.id, auth.id, leadMinutes, tz).run();
+  } else {
+    const count = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?1").bind(auth.id).first<{ n: number }>();
+    if ((count?.n ?? 0) >= PUSH_MAX_PER_USER) return c.json({ error: `You can have reminders on up to ${PUSH_MAX_PER_USER} devices.` }, 409);
+    await c.env.DB.prepare("INSERT INTO push_subscriptions (id, user_id, endpoint, created_at, lead_minutes, tz) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
+      .bind(crypto.randomUUID(), auth.id, endpoint, new Date().toISOString(), leadMinutes, tz).run();
+  }
+  return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
+});
+
+app.post("/api/me/push/unsubscribe", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  const body = z.object({ endpoint: z.string().min(1).max(1000) }).safeParse(await c.req.json().catch(() => null));
+  if (!body.success) return c.json({ error: "Invalid payload" }, 400);
+  await c.env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id = ?1 AND endpoint = ?2").bind(auth.id, body.data.endpoint).run();
+  return c.json({ ok: true }, 200, { "Cache-Control": "no-store" });
+});
+
+// Tells the rotation page whether push reminders are available (signed in + VAPID configured).
+app.get("/api/me/push/config", (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  return c.json({ publicKey: pushEnabled(c.env) ? c.env.VAPID_PUBLIC_KEY : null }, 200, { "Cache-Control": "no-store" });
+});
+
+// Read by the service worker after a push. Always 200 with { title, body, url } (generic text when nothing is due).
+app.get("/api/me/reminders/pending", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) return auth;
+  const found = pushEnabled(c.env) ? await pendingReminder(c.env, auth.id).catch(() => null) : null;
+  return c.json(found ?? { title: "Games in your rotation reset soon", body: "Open 0x9 dles to see what's left today.", url: "/me/rotation" }, 200, { "Cache-Control": "no-store" });
+});
+
 // Whether this browser has a session. Always 200 (no 401 noise for logged-out visitors) and never cached, so
 // edge-cached pages can ask it from the client.
 app.get("/api/me/session", (c) => c.json({ signedIn: !!c.get("user") }, 200, { "Cache-Control": "no-store" }));
@@ -7257,7 +7312,15 @@ app.onError((error, c) => {
 
 export default {
   fetch: app.fetch,
-  scheduled: async (_event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+  scheduled: async (event: ScheduledEvent, env: Env, ctx: ExecutionContext) => {
+    // Every 15 minutes: push reminders only. The daily cron (15 8 * * *) runs the maintenance jobs below.
+    if (event.cron === "*/15 * * * *") {
+      ctx.waitUntil(runPushReminders(env).then(
+        (r) => { if (r.checked > 0) console.log(JSON.stringify({ message: "push run", ...r })); },
+        (error) => console.error(JSON.stringify({ message: "push run failed", error: String(error) }))
+      ));
+      return;
+    }
     ctx.waitUntil(runLinkChecks(env));
     ctx.waitUntil(recalculateAllScores(env));
     ctx.waitUntil(runClaimRechecks(env));
@@ -9297,7 +9360,7 @@ const ROTATION_TODAY_SCRIPT = `
     let busy = false;
     const check = async () => {
       const settings = read();
-      if (!settings.on || !supported() || Notification.permission !== "granted" || !window.dglIsPlayed || busy || !holdsLock()) return;
+      if (!settings.on || !supported() || Notification.permission !== "granted" || !window.dglIsPlayed || busy || window.dglReminders.pushActive() || !holdsLock()) return;
       busy = true;
       try {
         const items = await window.dglTodayRotation.get(10 * 60 * 1000);
@@ -9323,7 +9386,12 @@ const ROTATION_TODAY_SCRIPT = `
       }
     };
     (window.dglPlayedHooks = window.dglPlayedHooks || []).push(check);
-    return { supported, read, write, check };
+    // Web Push (signed in, server has VAPID keys): while this browser has a push subscription the server sends the
+    // reminders, so the in-tab ones above are skipped to avoid doubles. dgl_push_v1 = "1" is set by the rotation page.
+    const PUSH_KEY = "dgl_push_v1";
+    const pushActive = () => { try { return window.localStorage.getItem(PUSH_KEY) === "1"; } catch { return false; } };
+    const setPushActive = (on) => { try { if (on) window.localStorage.setItem(PUSH_KEY, "1"); else window.localStorage.removeItem(PUSH_KEY); } catch {} };
+    return { supported, read, write, check, pushActive, setPushActive };
   })();
 `;
 
@@ -9549,6 +9617,65 @@ const DAILY_PROGRESS_SCRIPT = `
       const settings = window.dglReminders.read();
       toggle.checked = settings.on && Notification.permission === "granted";
       minutes.value = String(settings.minutes);
+      // Push: only when signed in, the server has VAPID keys and the browser has PushManager. Resolves to the
+      // application server key (base64url) or null. Also syncs dgl_push_v1 with the real subscription.
+      const pushKey = (async () => {
+        if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+        try {
+          const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
+          if (!session || !session.signedIn) { window.dglReminders.setPushActive(false); return null; }
+          const cfg = await fetch("/api/me/push/config").then((r) => (r.ok ? r.json() : null), () => null);
+          if (!cfg || !cfg.publicKey) return null;
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
+          window.dglReminders.setPushActive(!!sub && Notification.permission === "granted");
+          return cfg.publicKey;
+        } catch { return null; }
+      })();
+      const keyBytes = (s) => {
+        const padded = (s + "=".repeat((4 - (s.length % 4)) % 4)).split("-").join("+").split("_").join("/");
+        return Uint8Array.from(atob(padded), (ch) => ch.charCodeAt(0));
+      };
+      const sendSub = async (sub) => {
+        const res = await fetch("/api/me/push/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: sub.endpoint, keys: sub.toJSON().keys || {}, leadMinutes: Number(minutes.value), tz: Intl.DateTimeFormat().resolvedOptions().timeZone })
+        });
+        if (!res.ok) { const err = await res.json().catch(() => null); throw new Error((err && err.error) || "Could not turn on background reminders."); }
+      };
+      const pushOn = async () => {
+        const key = await pushKey;
+        if (!key) return;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          let sub = await reg.pushManager.getSubscription();
+          if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(key) });
+          await sendSub(sub);
+          window.dglReminders.setPushActive(true);
+        } catch (err) {
+          if (window.appToast) window.appToast((err && err.message) || "Could not turn on background reminders. Reminders will only show while 0x9 dles is open.", "error", 6000);
+        }
+      };
+      const pushOff = async () => {
+        window.dglReminders.setPushActive(false);
+        if (!(await pushKey)) return;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
+          if (!sub) return;
+          await fetch("/api/me/push/unsubscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) });
+          await sub.unsubscribe();
+        } catch {}
+      };
+      const pushUpdate = async () => {
+        if (!window.dglReminders.pushActive()) return;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) await sendSub(sub);
+        } catch {}
+      };
       const save = () => { window.dglReminders.write({ on: toggle.checked, minutes: Number(minutes.value) }); if (toggle.checked) window.dglReminders.check(); };
       toggle.addEventListener("change", async () => {
         if (toggle.checked && Notification.permission !== "granted") {
@@ -9562,8 +9689,9 @@ const DAILY_PROGRESS_SCRIPT = `
           }
         }
         save();
+        if (toggle.checked) await pushOn(); else await pushOff();
       });
-      minutes.addEventListener("change", save);
+      minutes.addEventListener("change", () => { save(); pushUpdate(); });
     }
   };
 `;
