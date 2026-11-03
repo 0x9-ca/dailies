@@ -1066,6 +1066,35 @@ export const SHARED_CSS = `      :root {
         }
       }`;
 
+// Reports uncaught errors to POST /api/client-errors with sendBeacon (no CSRF header possible). Same-origin scripts only,
+// deduped by message+line, max 5 per page load. Mirrored (smaller) in src/lib/embed.ts.
+export const ERROR_REPORT_SCRIPT = `      (() => {
+        const seen = {};
+        let sent = 0;
+        const report = (message, source, line, col, stack) => {
+          try {
+            if (sent >= 5 || !navigator.sendBeacon) return;
+            const o = location.origin;
+            if (!source || source.indexOf(o) !== 0) return;
+            const path = source.slice(o.length).split(/[?#]/)[0];
+            message = String(message || "").slice(0, 500);
+            if (!message || message === "Script error.") return;
+            const key = message + "|" + path + "|" + line;
+            if (seen[key]) return;
+            seen[key] = 1;
+            sent++;
+            navigator.sendBeacon("/api/client-errors", JSON.stringify({ message, source: path, line: line | 0, col: col | 0, stack: String(stack || "").slice(0, 1500), page: location.pathname, version: window.DGL_VERSION || "" }));
+          } catch (e) {}
+        };
+        window.addEventListener("error", (e) => report(e.message, e.filename || location.href, e.lineno, e.colno, e.error && e.error.stack));
+        window.addEventListener("unhandledrejection", (e) => {
+          const r = e.reason;
+          const stack = r && r.stack ? String(r.stack) : "";
+          const m = stack.match(/(https?:\\/\\/[^\\s)]+?):(\\d+):(\\d+)/);
+          report("Unhandled rejection: " + (r && r.message ? r.message : String(r)), m ? m[1] : location.href, m ? m[2] : 0, m ? m[3] : 0, stack);
+        });
+      })()`;
+
 // Same-origin mutating fetches carry the double-submit CSRF token. Loaded in <head> (head.js) so it is installed before
 // any page script runs (app.js loads last and, uncached on a first visit, after setTimeout(0) callbacks). A new
 // visitor's cookie may not be there yet: fetch /api/me/session (no-store, sets the cookie) first, and retry once on a CSRF 403.

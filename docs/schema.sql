@@ -51,6 +51,21 @@ CREATE TABLE categories (
   FOREIGN KEY (created_by_user_id) REFERENCES users(id)
 );
 
+CREATE TABLE client_errors (
+  fingerprint TEXT PRIMARY KEY,
+  message TEXT NOT NULL,
+  source TEXT,
+  line INTEGER,
+  col INTEGER,
+  stack TEXT,
+  page TEXT,
+  version TEXT,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX idx_client_errors_last_seen ON client_errors(last_seen);
+
 CREATE TABLE creator_allowlist (
   twitch_user_id TEXT PRIMARY KEY,
   twitch_login TEXT NOT NULL,
