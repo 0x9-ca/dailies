@@ -2181,6 +2181,7 @@ app.get("/me/rotation", async (c) => {
       <script>
         window.dglDailyProgress("local-rotation-list");
       </script>
+      <script src="${ASSET.rotationWeekJs}"></script>
       <div class="install-app muted" data-install-app hidden><button type="button" class="link-button" hidden>Install app</button><small class="install-ios" hidden>On iPhone or iPad: tap Share, then Add to Home Screen.</small></div>
       <script src="${ASSET.installJs}"></script>
   `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
@@ -2289,6 +2290,7 @@ app.get("/me/rotation", async (c) => {
     <script>
       window.dglDailyProgress("rotation-list");
     </script>
+    <script src="${ASSET.rotationWeekJs}"></script>
     <script type="application/json" id="data-rotation-share">${scriptJson({ shareUrl })}</script>
     <script src="${ASSET.page_rotation_share}"></script>
     <script src="${ASSET.page_rotation_paste}"></script>
@@ -11698,6 +11700,78 @@ const INSTALL_APP_SCRIPT = `
   render();
 })();
 `;
+const ROTATION_WEEK_SCRIPT = `
+(() => {
+  const list = document.getElementById("rotation-list") || document.getElementById("local-rotation-list");
+  if (!list) return;
+  const KEY = "dgl_rotation_view_v1";
+  const css = document.createElement("style");
+  css.textContent = ".rv-bar{display:flex;gap:.4rem;margin:.5rem 0}.rv-bar button[aria-pressed=true]{font-weight:700;text-decoration:underline}.rv-week ul{list-style:none;margin:0;padding:0}.rv-week li{padding:.15rem 0}.rv-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.5rem}.rv-col,.rv-every{border:1px solid currentColor;border-radius:6px;padding:.4rem .5rem;min-width:0;overflow-wrap:anywhere}.rv-col h3,.rv-every h3{margin:0 0 .3rem;font-size:.95rem}.rv-col.rv-today{border-width:3px;font-weight:600}.rv-every{margin-bottom:.5rem}.rv-every ul{columns:2}@media(max-width:639px){.rv-grid{grid-template-columns:1fr}.rv-every ul{columns:1}}";
+  document.head.appendChild(css);
+  const bar = document.createElement("div");
+  bar.className = "rv-bar";
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Rotation view");
+  const mk = (id, label) => { const b = document.createElement("button"); b.type = "button"; b.textContent = label; b.dataset.view = id; bar.appendChild(b); return b; };
+  mk("today", "Today"); mk("week", "Week");
+  const week = document.createElement("section");
+  week.className = "rv-week";
+  week.setAttribute("aria-label", "Rotation by weekday");
+  week.hidden = true;
+  list.parentNode.insertBefore(bar, list);
+  list.parentNode.insertBefore(week, list);
+  const names = [0, 1, 2, 3, 4, 5, 6].map((d) => new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(new Date(2023, 0, 1 + d)));
+  const ul = (games) => {
+    const el = document.createElement("ul");
+    games.forEach((g) => { const li = document.createElement("li"); const a = document.createElement("a"); a.textContent = g.title; if (g.url) { a.href = g.url; a.target = "_blank"; a.rel = "noopener noreferrer"; } li.appendChild(a); el.appendChild(li); });
+    return el;
+  };
+  const games = () => Array.from(list.querySelectorAll("li[data-game-id]")).map((li) => {
+    const link = li.querySelector("a.card-link, a.game-title");
+    const m = li.getAttribute("data-weekday-mask");
+    return { title: li.getAttribute("data-game-title") || (link ? link.textContent.trim() : ""), url: link ? link.href : "", mask: m == null || m === "" ? 127 : Number(m) & 127 };
+  });
+  const renderWeek = () => {
+    week.textContent = "";
+    const all = games();
+    if (!all.length) { const p = document.createElement("p"); p.textContent = "No games in your rotation yet."; week.appendChild(p); return; }
+    const every = all.filter((g) => g.mask === 127);
+    if (every.length === all.length) {
+      const p = document.createElement("p");
+      p.textContent = "All " + all.length + " games are scheduled every day.";
+      week.appendChild(p); week.appendChild(ul(all)); return;
+    }
+    if (every.length) {
+      const box = document.createElement("div"); box.className = "rv-every";
+      const h = document.createElement("h3"); h.textContent = "Every day: " + every.length + (every.length === 1 ? " game" : " games");
+      box.appendChild(h); box.appendChild(ul(every)); week.appendChild(box);
+    }
+    const grid = document.createElement("div"); grid.className = "rv-grid";
+    const today = new Date().getDay();
+    for (let d = 0; d < 7; d++) {
+      const bit = 1 << ((d + 6) % 7);
+      const day = all.filter((g) => g.mask !== 127 && (g.mask & bit) !== 0);
+      const col = document.createElement("div"); col.className = "rv-col" + (d === today ? " rv-today" : "");
+      if (d === today) col.setAttribute("aria-current", "date");
+      const h = document.createElement("h3"); h.textContent = names[d] + " \u00b7 " + (day.length + every.length);
+      col.appendChild(h); col.appendChild(ul(day)); grid.appendChild(col);
+    }
+    week.appendChild(grid);
+  };
+  const show = (view, save) => {
+    const w = view === "week";
+    if (w) renderWeek();
+    week.hidden = !w; list.hidden = w;
+    bar.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === view)));
+    if (save) { try { localStorage.setItem(KEY, view); } catch (e) {} }
+  };
+  bar.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) show(b.dataset.view, true); });
+  let saved = "today";
+  try { saved = localStorage.getItem(KEY) === "week" ? "week" : "today"; } catch (e) {}
+  show(saved, false);
+  new MutationObserver(() => { if (!week.hidden) renderWeek(); }).observe(list, { childList: true });
+})();
+`;
 const joinJs = (...parts: string[]) => parts.join(";\n");
 const ASSET = {
   page_submit_page: registerAsset("submit-page", "js", PAGE_SCRIPTS["submit-page"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT)),
@@ -11726,6 +11800,7 @@ const ASSET = {
   recapJs: registerAsset("recap", "js", RECAP_SCRIPT),
   installJs: registerAsset("install-app", "js", INSTALL_APP_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
+  rotationWeekJs: registerAsset("rotation-week", "js", ROTATION_WEEK_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
   page_home_new_cats: registerAsset("home-new-cats", "js", PAGE_SCRIPTS["home-new-cats"]),
   page_games_page: registerAsset("games-page", "js", PAGE_SCRIPTS["games-page"]),
