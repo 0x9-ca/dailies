@@ -134,6 +134,11 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - The endpoint is anonymous and CSRF-exempt (`CLIENT_ERRORS_PATH`, like the embed click), body max 4 KB, 30 reports/hour per hashed IP, always 204. Rows aggregate in `client_errors` (fingerprint = hash of message+source+line, `count`, first/last seen); rows idle 30 days are deleted on each write.
 - `/admin/errors` (admin only) lists them with stacks and Clear / Clear all; `/admin` shows "N client errors today" for the last 24h.
 
+## D1 query tracing
+
+- `DB_TRACE=1` (dev only, e.g. `wrangler dev --var DB_TRACE:1`; unset in deployed envs, where `fetch` skips `src/lib/db-trace.ts` entirely) wraps `env.DB` and logs one `DB_TRACE {...}` JSON line per request: route, round trips (`queries`), statements, summed D1 ms, wall ms, repeated SQL and a per-query list. A value above 1 (`DB_TRACE:30`) also adds that many ms per round trip to mimic remote D1; `dbMs` then overlaps for parallel queries, so compare `totalMs`.
+- Keep independent reads in one `Promise.all` (or `db.batch`) rather than sequential awaits; local D1 is sub-millisecond, production round trips are not.
+
 ## Safe editing notes for agents
 
 - Keep SQL parameterized with D1 prepared statements.

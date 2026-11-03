@@ -84,6 +84,7 @@ CREATE TABLE curated_list_items (
   FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE,
   FOREIGN KEY (added_by_user_id) REFERENCES users(id)
 );
+CREATE INDEX idx_curated_list_items_game ON curated_list_items(game_id);
 CREATE UNIQUE INDEX idx_curated_list_position ON curated_list_items(curated_list_id, position);
 
 CREATE TABLE curated_lists (
@@ -144,6 +145,7 @@ CREATE TABLE favorites (
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
   FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
 );
+CREATE INDEX idx_favorites_game ON favorites(game_id, user_id);
 CREATE UNIQUE INDEX idx_favorites_user_position ON favorites(user_id, position);
 
 CREATE TABLE game_categories (
@@ -183,6 +185,7 @@ CREATE TABLE game_click_days (
   clicks INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (game_id, day)
 );
+CREATE INDEX idx_game_click_days_day ON game_click_days(day, game_id, clicks);
 
 CREATE TABLE games (
   id TEXT PRIMARY KEY,
@@ -236,6 +239,7 @@ CREATE TABLE list_play_history (
 );
 CREATE INDEX idx_list_play_history_game_started ON list_play_history(game_id, started_at);
 CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
+CREATE INDEX idx_list_play_history_started ON list_play_history(started_at);
 
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,

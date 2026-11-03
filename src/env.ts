@@ -4,6 +4,8 @@ export interface Env {
   DB: D1Database;
   CACHE: KVNamespace;
   APP_ENV: string;
+  /** Dev only: "1" logs D1 round trips and timings per request (src/lib/db-trace.ts). */
+  DB_TRACE?: string;
   EMAIL?: SendEmail;
   NOTIFY_EMAIL_TO?: string;
   NOTIFY_EMAIL_FROM?: string;
