@@ -388,6 +388,10 @@ export const SHARED_CSS = `      :root {
         background: var(--border);
       }
       .rotation-list .reorder-controls { display:inline-flex; gap:0.25rem; }
+      .rotation-list .skip-btn { padding: 0.3rem 0.5rem; font-size: 0.78rem; white-space: nowrap; background: transparent; color: var(--muted); }
+      .rotation-list .skip-btn[hidden] { display: none; }
+      .rotation-list li.skipped { order: 1; opacity: 0.55; }
+      .rotation-list li.skipped:hover, .rotation-list li.skipped:focus-within { opacity: 0.85; }
       .panel {
         margin: 1rem 0;
         padding: 1rem;

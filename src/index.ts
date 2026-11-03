@@ -8684,6 +8684,46 @@ const HIDDEN_GAMES_SCRIPT = `
 // dglPlayedHooks on every page, but only fetch while on.
 const ROTATION_TODAY_SCRIPT = `
   window.dglDateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  // Skip today (localStorage dgl_skipped_v1, { "YYYY-MM-DD": [gameIds] }, viewer-local day; only today and yesterday are kept).
+  // Skips are per device: they are not synced to signed-in accounts. A skipped game that has been played counts as played.
+  const SKIP_KEY = "dgl_skipped_v1";
+  const readSkipped = () => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(SKIP_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+  const writeSkipped = (map) => {
+    const now = new Date();
+    const keep = [window.dglDateKey(now), window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))];
+    const out = {};
+    keep.forEach((key) => { if (Array.isArray(map[key]) && map[key].length > 0) out[key] = map[key]; });
+    try { window.localStorage.setItem(SKIP_KEY, JSON.stringify(out)); } catch {}
+    (window.dglPlayedHooks || []).forEach((hook) => { try { hook(); } catch {} });
+  };
+  window.dglSkippedToday = () => {
+    const list = readSkipped()[window.dglDateKey(new Date())];
+    return new Set(Array.isArray(list) ? list.filter((id) => typeof id === "string") : []);
+  };
+  window.dglSkip = (id) => {
+    if (!id) return;
+    const map = readSkipped();
+    const set = window.dglSkippedToday();
+    set.add(id);
+    map[window.dglDateKey(new Date())] = Array.from(set);
+    writeSkipped(map);
+  };
+  window.dglUnskip = (id) => {
+    const map = readSkipped();
+    const set = window.dglSkippedToday();
+    set.delete(id);
+    map[window.dglDateKey(new Date())] = Array.from(set);
+    writeSkipped(map);
+  };
+  // Skipped today and not played since: the game drops out of today's counts, Play next, reminders and the streak.
+  window.dglIsSkipped = (id, kind, min, skipped) => (skipped || window.dglSkippedToday()).has(id) && !(window.dglIsPlayed && window.dglIsPlayed(id, kind, min));
   window.dglProgressWidget = (box, getRows) => {
     const text = box.querySelector("#daily-progress-text");
     const streakNode = box.querySelector("#daily-progress-streak");
@@ -8703,15 +8743,17 @@ const ROTATION_TODAY_SCRIPT = `
     let nextRow = null;
     const update = () => {
       if (!window.dglIsPlayed) return;
-      const rows = getRows();
-      box.hidden = rows.length === 0;
-      if (rows.length === 0) return;
+      const all = getRows();
+      box.hidden = all.length === 0;
+      if (all.length === 0) return;
+      const skippedSet = window.dglSkippedToday();
+      const rows = all.filter((row) => !window.dglIsSkipped(row.id, row.kind, row.min, skippedSet));
       const unplayed = rows.filter((row) => !window.dglIsPlayed(row.id, row.kind, row.min));
       const played = rows.length - unplayed.length;
-      text.textContent = played + " of " + rows.length + " played today";
-      fill.style.width = Math.round((played / rows.length) * 100) + "%";
+      text.textContent = rows.length === 0 ? "All skipped today" : played + " of " + rows.length + " played today";
+      fill.style.width = rows.length === 0 ? "0%" : Math.round((played / rows.length) * 100) + "%";
       bar.setAttribute("aria-valuenow", String(played));
-      bar.setAttribute("aria-valuemax", String(rows.length));
+      bar.setAttribute("aria-valuemax", String(Math.max(rows.length, 1)));
       nextRow = unplayed[0] || null;
       // Home strip only (has #daily-soon): the unplayed game that resets within two hours, soonest first.
       const soonBox = box.querySelector("#daily-soon");
@@ -8732,7 +8774,7 @@ const ROTATION_TODAY_SCRIPT = `
         }
       }
       next.hidden = !nextRow;
-      done.hidden = !!nextRow;
+      done.hidden = !!nextRow || played === 0;
       if (shareBtn) {
         shareBtn.hidden = played === 0;
         shareBtn.textContent = nextRow ? "Share progress" : "Share today";
@@ -8742,7 +8784,7 @@ const ROTATION_TODAY_SCRIPT = `
         const today = window.dglDateKey(now);
         const yesterdayKey = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
         const streak = readStreak();
-        if (!nextRow && streak.last !== today) {
+        if (!nextRow && played > 0 && streak.last !== today) {
           streak.count = streak.last === yesterdayKey ? streak.count + 1 : 1;
           streak.last = today;
           window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak));
@@ -8758,7 +8800,8 @@ const ROTATION_TODAY_SCRIPT = `
     const shareBtn = box.querySelector("#daily-share");
     if (shareBtn) {
       shareBtn.addEventListener("click", async () => {
-        const rows = getRows();
+        const skippedSet = window.dglSkippedToday();
+        const rows = getRows().filter((row) => !window.dglIsSkipped(row.id, row.kind, row.min, skippedSet));
         if (rows.length === 0) return;
         const played = rows.filter((row) => window.dglIsPlayed(row.id, row.kind, row.min)).length;
         const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date());
@@ -8887,10 +8930,11 @@ const ROTATION_TODAY_SCRIPT = `
       try {
         const items = await window.dglTodayRotation.get(10 * 60 * 1000);
         const reminded = readJson(REMINDED_KEY);
+        const skippedNow = window.dglSkippedToday();
         const now = Date.now();
         Object.keys(reminded).forEach((id) => { if (!(Number(reminded[id]) > now - 2 * 24 * 60 * 60 * 1000)) delete reminded[id]; });
         (items || []).forEach((game) => {
-          if (game.kind === "" || game.min === "" || window.dglIsPlayed(game.id, game.kind, game.min)) return;
+          if (game.kind === "" || game.min === "" || window.dglIsPlayed(game.id, game.kind, game.min) || skippedNow.has(game.id)) return;
           const reset = window.dglResetCountdown(game.kind, game.min);
           if (!reset || reset.minutesLeft > settings.minutes) return;
           const resetAt = reset.lastResetAt + 24 * 60 * 60 * 1000;
@@ -8932,13 +8976,49 @@ const DAILY_PROGRESS_SCRIPT = `
       return { id: li.getAttribute("data-game-id"), url: link ? link.href : "", kind: li.dataset.resetKind, min: li.dataset.resetMin };
     });
     const widget = window.dglProgressWidget(box, getRows);
-    new MutationObserver(widget.update).observe(list, { childList: true });
+    // Skip today: a button in each of today's rows (both render paths; the anonymous list is built by script, so rows are
+    // decorated here and on every list change). Skipped rows dim and sort last (CSS order, so the saved order is untouched).
+    const syncSkipUi = () => {
+      const todaySet = new Set(todayItems());
+      const skippedSet = window.dglSkippedToday();
+      list.querySelectorAll("li[data-game-id]").forEach((li) => {
+        const actions = li.querySelector(".card-actions");
+        if (!actions) return;
+        let btn = actions.querySelector("[data-skip-toggle]");
+        if (!btn) {
+          btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "skip-btn";
+          btn.setAttribute("data-skip-toggle", "1");
+          actions.insertBefore(btn, actions.firstChild);
+        }
+        const played = !!window.dglIsPlayed && window.dglIsPlayed(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin);
+        const skipped = skippedSet.has(li.getAttribute("data-game-id")) && !played;
+        li.classList.toggle("skipped", skipped && todaySet.has(li));
+        btn.hidden = played || !todaySet.has(li);
+        btn.textContent = skipped ? "Skipped today · Undo" : "Skip today";
+      });
+    };
+    list.addEventListener("click", (event) => {
+      const btn = event.target instanceof Element ? event.target.closest("[data-skip-toggle]") : null;
+      const li = btn && btn.closest("li[data-game-id]");
+      if (!li) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const id = li.getAttribute("data-game-id");
+      if (window.dglSkippedToday().has(id)) window.dglUnskip(id);
+      else window.dglSkip(id);
+    });
+    new MutationObserver(() => { syncSkipUi(); widget.update(); }).observe(list, { childList: true });
+    window.dglPlayedHooks.push(syncSkipUi);
+    syncSkipUi();
     widget.update();
 
     // Copy as text: today's games as a plain list for chat. Links go to this site's game pages; a check marks games
     // played since their last reset. Falls back to a hidden textarea where the async clipboard API is missing.
     document.getElementById("copy-text-btn")?.addEventListener("click", async () => {
-      const rows = todayItems();
+      const skippedSet = window.dglSkippedToday();
+      const rows = todayItems().filter((li) => !window.dglIsSkipped(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin, skippedSet));
       if (rows.length === 0) { window.appToast?.("No games are scheduled for today.", "error"); return; }
       const day = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" }).format(new Date());
       const lines = rows.map((li, index) => {
@@ -9031,7 +9111,9 @@ const DAILY_PROGRESS_SCRIPT = `
         best = current;
         try { window.localStorage.setItem("dgl_streak_best_v1", String(best)); } catch {}
       }
+      const skippedSet = window.dglSkippedToday();
       const rotationSize = todayItems().length;
+      const activeSize = todayItems().filter((li) => !window.dglIsSkipped(li.getAttribute("data-game-id"), li.dataset.resetKind, li.dataset.resetMin, skippedSet)).length;
       let week = 0;
       let month = 0;
       let full = 0;
@@ -9041,7 +9123,8 @@ const DAILY_PROGRESS_SCRIPT = `
         const count = Math.max(0, Math.floor(Number(log[key]) || 0));
         month += count;
         if (i < 7) week += count;
-        if (rotationSize > 0 && count >= rotationSize) full++;
+        const size = i === 0 ? activeSize : rotationSize;
+        if (size > 0 && count >= size) full++;
         if (Array.isArray(byDay[key])) byDay[key].forEach((id) => { tally[id] = (tally[id] || 0) + 1; });
       }
       if (month === 0 && current === 0 && best === 0) { statsBox.hidden = true; return; }
@@ -9323,7 +9406,8 @@ const SHORTCUTS_SCRIPT = `
       const rows = await window.dglTodayRotation.get(60 * 1000);
       if (rows === null) { window.appToast?.("Could not load today's rotation.", "error"); return; }
       if (rows.length === 0) { window.appToast?.("No rotation games today.", "success"); return; }
-      const next = rows.find((row) => !window.dglIsPlayed(row.id, row.kind, row.min));
+      const skippedNow = window.dglSkippedToday();
+      const next = rows.find((row) => !window.dglIsPlayed(row.id, row.kind, row.min) && !skippedNow.has(row.id));
       if (!next) { window.appToast?.("Nothing left to play today.", "success"); return; }
       window.open(next.url, "_blank", "noopener");
       if (new URL(next.url, window.location.href).origin !== window.location.origin) window.dglMarkPlayed(next.id);
