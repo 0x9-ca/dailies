@@ -6,6 +6,8 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-03",
     items: [
+      "The home page shows which creators are live right now and what they're playing.",
+      "Game pages show how often you've played a game lately.",
       "Show off your streak: turn it on for your public profile in Settings.",
       "Download your play history as JSON or CSV, or clear it, from Settings.",
       "Pick which days you play each game in your rotation with the new Days control.",
