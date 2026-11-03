@@ -72,9 +72,15 @@ const EMBED_SCRIPT = `
   }
   tick();
   setInterval(tick, 6e4);
+  var lastSent = {};
   function click(e) {
+    if (e.type === "auxclick" && e.button !== 1) return;
     var a = e.target.closest && e.target.closest("a[data-game]");
-    if (a && navigator.sendBeacon) navigator.sendBeacon("/api/embed/click/" + encodeURIComponent(a.getAttribute("data-game")));
+    if (!a || !navigator.sendBeacon) return;
+    var id = a.getAttribute("data-game"), now = Date.now();
+    if (lastSent[id] && now - lastSent[id] < 2000) return;
+    lastSent[id] = now;
+    navigator.sendBeacon("/api/embed/click/" + encodeURIComponent(id));
   }
   document.addEventListener("click", click);
   document.addEventListener("auxclick", click);
