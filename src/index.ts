@@ -8930,7 +8930,7 @@ const HIDDEN_GAMES_SCRIPT = `
 const ROTATION_TODAY_SCRIPT = `
   window.dglDateKey = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   // Skip today (localStorage dgl_skipped_v1, { "YYYY-MM-DD": [gameIds] }, viewer-local day; only today and yesterday are kept).
-  // Skips are per device: they are not synced to signed-in accounts. A skipped game that has been played counts as played.
+  // Signed-in skips sync through window.dglPlaySync (skipped / unskipped). A skipped game that has been played counts as played.
   const SKIP_KEY = "dgl_skipped_v1";
   const readSkipped = () => {
     try {
@@ -8959,6 +8959,7 @@ const ROTATION_TODAY_SCRIPT = `
     set.add(id);
     map[window.dglDateKey(new Date())] = Array.from(set);
     writeSkipped(map);
+    if (window.dglPlaySync && window.dglPlaySync.skipped) window.dglPlaySync.skipped(id, window.dglDateKey(new Date()));
   };
   window.dglUnskip = (id) => {
     const map = readSkipped();
@@ -8966,6 +8967,7 @@ const ROTATION_TODAY_SCRIPT = `
     set.delete(id);
     map[window.dglDateKey(new Date())] = Array.from(set);
     writeSkipped(map);
+    if (window.dglPlaySync && window.dglPlaySync.unskipped) window.dglPlaySync.unskipped(id, window.dglDateKey(new Date()));
   };
   // Skipped today and not played since: the game drops out of today's counts, Play next, reminders and the streak.
   window.dglIsSkipped = (id, kind, min, skipped) => (skipped || window.dglSkippedToday()).has(id) && !(window.dglIsPlayed && window.dglIsPlayed(id, kind, min));
