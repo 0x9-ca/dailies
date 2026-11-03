@@ -14,6 +14,7 @@ import { ICON_180, ICON_192, ICON_48, ICON_512, OG_IMAGE_PNG } from "./lib/asset
 import { getCachedJson, invalidateGameCaches, secondsUntilNextUtcDay, setCachedJson } from "./lib/cache";
 import { CHANGELOG } from "./lib/changelog";
 import { fuzzyTitleMatch } from "./lib/search";
+import { IMPORT_MAX_BYTES, IMPORT_MAX_LINES, matchImportLines, parseImportText } from "./lib/import-match";
 import { RESET_SUGGESTION_DAILY_LIMIT, groupSuggestions, resetSuggestionSchema, type OpenSuggestionRow } from "./lib/reset-suggestions";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
@@ -1801,9 +1802,24 @@ app.get("/me/rotation", async (c) => {
           <button type="button" id="export-btn">Export JSON</button>
           <button type="button" id="copy-text-btn" hidden>Copy as text</button>
           <button type="button" id="import-btn">Import JSON</button>
+          <button type="button" id="rotation-paste-btn" aria-expanded="false" aria-controls="rotation-paste-panel">Import games</button>
           <input type="file" id="import-file" accept=".json" hidden>
         </div>
         <p id="import-status" class="status" aria-live="polite"></p>
+        <section id="rotation-paste-panel" class="panel" hidden aria-labelledby="rotation-paste-title">
+        <h2 id="rotation-paste-title">Import games</h2>
+        <label for="rotation-paste-text">Paste game names or links, one per line or separated by commas.</label>
+        <textarea id="rotation-paste-text" rows="6" maxlength="10000" placeholder="1. Wordle ✅&#10;- Connections https://www.nytimes.com/games/connections"></textarea>
+        <div class="actions">
+          <button type="button" id="rotation-paste-preview">Preview</button>
+          <button type="button" id="rotation-paste-close" class="secondary">Close</button>
+        </div>
+        <p id="rotation-paste-status" class="status" aria-live="polite"></p>
+        <div id="rotation-paste-results" class="paste-results" hidden>
+          <ul id="rotation-paste-rows" class="paste-rows"></ul>
+          <div class="actions"><button type="button" id="rotation-paste-add" disabled>Add games</button></div>
+        </div>
+      </section>
         ${DAILY_PROGRESS_MARKUP}
         ${renderListSortControl({ rotation: true })}
         <ol id="local-rotation-list" class="rotation-list"></ol>
@@ -1811,6 +1827,7 @@ app.get("/me/rotation", async (c) => {
       </main>
       <script src="${ASSET.listSortJs}"></script>
       <script src="${ASSET.page_rotation_signed_in}"></script>
+      <script src="${ASSET.page_rotation_paste}"></script>
       <script src="${ASSET.dailyProgressJs}"></script>
       <script>
         window.dglDailyProgress("local-rotation-list");
@@ -1867,9 +1884,24 @@ app.get("/me/rotation", async (c) => {
       <div class="actions">
         ${favorites.results.length > 0 ? `<button type="button" id="export-btn">Export JSON</button><button type="button" id="copy-text-btn">Copy as text</button>` : ""}
         <button type="button" id="import-btn">Import JSON</button>
+        <button type="button" id="rotation-paste-btn" aria-expanded="false" aria-controls="rotation-paste-panel">Import games</button>
         <input type="file" id="import-file" accept=".json" hidden>
       </div>
       <p id="import-status" class="status" aria-live="polite"></p>
+      <section id="rotation-paste-panel" class="panel" hidden aria-labelledby="rotation-paste-title">
+        <h2 id="rotation-paste-title">Import games</h2>
+        <label for="rotation-paste-text">Paste game names or links, one per line or separated by commas.</label>
+        <textarea id="rotation-paste-text" rows="6" maxlength="10000" placeholder="1. Wordle ✅&#10;- Connections https://www.nytimes.com/games/connections"></textarea>
+        <div class="actions">
+          <button type="button" id="rotation-paste-preview">Preview</button>
+          <button type="button" id="rotation-paste-close" class="secondary">Close</button>
+        </div>
+        <p id="rotation-paste-status" class="status" aria-live="polite"></p>
+        <div id="rotation-paste-results" class="paste-results" hidden>
+          <ul id="rotation-paste-rows" class="paste-rows"></ul>
+          <div class="actions"><button type="button" id="rotation-paste-add" disabled>Add games</button></div>
+        </div>
+      </section>
       ${favorites.results.length > 0 ? DAILY_PROGRESS_MARKUP + renderListSortControl({ rotation: true }) : `<div class="empty-state"><p>Your rotation is empty. Tap ☆ on any game to add it here.</p><a class="btn" href="/games">Browse games</a></div>`}
       <ol id="rotation-list" class="rotation-list">
         ${favorites.results
@@ -1908,6 +1940,7 @@ app.get("/me/rotation", async (c) => {
     </script>
     <script type="application/json" id="data-rotation-share">${scriptJson({ shareUrl })}</script>
     <script src="${ASSET.page_rotation_share}"></script>
+    <script src="${ASSET.page_rotation_paste}"></script>
   `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
 });
 
@@ -5129,6 +5162,52 @@ app.post("/api/games/:id/click", async (c) => {
 // Whether this browser has a session. Always 200 (no 401 noise for logged-out visitors) and never cached, so
 // edge-cached pages can ask it from the client.
 app.get("/api/me/session", (c) => c.json({ signedIn: !!c.get("user") }, 200, { "Cache-Control": "no-store" }));
+
+// Matches pasted game names/links to approved games for the rotation Import panel. Works logged out (rate limited by IP hash).
+app.post("/api/me/rotation/import-preview", async (c) => {
+  const user = c.get("user");
+  const limitKey = user ? `rotation-import:${user.id}` : `rotation-import:anon:${await getAnonymousVoteKey(c)}`;
+  const rate = await enforceRateLimit(c.env, limitKey, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const body = await c.req.json().catch(() => null) as { text?: unknown } | null;
+  const text = typeof body?.text === "string" ? body.text : null;
+  if (text === null || text.trim() === "") {
+    return c.json({ error: "Paste at least one game name or link." }, 400);
+  }
+  if (new TextEncoder().encode(text).length > IMPORT_MAX_BYTES) {
+    return c.json({ error: "That is too much text (10 KB at most)." }, 400);
+  }
+  if (text.split(/\r?\n/).filter((line) => line.trim()).length > IMPORT_MAX_LINES) {
+    return c.json({ error: `Too many lines (${IMPORT_MAX_LINES} at most).` }, 400);
+  }
+  const lines = parseImportText(text).slice(0, IMPORT_MAX_LINES);
+  const games = await c.env.DB.prepare("SELECT id, slug, title, url FROM games WHERE status = 'approved'")
+    .all<{ id: string; slug: string; title: string; url: string }>();
+  const rows = matchImportLines(lines, games.results);
+  let have = new Set<string>();
+  if (user) {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      if (row.match) ids.add(row.match.id);
+      for (const alt of row.alternatives) ids.add(alt.id);
+    }
+    if (ids.size > 0) {
+      const found = await c.env.DB.prepare("SELECT game_id FROM favorites WHERE user_id = ?1 AND game_id IN (SELECT value FROM json_each(?2))")
+        .bind(user.id, JSON.stringify([...ids]))
+        .all<{ game_id: string }>();
+      have = new Set(found.results.map((r) => r.game_id));
+    }
+  }
+  return c.json({
+    rows: rows.map((row) => ({
+      ...row,
+      inRotation: row.match ? have.has(row.match.id) : false,
+      alternatives: row.alternatives.map((alt) => ({ ...alt, inRotation: have.has(alt.id) }))
+    }))
+  }, 200, { "Cache-Control": "no-store" });
+});
 
 app.get("/api/me/rotation", async (c) => {
   const auth = requireAuth(c);
@@ -10095,6 +10174,7 @@ const ASSET = {
   page_game_page: registerAsset("game-page", "js", PAGE_SCRIPTS["game-page"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT).replace("/*@DEVELOPER@*/", () => DEVELOPER_SCRIPT)),
   page_rotation_signed_in: registerAsset("rotation-signed-in", "js", PAGE_SCRIPTS["rotation-signed-in"].replace("/*@CHECK_SVG_JSON@*/", () => scriptJson(CHECK_SVG))),
   page_rotation_share: registerAsset("rotation-share", "js", PAGE_SCRIPTS["rotation-share"]),
+  page_rotation_paste: registerAsset("rotation-paste", "js", PAGE_SCRIPTS["rotation-paste"]),
   page_list_suggestions: registerAsset("list-suggestions", "js", PAGE_SCRIPTS["list-suggestions"]),
   page_list_live: registerAsset("list-live", "js", PAGE_SCRIPTS["list-live"]),
   page_list_edit: registerAsset("list-edit", "js", PAGE_SCRIPTS["list-edit"]),

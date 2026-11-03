@@ -20,6 +20,7 @@
 ## Anonymous-capable
 
 - `POST /api/games/:id/vote` (anonymous by IP hash or authenticated by user ID; repeat vote updates existing value)
+- `POST /api/me/rotation/import-preview` (`{ text }`, up to 200 non-empty lines and 10 KB; 400 otherwise). Works signed in or logged out. 30 an hour per user or IP. Splits the text into entries (lines, or commas/semicolons when a line has no link), strips numbering, bullets, emoji, check marks and trailing scores (`3/6`), then matches approved games by link (host when unique among games, else host plus path), exact title (case and punctuation ignored), then fuzzy title. Returns `{ rows: [{ input, match: { id, slug, title } | null, confidence: "exact" | "fuzzy" | "none", inRotation, alternatives: [{ id, slug, title, inRotation }] }] }` (up to 3 alternatives; `inRotation` is only ever true for signed-in users, the client checks local favorites otherwise). Adding the chosen games uses `POST /api/me/favorites/import` (or local favorites).
 - `POST /api/games/:id/favorite-anon`
 - `DELETE /api/games/:id/favorite-anon`
 - `POST /api/lists/:id/suggestions` (`{ gameId }`; 409 `code: "on_list"` when the game is already on the list, 409 `code: "blocked"` when it was removed or dismissed; a game already suggested counts as a vote: `result` is `suggested`, `voted` or `already_voted`). 30 an hour per user or IP. Logged-out visitors are identified by hashed IP.

@@ -396,6 +396,13 @@ export const SHARED_CSS = `      :root {
         background: var(--card);
         box-shadow: var(--shadow);
       }
+      .paste-rows { list-style: none; margin: 0.8rem 0; padding: 0; display: grid; gap: 0.5rem; }
+      .paste-row { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.2rem 0.6rem; align-items: center; padding: 0.5rem; border: 1px solid var(--control-border); border-radius: 6px; }
+      .paste-row input[type=checkbox] { width: 1.2rem; height: 1.2rem; }
+      .paste-input { overflow-wrap: anywhere; font-size: 0.85rem; color: var(--muted, inherit); }
+      .paste-match { grid-column: 2; display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: center; min-width: 0; }
+      .paste-match select { max-width: 100%; min-width: 0; }
+      #rotation-paste-text { width: 100%; box-sizing: border-box; margin: 0.4rem 0 0.6rem; }
       .panel > h2:first-child { margin-top: 0; }
       .panel > h2:last-child { margin-bottom: 0.5rem; }
       .panel > p:last-child { margin-bottom: 0; }
@@ -2002,6 +2009,148 @@ export const PAGE_SCRIPTS: Record<string, string> = {
 
         render();
       `,
+  "rotation-paste": `
+      (() => {
+        const openBtn = document.getElementById("rotation-paste-btn");
+        const panel = document.getElementById("rotation-paste-panel");
+        if (!openBtn || !panel) return;
+        const text = document.getElementById("rotation-paste-text");
+        const previewBtn = document.getElementById("rotation-paste-preview");
+        const closeBtn = document.getElementById("rotation-paste-close");
+        const status = document.getElementById("rotation-paste-status");
+        const results = document.getElementById("rotation-paste-results");
+        const rowsEl = document.getElementById("rotation-paste-rows");
+        const addBtn = document.getElementById("rotation-paste-add");
+        let rows = [];
+        const say = (message) => { status.textContent = message; };
+        const localIds = () => new Set((window.dglGames.readLocalFavorites() || []).map((g) => g.id));
+        const setOpen = (open) => {
+          panel.hidden = !open;
+          openBtn.setAttribute("aria-expanded", open ? "true" : "false");
+          if (open) text.focus(); else openBtn.focus();
+        };
+        openBtn.addEventListener("click", () => setOpen(panel.hidden));
+        closeBtn.addEventListener("click", () => setOpen(false));
+        panel.addEventListener("keydown", (event) => { if (event.key === "Escape") setOpen(false); });
+        const chosen = (index) => {
+          const row = rows[index];
+          const check = rowsEl.querySelector('input[type=checkbox][data-i="' + index + '"]');
+          const select = rowsEl.querySelector('select[data-i="' + index + '"]');
+          const id = select ? select.value : (row.match ? row.match.id : "");
+          const game = [row.match].concat(row.alternatives).find((g) => g && g.id === id);
+          return check && check.checked && game ? game : null;
+        };
+        const updateCount = () => {
+          const ids = new Set();
+          rows.forEach((row, i) => { const g = chosen(i); if (g) ids.add(g.id); });
+          addBtn.textContent = "Add " + ids.size + (ids.size === 1 ? " game" : " games");
+          addBtn.disabled = ids.size === 0;
+        };
+        const render = () => {
+          rowsEl.textContent = "";
+          const mine = localIds();
+          rows.forEach((row, i) => {
+            const li = document.createElement("li");
+            li.className = "paste-row";
+            const options = (row.match ? [row.match] : []).concat(row.alternatives);
+            const isIn = (g) => g.inRotation === true || mine.has(g.id);
+            if (row.match) row.match.inRotation = row.inRotation || mine.has(row.match.id);
+            const check = document.createElement("input");
+            check.type = "checkbox";
+            check.dataset.i = String(i);
+            check.id = "paste-c-" + i;
+            check.disabled = options.length === 0;
+            check.checked = !!row.match && !(row.match.inRotation) && row.confidence !== "none";
+            check.addEventListener("change", updateCount);
+            const label = document.createElement("label");
+            label.htmlFor = check.id;
+            label.className = "paste-input";
+            label.textContent = row.input;
+            li.append(check, label);
+            const side = document.createElement("div");
+            side.className = "paste-match";
+            if (options.length === 0) {
+              side.textContent = "No match";
+              side.classList.add("muted");
+            } else {
+              if (row.confidence === "exact" && row.alternatives.length === 0 || (row.confidence !== "none" && options.length === 1)) {
+                const span = document.createElement("span");
+                span.textContent = row.match.title;
+                side.append(span);
+              } else {
+                const select = document.createElement("select");
+                select.dataset.i = String(i);
+                select.setAttribute("aria-label", "Game for " + row.input);
+                if (!row.match) {
+                  const none = document.createElement("option");
+                  none.value = "";
+                  none.textContent = "Choose a game...";
+                  select.append(none);
+                }
+                options.forEach((g) => {
+                  const option = document.createElement("option");
+                  option.value = g.id;
+                  option.textContent = g.title;
+                  select.append(option);
+                });
+                select.value = row.match ? row.match.id : "";
+                select.addEventListener("change", () => {
+                  const g = options.find((o) => o.id === select.value);
+                  check.checked = !!g && !isIn(g);
+                  updateCount();
+                });
+                side.append(select);
+              }
+              const note = document.createElement("small");
+              note.className = "muted";
+              note.textContent = row.match ? (row.match.inRotation ? " Already in your rotation" : (row.confidence === "fuzzy" ? " Close match" : "")) : "";
+              if (note.textContent) side.append(note);
+            }
+            li.append(side);
+            rowsEl.append(li);
+          });
+          results.hidden = rows.length === 0;
+          updateCount();
+        };
+        previewBtn.addEventListener("click", async () => {
+          if (!text.value.trim()) { say("Paste at least one game name or link."); return; }
+          previewBtn.disabled = true;
+          say("Looking up games...");
+          try {
+            const response = await fetch("/api/me/rotation/import-preview", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ text: text.value })
+            });
+            const body = await response.json().catch(() => null);
+            if (!response.ok || !body) {
+              say(response.status === 429 ? "Too many previews. Try again later." : ((body && body.error) || "Could not look up those games."));
+              return;
+            }
+            rows = body.rows || [];
+            render();
+            const found = rows.filter((r) => r.match).length;
+            say(rows.length === 0 ? "Nothing to import." : "Matched " + found + " of " + rows.length + ".");
+          } catch {
+            say("Could not look up those games.");
+          } finally {
+            previewBtn.disabled = false;
+          }
+        });
+        addBtn.addEventListener("click", async () => {
+          const games = [];
+          rows.forEach((row, i) => { const g = chosen(i); if (g) games.push({ id: g.id, slug: g.slug, title: g.title }); });
+          if (games.length === 0) return;
+          addBtn.disabled = true;
+          const result = await window.dglAddManyToRotation(games);
+          if (result && result.ok) {
+            window.setTimeout(() => window.location.reload(), 900);
+          } else {
+            updateCount();
+          }
+        });
+      })();
+  `,
   "rotation-share": `
       const DATA_ROTATION_SHARE = JSON.parse(document.getElementById("data-rotation-share").textContent);
       const list = document.getElementById("rotation-list");
