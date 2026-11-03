@@ -17,6 +17,7 @@ import { fuzzyTitleMatch } from "./lib/search";
 import { RESET_SUGGESTION_DAILY_LIMIT, groupSuggestions, resetSuggestionSchema, type OpenSuggestionRow } from "./lib/reset-suggestions";
 import { checkClaimToken, claimMetaSnippet, claimNames, newClaimToken } from "./lib/claims";
 import { loadStats } from "./lib/stats";
+import { DEVELOPER_STATS_CSS, DEVELOPER_STATS_SCRIPT, loadDeveloperStats, renderDeveloperStatsPanel } from "./lib/developer-stats";
 import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
@@ -5112,6 +5113,26 @@ app.post("/api/games/:id/report", async (c) => {
   return c.json({ ok: true });
 });
 
+// Stats for a game's verified developer (and admins). Never edge-cached: it needs a session.
+app.get("/api/games/:id/developer-stats", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const gameId = c.req.param("id");
+  if (auth.role !== "admin") {
+    const claim = await c.env.DB.prepare("SELECT 1 AS ok FROM game_claims WHERE game_id = ?1 AND user_id = ?2 AND status = 'verified'").bind(gameId, auth.id).first();
+    if (!claim) {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+  }
+  const stats = await loadDeveloperStats(c.env, gameId);
+  if (!stats) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  return c.json(stats, 200, { "Cache-Control": "private, no-store" });
+});
+
 app.post("/api/games/:id/click", async (c) => {
   const gameId = c.req.param("id");
   // Clicks feed the score, so cap how many one visitor can contribute per game.
@@ -7697,7 +7718,8 @@ function renderDeveloperSections(
       <p class="game-actions-note">You're the verified developer of this game. Edit it with the admin form below.</p>
       <p><button type="button" class="secondary" data-claim-cancel data-claim-confirm="Stop being the verified developer of this game?">Release this game</button></p>
       <p data-claim-status class="status" aria-live="polite"></p>
-    </section>`;
+    </section>
+    ${renderDeveloperStatsPanel(game.id, ASSET.dev_stats_css, ASSET.dev_stats_js)}`;
   }
   if (!user) {
     return hasDeveloper ? "" : `<p class="game-actions-note">Made this game? <a href="/login">Sign in</a> to claim it.</p>`;
@@ -7709,7 +7731,8 @@ function renderDeveloperSections(
     const badgeAlt = `${escapeHtml(game.title)} on 0x9 dles`;
     const linkSnippet = `<a href="${gamePageUrl}">${escapeHtml(game.title)} on 0x9 dles</a>`;
     const badgeSnippet = `<a href="${gamePageUrl}"><img src="${badgeUrl}" alt="${badgeAlt}" width="220" height="40"></a>`;
-    return `<section class="panel" id="linkback">
+    return `${renderDeveloperStatsPanel(game.id, ASSET.dev_stats_css, ASSET.dev_stats_js)}
+    <section class="panel" id="linkback">
       <h2>Help players find ${escapeHtml(game.title)}</h2>
       <p>If you like, link to this page from your game and from your social accounts. It's entirely optional, but links from the places people already find you help players, and search engines, discover the game.</p>
       <p><code>${escapeHtml(gamePageUrl)}</code></p>
@@ -10100,6 +10123,8 @@ const ASSET = {
   page_list_edit: registerAsset("list-edit", "js", PAGE_SCRIPTS["list-edit"]),
   page_submit_reset_tz: registerAsset("submit-reset-tz", "js", PAGE_SCRIPTS["submit-reset-tz"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT)),
   page_admin_resets: registerAsset("admin-resets", "js", PAGE_SCRIPTS["admin-resets"]),
+  dev_stats_css: registerAsset("dev-stats", "css", DEVELOPER_STATS_CSS),
+  dev_stats_js: registerAsset("dev-stats", "js", DEVELOPER_STATS_SCRIPT),
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
