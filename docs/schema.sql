@@ -219,8 +219,8 @@ CREATE TABLE list_play_history (
   game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
   started_at TEXT NOT NULL
 );
-CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
 CREATE INDEX idx_list_play_history_game_started ON list_play_history(game_id, started_at);
+CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
 
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,
@@ -315,6 +315,11 @@ CREATE TABLE user_plays (
   PRIMARY KEY (user_id, game_id, played_at)
 );
 CREATE INDEX idx_user_plays_user_played ON user_plays(user_id, played_at);
+
+CREATE TABLE user_plays_reset (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  reset_at TEXT NOT NULL
+);
 
 CREATE TABLE user_skips (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -3707,6 +3707,25 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         if (statusNode) statusNode.textContent = text;
       };
 
+      const clearPlays = document.getElementById("plays-clear");
+      clearPlays?.addEventListener("click", async () => {
+        if (!window.confirm("This removes your play history, streak and recap data on every device. Your rotation stays.")) return;
+        setStatus("Clearing play history...");
+        try {
+          const response = await fetch("/api/me/plays", { method: "DELETE" });
+          if (!response.ok) throw new Error("clear");
+          const data = await response.json();
+          ["dgl_played_v1", "dgl_play_log_v1", "dgl_play_games_v1", "dgl_streak_v1", "dgl_streak_best_v1", "dgl_skipped_v1", "dgl_plays_pending_v1"].forEach((k) => {
+            try { window.localStorage.removeItem(k); } catch {}
+          });
+          try { window.localStorage.setItem("dgl_plays_reset_seen_v1", String(data.resetAt || "")); } catch {}
+          setStatus("Play history cleared.");
+          if (window.appToast) window.appToast("Play history cleared.", "success");
+        } catch {
+          setStatus("Could not clear play history.");
+        }
+      });
+
       const profileForm = document.getElementById("profile-form");
       profileForm?.addEventListener("submit", async (event) => {
         event.preventDefault();
