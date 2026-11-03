@@ -6,6 +6,8 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-03",
     items: [
+      "Pick which days you play each game in your rotation with the new Days control.",
+      "Recently on stream dates on game pages now show in your local time.",
       "Go to /random, or use the app's Random game shortcut, to open a random game.",
       "Skip today now syncs across your devices when you're signed in.",
       "Your rotation has a Week view showing which games you play on each day.",
