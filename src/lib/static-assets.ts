@@ -728,6 +728,15 @@ export const SHARED_CSS = `      :root {
         gap: 0.5rem;
         z-index: 99;
       }
+      .vote-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); animation: vote-prompt-in 0.2s ease-out; }
+      .vote-prompt:not(.inline) { position: fixed; left: 1rem; right: 1rem; bottom: 1rem; max-width: 420px; margin: 0 auto; z-index: 98; }
+      .vote-prompt.inline { list-style: none; margin: 0.4rem 0; }
+      .vote-prompt-text { flex: 1 1 100%; }
+      .vote-prompt-btn, .vote-prompt-skip { min-height: 44px; min-width: 44px; padding: 0.35rem 0.8rem; border: 1px solid var(--control-border); border-radius: 8px; background: transparent; color: var(--ink); font: inherit; cursor: pointer; }
+      .vote-prompt-skip { border-color: transparent; color: var(--muted); text-decoration: underline; }
+      .vote-prompt button:focus-visible { outline: 2px solid var(--brand-blue); outline-offset: 2px; }
+      @keyframes vote-prompt-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .vote-prompt { animation: none; } }
       .toast {
         min-width: 220px;
         max-width: 320px;
@@ -769,6 +778,14 @@ export const SHARED_CSS = `      :root {
       .gotd-meta { color: var(--muted); font-size: 0.95rem; }
       .game-of-the-day .btn-play { font-size: 1rem; padding: 0.6rem 1rem; }
       @media (max-width: 480px) { .gotd-foot .btn-play { width: 100%; } }
+      .stats-card { margin: 0 0 1rem; padding: 0.6rem 0.85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+      .stats-card summary { cursor: pointer; font-weight: 600; font-size: 1rem; }
+      .stats-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.5rem; margin-top: 0.6rem; }
+      .stat-tile { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; }
+      .stat-tile strong { font-size: 1.05rem; overflow-wrap: anywhere; }
+      .stat-tile span { color: var(--muted); font-size: 0.8rem; }
+      .new-in-cats { margin: 0 0 1rem; }
+      .new-in-cats h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
       .heatmap { margin: 0 0 1rem; padding: 0.7rem 0.85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
       .heatmap h2 { margin: 0 0 0.5rem; font-size: 1rem; }
       .heatmap-grid { display: grid; grid-template-columns: repeat(12, 1fr); grid-template-rows: repeat(7, auto); grid-auto-flow: column; gap: 3px; width: 100%; max-width: 300px; }
@@ -3422,6 +3439,79 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         window.dglMarkPlayed?.(game.id);
         window.location.href = "/games/" + game.slug;
       });
+    `,
+  "home-new-cats": `      // "New in your categories": games added in the last 14 days in the categories most common in the visitor's
+      // rotation, minus rotation and hidden games. Filled in the browser after load (edge-cache safe); hidden until
+      // there is something to show, so nothing above the fold moves.
+      (() => {
+        const box = document.getElementById("new-in-cats");
+        const listEl = document.getElementById("new-in-cats-list");
+        if (!box || !listEl) return;
+        const run = async () => {
+          try {
+            const items = await window.dglTodayRotation.get(0);
+            if (!items || items.length === 0) return;
+            const own = new Set(items.map((g) => g.id));
+            try { window.dglGames.readLocalFavorites().forEach((g) => own.add(g.id)); } catch {}
+            const ids = [...own].slice(0, 100);
+            const cats = await fetch("/api/games/categories?ids=" + ids.map(encodeURIComponent).join(",")).then((r) => (r.ok ? r.json() : null));
+            if (!cats) return;
+            const counts = {};
+            ids.forEach((id) => (cats[id] || []).forEach((c) => { counts[c.slug] = (counts[c.slug] || 0) + 1; }));
+            const top = Object.keys(counts).sort((a, b) => counts[b] - counts[a] || (a < b ? -1 : 1)).slice(0, 5);
+            if (top.length === 0) return;
+            const data = await fetch("/api/games/new?days=14&limit=12&categories=" + top.map(encodeURIComponent).join(",")).then((r) => (r.ok ? r.json() : null));
+            const hidden = new Set(window.dglHidden ? window.dglHidden.read() : []);
+            const games = ((data && data.games) || []).filter((g) => !own.has(g.id) && !hidden.has(g.id)).slice(0, 6);
+            if (games.length === 0) return;
+            listEl.replaceChildren(...games.map((g) => {
+              const li = document.createElement("li");
+              li.className = "card-click";
+              li.setAttribute("data-hide-id", g.id);
+              const row = document.createElement("div");
+              row.className = "game-row";
+              const head = document.createElement("div");
+              head.className = "game-top";
+              const name = document.createElement("div");
+              name.className = "game-name";
+              const a = document.createElement("a");
+              a.className = "game-title card-link";
+              a.href = g.url;
+              a.target = "_blank";
+              a.rel = "noopener noreferrer";
+              a.textContent = g.title;
+              name.append(a);
+              if (g.paywall) {
+                const p = document.createElement("span");
+                p.className = "paywall-badge";
+                p.title = "This game requires payment to play";
+                p.textContent = "$";
+                name.append(" ", p);
+              }
+              const actions = document.createElement("div");
+              actions.className = "compact-actions";
+              const details = document.createElement("a");
+              details.className = "btn-details";
+              details.href = "/games/" + encodeURIComponent(g.slug);
+              details.textContent = "Details";
+              details.setAttribute("aria-label", "Details for " + g.title);
+              actions.append(details);
+              head.append(name, actions);
+              const sub = document.createElement("div");
+              sub.className = "game-sub";
+              const meta = document.createElement("span");
+              meta.className = "meta";
+              meta.textContent = (g.categories || []).map((c) => c.name).join(", ");
+              sub.append(meta);
+              row.append(head, sub);
+              li.append(row);
+              return li;
+            }));
+            box.hidden = false;
+          } catch {}
+        };
+        run();
+      })();
     `,
   "games-page": `        (() => {
           const form = document.getElementById("game-filters");

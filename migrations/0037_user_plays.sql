@@ -8,10 +8,11 @@ CREATE TABLE user_plays (
 );
 CREATE INDEX idx_user_plays_user_played ON user_plays(user_id, played_at);
 
--- last = viewer-local "YYYY-MM-DD" of the last day the whole rotation was played; day_log = JSON { "YYYY-MM-DD": games }.
+-- best = longest streak ever; last = viewer-local "YYYY-MM-DD" of the last day the whole rotation was played; day_log = JSON { "YYYY-MM-DD": games }.
 CREATE TABLE user_streaks (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   last TEXT NOT NULL DEFAULT '',
   count INTEGER NOT NULL DEFAULT 0,
+  best INTEGER NOT NULL DEFAULT 0,
   day_log TEXT NOT NULL DEFAULT '{}'
 );

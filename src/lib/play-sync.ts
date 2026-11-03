@@ -30,6 +30,7 @@ export const PLAY_SYNC_SCRIPT = `
     Object.keys(log).forEach((day) => { const n = Math.floor(Number(log[day]) || 0); if (day >= cutoff && n > 0) out[day] = Math.min(n, 1000); });
     return out;
   };
+  const readBest = () => { try { return Math.floor(Number(JSON.parse(window.localStorage.getItem("dgl_streak_best_v1") || "0"))) || 0; } catch { return 0; } };
   const readStreak = () => {
     const s = jget(STREAK, {});
     return typeof s.last === "string" && Number(s.count) > 0 ? { last: s.last, count: Math.floor(Number(s.count)) } : null;
@@ -41,12 +42,13 @@ export const PLAY_SYNC_SCRIPT = `
     const p = readPending();
     const streak = readStreak();
     const log = recentLog();
-    const state = JSON.stringify([streak, log]);
+    const best = Math.max(readBest(), streak ? streak.count : 0);
+    const state = JSON.stringify([streak, log, best]);
     if (!p.plays.length && !p.unplayed.length && state === lastSent) return;
     busy = true;
     const plays = p.plays.slice(0, 200), unplayed = p.unplayed.slice(0, 200);
     try {
-      const body = { plays, unplayed, log };
+      const body = { plays, unplayed, log, best };
       if (streak) body.streak = streak;
       const res = await fetch("/api/me/plays", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true, body: JSON.stringify(body) });
       if (!res.ok) throw new Error("sync");
@@ -115,6 +117,18 @@ export const PLAY_SYNC_SCRIPT = `
         if (!undone && !(next[id] >= latest[id])) next[id] = latest[id];
       });
       jset(PLAYED, next);
+      // Games per local day for the "most played" stat: add the server's plays (the local list never shrinks).
+      const byDay = jget("dgl_play_games_v1", {});
+      const dayCut = window.dglDateKey(new Date(now - 35 * DAY));
+      data.plays.forEach((x) => {
+        const day = window.dglDateKey(new Date(Date.parse(x.playedAt)));
+        if (day < dayCut) return;
+        if (!Array.isArray(byDay[day])) byDay[day] = [];
+        if (byDay[day].indexOf(x.gameId) < 0) byDay[day].push(x.gameId);
+      });
+      jset("dgl_play_games_v1", byDay);
+      const bestIn = Math.floor(Number(data.streak && data.streak.best) || 0);
+      if (bestIn > readBest()) { try { window.localStorage.setItem("dgl_streak_best_v1", String(bestIn)); } catch {} }
       const s = data.streak, mine = readStreak();
       if (s && s.last && s.count > 0 && (!mine || s.last > mine.last || (s.last === mine.last && s.count > mine.count))) jset(STREAK, { last: s.last, count: s.count });
       const log = jget(LOG, {});

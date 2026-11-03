@@ -688,6 +688,10 @@ app.get("/", async (c) => {
       </script>
       ${HOME_ROTATION_MARKUP}
       ${gameOfTheDay ? renderGameOfTheDay(gameOfTheDay) : ""}
+      <section class="new-in-cats" id="new-in-cats" aria-labelledby="new-in-cats-title" hidden>
+        <h2 id="new-in-cats-title">New in your categories</h2>
+        <ul class="games compact" id="new-in-cats-list"></ul>
+      </section>
       <div class="actions home-actions">
         <a class="btn" href="/games">Browse games</a>
         <button type="button" class="btn" id="feeling-auspicious-btn">Feeling auspicious?</button>
@@ -732,6 +736,7 @@ app.get("/", async (c) => {
       </section>
     </main>
     <script src="${ASSET.page_home_strip}"></script>
+    <script src="${ASSET.page_home_new_cats}"></script>
     ${renderGameListInteractionScript({ includeImportPanel: !!user, promptFromQuery: shouldPromptImport })}
   `, c.env, { path: "/", description: `${roundedCount} free daily games like Wordle, Connections, Worldle and Bandle in one place: word, geography, music, trivia and logic puzzles. Vote, favorite and build your daily rotation.` }));
 });
@@ -3974,6 +3979,36 @@ app.get("/api/games/vote-counts", async (c) => {
     c.executionCtx.waitUntil(caches.default.put(cacheKey, new Response(body, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${VOTE_COUNTS_CACHE_SECONDS}` } })));
   }
   return c.body(body, 200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+});
+
+// Games listed in the last N days in the given categories (up to 5), card-ready, for the home page's "New in your
+// categories" row. NSFW games are left out. KV-cached for 5 minutes (the games: prefix is cleared on game changes).
+app.get("/api/games/new", async (c) => {
+  const days = Math.min(60, Math.max(1, parsePositiveInt(c.req.query("days"), 14)));
+  const limit = Math.min(24, Math.max(1, parsePositiveInt(c.req.query("limit"), 12)));
+  const slugs = [...new Set((c.req.query("categories") || "").split(",").map((s) => s.trim().toLowerCase()).filter((s) => /^[a-z0-9-]{1,64}$/.test(s)))].sort().slice(0, 5);
+  if (slugs.length === 0) return c.json({ games: [] });
+  const key = `games:new:${days}:${limit}:${slugs.join(",")}`;
+  const cached = await getCachedJson<unknown[]>(c.env, key);
+  if (cached) return c.json({ games: cached }, 200, { "Cache-Control": "public, max-age=300" });
+  const rows = await c.env.DB.prepare(
+    `SELECT DISTINCT games.id, games.title, games.slug, games.url, games.paywall, COALESCE(games.approved_at, games.created_at) AS listed_at
+     FROM games
+     JOIN game_categories ON game_categories.game_id = games.id
+     JOIN categories ON categories.id = game_categories.category_id
+     WHERE games.status = 'approved' AND games.nsfw = 0 AND categories.slug IN (${slugs.map((_, i) => `?${i + 3}`).join(",")})
+       AND COALESCE(games.approved_at, games.created_at) >= datetime('now', ?1)
+     ORDER BY listed_at DESC LIMIT ?2`
+  )
+    .bind(`-${days} days`, limit, ...slugs)
+    .all<{ id: string; title: string; slug: string; url: string; paywall: number; listed_at: string }>();
+  const categoriesByGameId = await getCategoriesForGames(c.env, rows.results.map((row) => row.id));
+  const games = rows.results.map((row) => ({
+    id: row.id, slug: row.slug, title: row.title, url: row.url, paywall: !!row.paywall,
+    categories: (categoriesByGameId.get(row.id) ?? []).slice(0, 2), listedAt: row.listed_at
+  }));
+  await setCachedJson(c.env, key, games, 300);
+  return c.json({ games }, 200, { "Cache-Control": "public, max-age=300" });
 });
 
 // Every approved game's id, slug and title, for the list suggestion search. Shared through the edge cache for 5 minutes.
@@ -7580,6 +7615,10 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
   <div class="heatmap-grid" id="play-heatmap-grid" role="img"></div>
   <div class="heatmap-legend" aria-hidden="true"><span>Less</span><span class="heat-cell" data-level="0"></span><span class="heat-cell" data-level="1"></span><span class="heat-cell" data-level="2"></span><span class="heat-cell" data-level="3"></span><span class="heat-cell" data-level="4"></span><span>More</span></div>
 </section>
+<details class="stats-card" id="play-stats" open hidden>
+  <summary>Your stats</summary>
+  <div class="stats-tiles" id="play-stats-tiles"></div>
+</details>
 <div class="reminder-opt" id="reminder-opt" hidden>
   <label><input type="checkbox" id="reminder-toggle"> Remind me before resets</label>
   <select id="reminder-minutes" aria-label="Minutes before reset"><option value="30">30 min before</option><option value="60">1 hour before</option><option value="120">2 hours before</option></select>
@@ -8761,6 +8800,83 @@ const DAILY_PROGRESS_SCRIPT = `
       window.dglPlayedHooks.push(renderHeat);
     }
 
+    // Stats card: streaks, recent plays, most-played game and full days, from the local play log. The longest streak
+    // is kept in dgl_streak_best_v1 (the streak itself in dgl_streak_v1 resets when it breaks).
+    const statsBox = document.getElementById("play-stats");
+    const statsTiles = document.getElementById("play-stats-tiles");
+    let titleMap = null;
+    const num = new Intl.NumberFormat("en-US");
+    const renderStats = () => {
+      let log = {};
+      let byDay = {};
+      let streak = { last: "", count: 0 };
+      let best = 0;
+      try { log = JSON.parse(window.localStorage.getItem("dgl_play_log_v1") || "{}") || {}; } catch {}
+      try { byDay = JSON.parse(window.localStorage.getItem("dgl_play_games_v1") || "{}") || {}; } catch {}
+      try { const parsed = JSON.parse(window.localStorage.getItem("dgl_streak_v1") || "{}"); if (parsed && typeof parsed.last === "string") streak = { last: parsed.last, count: Math.floor(Number(parsed.count)) || 0 }; } catch {}
+      try { best = Math.floor(Number(JSON.parse(window.localStorage.getItem("dgl_streak_best_v1") || "0"))) || 0; } catch {}
+      const now = new Date();
+      const today = window.dglDateKey(now);
+      const yesterday = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+      const current = streak.last === today || streak.last === yesterday ? streak.count : 0;
+      if (current > best) {
+        best = current;
+        try { window.localStorage.setItem("dgl_streak_best_v1", String(best)); } catch {}
+      }
+      const rotationSize = todayItems().length;
+      let week = 0;
+      let month = 0;
+      let full = 0;
+      const tally = {};
+      for (let i = 0; i < 30; i++) {
+        const key = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i));
+        const count = Math.max(0, Math.floor(Number(log[key]) || 0));
+        month += count;
+        if (i < 7) week += count;
+        if (rotationSize > 0 && count >= rotationSize) full++;
+        if (Array.isArray(byDay[key])) byDay[key].forEach((id) => { tally[id] = (tally[id] || 0) + 1; });
+      }
+      if (month === 0 && current === 0 && best === 0) { statsBox.hidden = true; return; }
+      statsBox.hidden = false;
+      let topId = "";
+      Object.keys(tally).forEach((id) => { if (!topId || tally[id] > tally[topId]) topId = id; });
+      const nameOf = (id) => {
+        const li = Array.from(list.querySelectorAll("li[data-game-id]")).find((row) => row.getAttribute("data-game-id") === id);
+        if (li) return li.getAttribute("data-game-title") || "";
+        return titleMap && titleMap[id] ? titleMap[id] : "";
+      };
+      if (topId && !nameOf(topId) && !titleMap) {
+        titleMap = {};
+        fetch("/api/games/titles").then((r) => (r.ok ? r.json() : null)).then((data) => {
+          ((data && data.games) || []).forEach((g) => { titleMap[g.id] = g.title; });
+          renderStats();
+        }).catch(() => {});
+      }
+      const tiles = [
+        ["Current streak", num.format(current) + (current === 1 ? " day" : " days")],
+        ["Longest streak", num.format(best) + (best === 1 ? " day" : " days")],
+        ["Plays, last 7 days", num.format(week)],
+        ["Plays, last 30 days", num.format(month)]
+      ];
+      if (topId && nameOf(topId)) tiles.push(["Most played, 30 days", nameOf(topId) + " (" + num.format(tally[topId]) + "x)"]);
+      tiles.push(["Full rotation days, 30 days", num.format(full)]);
+      statsTiles.replaceChildren(...tiles.map(([label, value]) => {
+        const tile = document.createElement("div");
+        tile.className = "stat-tile";
+        const v = document.createElement("strong");
+        v.textContent = value;
+        const l = document.createElement("span");
+        l.textContent = label;
+        tile.append(v, l);
+        return tile;
+      }));
+    };
+    if (statsBox && statsTiles) {
+      renderStats();
+      window.dglPlayedHooks.push(renderStats);
+      new MutationObserver(renderStats).observe(list, { childList: true });
+    }
+
     // Reminder toggle (hidden where browser notifications don't exist).
     const opt = document.getElementById("reminder-opt");
     const toggle = document.getElementById("reminder-toggle");
@@ -8838,6 +8954,18 @@ const RESET_LOCALIZE_SCRIPT = `
         const today = window.dglDateKey(now);
         days[today] = (Number(days[today]) || 0) + 1;
         window.localStorage.setItem(PLAY_LOG_KEY, JSON.stringify(days));
+      } catch {}
+      // Which games, per day (dgl_play_games_v1, { "YYYY-MM-DD": [game ids] }, 35 days): for the rotation stats.
+      try {
+        const raw = JSON.parse(window.localStorage.getItem("dgl_play_games_v1") || "{}");
+        const byDay = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+        const oldestDay = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 35));
+        Object.keys(byDay).forEach((day) => { if (day < oldestDay || !Array.isArray(byDay[day])) delete byDay[day]; });
+        const todayKey = window.dglDateKey(now);
+        const ids = byDay[todayKey] || [];
+        if (!ids.includes(gameId)) ids.push(gameId);
+        byDay[todayKey] = ids;
+        window.localStorage.setItem("dgl_play_games_v1", JSON.stringify(byDay));
       } catch {}
     }
     window.dglLocalizeResets();
@@ -8924,6 +9052,7 @@ const RESET_LOCALIZE_SCRIPT = `
     const card = link.closest("li");
     const id = link.getAttribute("data-play-id") || (card ? cardGameId(card) : "");
     window.dglMarkPlayed(id);
+    if (id) document.dispatchEvent(new CustomEvent("dgl:game-opened", { detail: { id, title: (card && card.getAttribute("data-game-title")) || link.getAttribute("data-play-title") || "" } }));
     // The one place a play click is counted (feeds the ranking score). keepalive lets it outlive the navigation.
     if (id) fetch("/api/games/" + encodeURIComponent(id) + "/click", { method: "POST", keepalive: true }).catch(() => {});
   };
@@ -9262,6 +9391,118 @@ const GAME_ACTIONS_SCRIPT = `
 // this checks /api/version once a minute while the tab is visible, and when it becomes visible again. On a new
 // version it reloads, but never while someone is in a text field or has typed into a form (that would lose their
 // work): then it waits for them to leave the field, and if a form has unsaved input it only shows a notice.
+const VOTE_PROMPT_SCRIPT = `
+(() => {
+  const KEY = "dgl_vote_prompt_v1";
+  const MONTH = 30 * 24 * 60 * 60 * 1000;
+  const MIN_AWAY = 20000;
+  const root = document.documentElement;
+  if (root.classList.contains("dgl-stream") || root.classList.contains("dgl-overlay") || /^\\/admin(\\/|$)/.test(location.pathname)) return;
+  let pending = null;
+  let shown = false;
+  let prompt = null;
+  const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { return {}; } };
+  const remember = (id) => {
+    try {
+      const data = read();
+      const now = Date.now();
+      for (const k of Object.keys(data)) if (now - data[k] > MONTH) delete data[k];
+      data[id] = now;
+      localStorage.setItem(KEY, JSON.stringify(data));
+    } catch (e) {}
+  };
+  const rowFor = (id) => {
+    for (const el of document.querySelectorAll("[data-game-row], [data-vote-counts]")) {
+      if ((el.getAttribute("data-game-row") || el.getAttribute("data-vote-counts")) === id) return el;
+    }
+    return null;
+  };
+  const close = () => {
+    if (!prompt) return;
+    document.removeEventListener("keydown", onKey);
+    prompt.remove();
+    prompt = null;
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape" && prompt) { remember(prompt.dataset.gameId); close(); }
+  };
+  const show = (id, title) => {
+    shown = true;
+    const row = rowFor(id);
+    const box = document.createElement("div");
+    box.className = "vote-prompt" + (row ? " inline" : "");
+    box.dataset.gameId = id;
+    box.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.className = "vote-prompt-text";
+    text.textContent = "How was " + title + "?";
+    const mk = (cls, label, content) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls;
+      b.setAttribute("aria-label", label);
+      b.textContent = content;
+      return b;
+    };
+    const up = mk("vote-prompt-btn", "Thumbs up: I liked " + title, "\\u{1F44D}");
+    const down = mk("vote-prompt-btn", "Thumbs down: I did not like " + title, "\\u{1F44E}");
+    const skip = mk("vote-prompt-skip", "Not now: dismiss rating prompt for " + title, "Not now");
+    box.append(text, up, down, skip);
+    const vote = async (value) => {
+      up.disabled = down.disabled = skip.disabled = true;
+      const container = row;
+      const previous = container ? Number(container.getAttribute("data-vote")) || 0 : 0;
+      const upNode = container && container.querySelector("[data-up-count]");
+      const downNode = container && container.querySelector("[data-down-count]");
+      if (upNode && downNode && previous !== value) window.dglGames.shiftVoteCounts(upNode, downNode, previous, value);
+      const ok = await window.dglGames.saveVote(id, value);
+      if (!ok) {
+        if (upNode && downNode && previous !== value) window.dglGames.shiftVoteCounts(upNode, downNode, value, previous);
+        up.disabled = down.disabled = skip.disabled = false;
+        text.textContent = "Could not save your vote.";
+        return;
+      }
+      remember(id);
+      if (container) {
+        container.setAttribute("data-vote", String(value));
+        const ub = container.querySelector('[data-vote-button="up"]');
+        const db = container.querySelector('[data-vote-button="down"]');
+        ub && ub.classList.toggle("active", value === 1);
+        db && db.classList.toggle("active", value === -1);
+        ub && ub.setAttribute("aria-pressed", value === 1 ? "true" : "false");
+        db && db.setAttribute("aria-pressed", value === -1 ? "true" : "false");
+      }
+      box.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Thanks for rating " + title + "!" }));
+      window.setTimeout(close, 2500);
+    };
+    up.addEventListener("click", () => vote(1));
+    down.addEventListener("click", () => vote(-1));
+    skip.addEventListener("click", () => { remember(id); close(); });
+    if (row) row.after(box);
+    else document.body.appendChild(box);
+    prompt = box;
+    document.addEventListener("keydown", onKey);
+  };
+  document.addEventListener("dgl:game-opened", (event) => {
+    const d = event.detail || {};
+    if (d.id) pending = { id: String(d.id), title: d.title || "", at: Date.now() };
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || !pending || shown) return;
+    const p = pending;
+    if (Date.now() - p.at < MIN_AWAY) return;
+    pending = null;
+    const row = rowFor(p.id);
+    if (row && Number(row.getAttribute("data-vote")) !== 0 && row.hasAttribute("data-vote")) { if (Number(row.getAttribute("data-vote"))) return; }
+    const last = read()[p.id];
+    if (last && Date.now() - last < MONTH) return;
+    const title = p.title || (row && row.getAttribute("data-game-title")) || "";
+    if (!title || !window.dglGames) return;
+    show(p.id, title);
+  });
+})();
+`;
+
 const APP_UPDATE_SCRIPT = `
   (() => {
     const current = document.querySelector('meta[name="app-version"]')?.getAttribute("content");
@@ -10353,9 +10594,11 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     env.DB.prepare("DELETE FROM votes WHERE user_id = ?1").bind(fromId),
     env.DB.prepare("INSERT OR IGNORE INTO user_plays (user_id, game_id, played_at) SELECT ?2, game_id, played_at FROM user_plays WHERE user_id = ?1").bind(fromId, intoId),
     env.DB.prepare(
-      `INSERT INTO user_streaks (user_id, last, count, day_log) SELECT ?2, last, count, day_log FROM user_streaks WHERE user_id = ?1
-       ON CONFLICT(user_id) DO UPDATE SET last = excluded.last, count = excluded.count, day_log = excluded.day_log
-       WHERE excluded.last > user_streaks.last OR (excluded.last = user_streaks.last AND excluded.count > user_streaks.count)`
+      `INSERT INTO user_streaks (user_id, last, count, best, day_log) SELECT ?2, last, count, best, day_log FROM user_streaks WHERE user_id = ?1
+       ON CONFLICT(user_id) DO UPDATE SET
+         last = CASE WHEN excluded.last > user_streaks.last OR (excluded.last = user_streaks.last AND excluded.count > user_streaks.count) THEN excluded.last ELSE user_streaks.last END,
+         count = CASE WHEN excluded.last > user_streaks.last OR (excluded.last = user_streaks.last AND excluded.count > user_streaks.count) THEN excluded.count ELSE user_streaks.count END,
+         best = MAX(user_streaks.best, excluded.best)`
     ).bind(fromId, intoId),
     reassign("oauth_accounts", "user_id"),
     reassign("reports", "reported_by_user_id"),
@@ -10532,11 +10775,12 @@ const ASSET = {
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
-  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT)),
+  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
+  page_home_new_cats: registerAsset("home-new-cats", "js", PAGE_SCRIPTS["home-new-cats"]),
   page_games_page: registerAsset("games-page", "js", PAGE_SCRIPTS["games-page"]),
   page_lists_page: registerAsset("lists-page", "js", PAGE_SCRIPTS["lists-page"]),
   page_settings_hidden: registerAsset("settings-hidden", "js", PAGE_SCRIPTS["settings-hidden"]),

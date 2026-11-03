@@ -14,6 +14,7 @@ export const playsBodySchema = z.object({
   plays: z.array(z.object({ gameId: z.string().min(1).max(64), playedAt: z.string().max(40) })).max(200).optional(),
   unplayed: z.array(z.object({ gameId: z.string().min(1).max(64), since: z.string().max(40) })).max(200).optional(),
   streak: z.object({ last: z.string().regex(DAY_KEY), count: z.number().int().min(0).max(100000) }).optional(),
+  best: z.number().int().min(0).max(100000).optional(),
   log: z.record(z.string().regex(DAY_KEY), z.number().int().min(0).max(1000)).optional()
 });
 
@@ -22,12 +23,12 @@ function isoOrNull(value: string): string | null {
   return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
-type Streak = { last: string; count: number; log: Record<string, number> };
+type Streak = { last: string; count: number; best: number; log: Record<string, number> };
 
 async function loadStreak(env: Env, userId: string): Promise<Streak> {
-  const row = await env.DB.prepare("SELECT last, count, day_log FROM user_streaks WHERE user_id = ?1")
+  const row = await env.DB.prepare("SELECT last, count, best, day_log FROM user_streaks WHERE user_id = ?1")
     .bind(userId)
-    .first<{ last: string; count: number; day_log: string }>();
+    .first<{ last: string; count: number; best: number; day_log: string }>();
   let log: Record<string, number> = {};
   try {
     const parsed = JSON.parse(row?.day_log || "{}");
@@ -35,7 +36,7 @@ async function loadStreak(env: Env, userId: string): Promise<Streak> {
   } catch {
     // Ignore a corrupt log.
   }
-  return { last: row?.last || "", count: row?.count || 0, log };
+  return { last: row?.last || "", count: row?.count || 0, best: row?.best || 0, log };
 }
 
 export async function loadPlays(env: Env, userId: string, sinceParam: string | undefined) {
@@ -52,7 +53,7 @@ export async function loadPlays(env: Env, userId: string, sinceParam: string | u
   return {
     userId,
     plays: rows.results.map((r) => ({ gameId: r.game_id, playedAt: r.played_at })),
-    streak: { last: streak.last, count: streak.count },
+    streak: { last: streak.last, count: streak.count, best: streak.best },
     log: streak.log
   };
 }
@@ -84,9 +85,10 @@ export async function savePlays(env: Env, userId: string, body: z.infer<typeof p
     );
   }
   stmts.push(env.DB.prepare("DELETE FROM user_plays WHERE user_id = ?1 AND played_at < ?2").bind(userId, new Date(now - PLAYS_KEEP_DAYS * DAY_MS).toISOString()));
-  if (body.streak || body.log) {
+  if (body.streak || body.log || body.best) {
     const cur = await loadStreak(env, userId);
     let { last, count } = cur;
+    const best = Math.max(cur.best, body.best || 0, body.streak?.count || 0, count);
     const maxDay = new Date(now + 2 * DAY_MS).toISOString().slice(0, 10);
     const incoming = body.streak;
     if (incoming && incoming.last <= maxDay && (incoming.last > last || (incoming.last === last && incoming.count > count))) {
@@ -101,9 +103,9 @@ export async function savePlays(env: Env, userId: string, body: z.infer<typeof p
     }
     stmts.push(
       env.DB.prepare(
-        `INSERT INTO user_streaks (user_id, last, count, day_log) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(user_id) DO UPDATE SET last = excluded.last, count = excluded.count, day_log = excluded.day_log`
-      ).bind(userId, last, count, JSON.stringify(log))
+        `INSERT INTO user_streaks (user_id, last, count, best, day_log) VALUES (?1, ?2, ?3, ?5, ?4)
+         ON CONFLICT(user_id) DO UPDATE SET last = excluded.last, count = excluded.count, best = excluded.best, day_log = excluded.day_log`
+      ).bind(userId, last, count, JSON.stringify(log), best)
     );
   }
   await env.DB.batch(stmts);
