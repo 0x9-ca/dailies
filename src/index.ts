@@ -1589,6 +1589,20 @@ app.get("/games/:slug", async (c) => {
   const linkNotice = game.link_fail_count >= 3
     ? `<p class="game-actions-note link-down-note" role="note">Our link checker couldn't reach this game recently. It may be down or moved.${linkCheckedOn && !Number.isNaN(linkCheckedOn.getTime()) ? ` Last checked ${escapeHtml(linkCheckedOn.toLocaleDateString("en-US", { timeZone: "America/New_York", dateStyle: "medium" }))} ET.` : ""}${ownClaim?.status === "verified" ? " If the game moved, update its URL below." : ""}</p>`
     : "";
+  // Public creator lists that put this game on stream in the last 30 days (same for every visitor).
+  const streamedBy = game.status === "approved"
+    ? (await c.env.DB.prepare(
+        `SELECT curated_lists.slug, curated_lists.title, curated_lists.twitch_login, MAX(h.started_at) AS last_at,
+                CASE WHEN ${VERIFIED_LIST_SQL} THEN 1 ELSE 0 END AS is_verified_list
+         FROM list_play_history h
+         JOIN curated_lists ON curated_lists.id = h.list_id AND curated_lists.visibility = 'public'
+         LEFT JOIN users ON users.id = curated_lists.owner_user_id
+         WHERE h.game_id = ?1 AND h.started_at >= ?2
+         GROUP BY curated_lists.id
+         ORDER BY last_at DESC
+         LIMIT 5`
+      ).bind(game.id, new Date(Date.now() - 30 * 86400000).toISOString()).all<{ slug: string; title: string; twitch_login: string | null; last_at: string; is_verified_list: number }>()).results
+    : [];
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}" data-game-title="${escapeHtml(game.title)}">
       <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
@@ -1614,6 +1628,10 @@ app.get("/games/:slug", async (c) => {
       ${alsoPlay.length > 0 ? `<section class="related-games">
         <h2>Players who like ${escapeHtml(game.title)} also play</h2>
         <ul>${alsoPlay.map((item) => `<li><a href="/games/${encodeURIComponent(item.slug)}">${escapeHtml(item.title)}</a></li>`).join("")}</ul>
+      </section>` : ""}
+      ${streamedBy.length > 0 ? `<section class="related-games recent-stream">
+        <h2>Recently on stream</h2>
+        <ul>${streamedBy.map((row) => `<li><a href="/lists/${encodeURIComponent(row.slug)}/history">${escapeHtml(row.title)}</a>${row.is_verified_list ? renderCheckBadge("Verified content creator") : renderVerifiedBadge(row.twitch_login)} <time datetime="${escapeHtml(row.last_at)}">${escapeHtml(new Date(row.last_at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }))}</time></li>`).join("")}</ul>
       </section>` : ""}
       ${related.results.length > 0 ? `<section class="related-games">
         <h2>${escapeHtml(relatedHeading)}</h2>
@@ -2652,6 +2670,12 @@ app.get("/lists/:slug", async (c) => {
 
   const categoriesByGameId = await getCategoriesForGames(c.env, items.results.map((item) => item.id));
   const developersByGameId = await getDevelopersForGames(c.env, items.results.map((item) => item.id));
+  // When each game was last set as Now playing (same for every viewer; the page script turns it into a viewer-local date).
+  const lastOnStream = new Map<string, string>();
+  if (!isAdminEditor && list.visibility === "public") {
+    const rows = await c.env.DB.prepare("SELECT game_id, MAX(started_at) AS last_at FROM list_play_history WHERE list_id = ?1 GROUP BY game_id").bind(list.id).all<{ game_id: string; last_at: string }>();
+    for (const row of rows.results) lastOnStream.set(row.game_id, row.last_at);
+  }
 
   // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
   const { votes: userVotes, favorites: userFavorites } = isAdminEditor
@@ -2895,12 +2919,12 @@ app.get("/lists/:slug", async (c) => {
         ${suggestionsOn ? `<button type="button" role="tab" id="tab-suggest" data-tab="suggest" aria-selected="false" tabindex="-1">Suggestions <span class="tab-count" data-tab-count="suggest">${suggestions.length > 0 ? suggestions.length : ""}</span></button>` : ""}
       </div>
       <div class="list-main">`}
-      ${isAdminEditor ? "" : `<div class="list-bar"><h2 class="list-bar-title">Games <span class="tab-count" id="list-count" data-list-count>${items.results.length}</span></h2><div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true })}</div></div>`}
+      ${isAdminEditor ? "" : `<div class="list-bar"><h2 class="list-bar-title">Games <span class="tab-count" id="list-count" data-list-count>${items.results.length}</span></h2><div id="list-sort-wrap"${items.results.length > 1 ? "" : " hidden"}>${renderListSortControl({ votes: true, stream: lastOnStream.size > 0 })}</div></div>`}
       <ol class="rotation-list" id="list-items"${canMarkPlayed ? ` data-can-mark-played data-list-id="${escapeHtml(list.id)}"` : ""}>
         ${items.results.map((item) => {
           const currentVote = userVotes.get(item.id) || 0;
           const currentFavorite = userFavorites.has(item.id);
-          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `${showPlayed ? `data-last-played-at="${escapeHtml(item.last_played_at || "")}" ` : ""}data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
+          return `<li draggable="${isAdminEditor}" ${isAdminEditor ? "" : `class="card-click"`} data-game-id="${item.id}" ${isAdminEditor ? "" : `${showPlayed ? `data-last-played-at="${escapeHtml(item.last_played_at || "")}" ` : ""}${lastOnStream.has(item.id) ? `data-last-stream="${escapeHtml(lastOnStream.get(item.id)!)}" ` : ""}data-game-row="${item.id}" data-vote="${currentVote}" data-game-slug="${escapeHtml(item.slug)}" data-game-title="${escapeHtml(item.title)}"`} ${renderResetItemData(item.reset_basis, item.reset_time_minutes, item.reset_timezone).attrs}>
           ${isAdminEditor ? `<span class="drag">::</span>` : ""}
           <div class="item-main">
             <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="game-title${isAdminEditor ? "" : " card-link"}">${renderRowTitle(item.title, item.paywall, item.nsfw)}${isNewlyListed(item.added_at) ? renderNewHereBadge() : ""}${showPlayed ? `<span class="played-pill" hidden><span class="pp-check" aria-hidden="true">✓</span><span class="pp-text"> Played on stream</span></span>` : ""}</a>
@@ -2908,6 +2932,7 @@ app.get("/lists/:slug", async (c) => {
             ${isAdminEditor
               ? renderGameMeta(0, 0, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))
               : renderGameMeta(item.vote_up_count, item.vote_down_count, renderResetSpan(item.reset_basis, item.reset_time_minutes, item.reset_timezone))}
+            ${lastOnStream.has(item.id) ? `<p class="last-stream" hidden></p>` : ""}
           </div>
           <div class="card-actions">
             ${isAdminEditor ? "" : `
@@ -10327,6 +10352,12 @@ const LIST_SORT_SCRIPT = `
             const ub = minutesUntilReset(b, now);
             return ua === ub ? indexDiff : ua < ub ? -1 : 1;
           }
+          if (mode === "stream") {
+            // Never-played games first, then the longest ago; ties keep the list's own order.
+            const ta = a.dataset.lastStream ? Date.parse(a.dataset.lastStream) : -Infinity;
+            const tb = b.dataset.lastStream ? Date.parse(b.dataset.lastStream) : -Infinity;
+            return ta === tb ? indexDiff : ta < tb ? -1 : 1;
+          }
           if (mode === "liked" || mode === "upvotes") {
             const va = votes(a);
             const vb = votes(b);
@@ -10357,13 +10388,14 @@ const LIST_SORT_SCRIPT = `
 `;
 
 // The vote orders need [data-up-count]/[data-down-count] in each row, so only curated lists offer them.
-function renderListSortControl(options: { votes?: boolean; rotation?: boolean } = {}): string {
+function renderListSortControl(options: { votes?: boolean; rotation?: boolean; stream?: boolean } = {}): string {
   return `<label class="list-sort">Sort
     <select id="list-sort-select" aria-label="Sort order">
       <option value="default">${options.rotation ? "Your order" : "Default order"}</option>
       <option value="reset">${options.rotation ? "Resets soonest" : "Resetting soonest"}</option>
       ${options.votes ? `<option value="liked">Highest % upvoted</option>
       <option value="upvotes">Most upvotes</option>` : ""}
+      ${options.stream ? `<option value="stream">Least recently on stream</option>` : ""}
     </select>
   </label>`;
 }
@@ -10444,6 +10476,17 @@ function renderStreamSettings(canMark: boolean, badge: { slug: string; title: st
 // Curated list header and modes: "⋯" overflow menu, clamped description, stream mode.
 const LIST_PAGE_SCRIPT = `
   (() => {
+    // "Last on stream: Oct 30" labels, in the viewer's own time zone (the HTML is cached and identical for everyone).
+    const monthDay = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+    const dayNum = (d) => Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+    document.querySelectorAll("li[data-last-stream]").forEach((li) => {
+      const label = li.querySelector(".last-stream");
+      const at = new Date(li.dataset.lastStream);
+      if (!label || Number.isNaN(at.getTime())) return;
+      const diff = dayNum(new Date()) - dayNum(at);
+      label.textContent = "Last on stream: " + (diff <= 0 ? "today" : diff === 1 ? "yesterday" : monthDay.format(at));
+      label.hidden = false;
+    });
     const root = document.documentElement;
     const wide = window.matchMedia("(min-width: 900px)");
     const head = document.querySelector(".list-head");

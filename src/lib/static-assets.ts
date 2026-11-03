@@ -535,6 +535,8 @@ export const SHARED_CSS = `      :root {
       .list-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); margin: 0 0 var(--sp-3); }
       .list-bar-title { display: flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: 1.2rem; }
       .list-bar .list-sort { margin: 0; }
+      .last-stream { margin: 0.15rem 0 0; color: var(--muted); font-size: 0.85rem; }
+      html.dgl-stream .last-stream { display: none; }
       .list-main .rotation-list { margin: 0; }
       .rotation-list li.card-click { transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease; }
       .rotation-list li.card-click:hover { background: var(--row-hover); border-color: var(--accent); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18); }

@@ -220,6 +220,7 @@ CREATE TABLE list_play_history (
   started_at TEXT NOT NULL
 );
 CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
+CREATE INDEX idx_list_play_history_game_started ON list_play_history(game_id, started_at);
 
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,
