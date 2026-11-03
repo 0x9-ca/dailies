@@ -4,6 +4,10 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-11-03",
+    items: ["Install 0x9 dles as an app from Settings, with shortcuts to your rotation, recap and new games."]
+  },
+  {
     date: "2026-11-02",
     items: [
       "No connection? Your rotation still opens with what it showed last time, and games you mark played sync when you're back online.",

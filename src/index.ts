@@ -2178,7 +2178,9 @@ app.get("/me/rotation", async (c) => {
       <script>
         window.dglDailyProgress("local-rotation-list");
       </script>
-    `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
+      <div class="install-app muted" data-install-app hidden><button type="button" class="link-button" hidden>Install app</button><small class="install-ios" hidden>On iPhone or iPad: tap Share, then Add to Home Screen.</small></div>
+      <script src="${ASSET.installJs}"></script>
+  `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
   }
 
   const favorites = await c.env.DB.prepare(
@@ -2287,6 +2289,8 @@ app.get("/me/rotation", async (c) => {
     <script type="application/json" id="data-rotation-share">${scriptJson({ shareUrl })}</script>
     <script src="${ASSET.page_rotation_share}"></script>
     <script src="${ASSET.page_rotation_paste}"></script>
+    <div class="install-app muted" data-install-app hidden><button type="button" class="link-button" hidden>Install app</button><small class="install-ios" hidden>On iPhone or iPad: tap Share, then Add to Home Screen.</small></div>
+    <script src="${ASSET.installJs}"></script>
   `, c.env, { path: "/me/rotation", description: "Your personal daily game rotation. Drag to reorder, export, and share." }));
 });
 
@@ -2393,6 +2397,12 @@ app.get("/me/settings", async (c) => {
           <button type="submit">Save public profile</button>
         </form>
         ${publicProfile?.profile_handle ? `<p><a href="/u/${encodeURIComponent(publicProfile.profile_handle)}">${publicProfile.profile_public ? "View" : "Preview"} my profile</a></p>` : ""}
+      </section>
+      <section class="panel">
+        <h2>App</h2>
+        <p>Install 0x9 dles for quick access from your home screen or desktop.</p>
+        <div class="install-app muted" data-install-app hidden><button type="button" class="link-button" hidden>Install app</button><small class="install-ios" hidden>On iPhone or iPad: tap Share, then Add to Home Screen.</small></div>
+      <script src="${ASSET.installJs}"></script>
       </section>
       <section class="panel">
         <h2>Sign-in accounts</h2>
@@ -3130,7 +3140,8 @@ app.get("/manifest.webmanifest", (c) =>
       name: "0x9 dles",
       short_name: "0x9 dles",
       description: "A hub for daily games: browse, vote on, and favorite the best dailies.",
-      start_url: "/",
+      id: "/",
+      start_url: "/me/rotation",
       scope: "/",
       display: "standalone",
       background_color: "#121212",
@@ -3138,6 +3149,11 @@ app.get("/manifest.webmanifest", (c) =>
       icons: [
         { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
         { src: "/icon.png", sizes: "512x512", type: "image/png", purpose: "any" }
+      ],
+      shortcuts: [
+        { name: "Today's rotation", url: "/me/rotation" },
+        { name: "Monthly recap", url: "/me/recap" },
+        { name: "New games", url: "/new" }
       ]
     }),
     200,
@@ -11532,6 +11548,35 @@ async function upsertOAuthUser(
 // isolate from the content, so a deploy that changes a file changes its URL. Scripts stay classic (non-deferred) and
 // sit where their inline versions did, so inline callers still find what they use. To add one: define the string
 // (no ${}), register it here, and reference ASSET.<key> from layout() or the page.
+const INSTALL_APP_SCRIPT = `
+(function () {
+  var deferred = null;
+  var standalone = function () { return (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) || window.navigator.standalone === true; };
+  var ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  var render = function () {
+    document.querySelectorAll("[data-install-app]").forEach(function (box) {
+      var btn = box.querySelector("button");
+      var hint = box.querySelector(".install-ios");
+      var show = !standalone();
+      btn.hidden = !(show && deferred);
+      hint.hidden = !(show && !deferred && ios);
+      box.hidden = btn.hidden && hint.hidden;
+    });
+  };
+  window.addEventListener("beforeinstallprompt", function (e) { e.preventDefault(); deferred = e; render(); });
+  window.addEventListener("appinstalled", function () { deferred = null; render(); });
+  document.querySelectorAll("[data-install-app] button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var e = deferred;
+      if (!e) return;
+      deferred = null;
+      render();
+      e.prompt();
+    });
+  });
+  render();
+})();
+`;
 const joinJs = (...parts: string[]) => parts.join(";\n");
 const ASSET = {
   page_submit_page: registerAsset("submit-page", "js", PAGE_SCRIPTS["submit-page"].replace("/*@RESET_TZ@*/", () => RESET_TIMEZONE_TOGGLE_SCRIPT)),
@@ -11556,6 +11601,7 @@ const ASSET = {
   npJs: registerAsset("now-playing", "js", NOW_PLAYING_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   recapJs: registerAsset("recap", "js", RECAP_SCRIPT),
+  installJs: registerAsset("install-app", "js", INSTALL_APP_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
   page_home_new_cats: registerAsset("home-new-cats", "js", PAGE_SCRIPTS["home-new-cats"]),
