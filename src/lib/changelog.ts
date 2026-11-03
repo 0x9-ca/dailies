@@ -4,6 +4,12 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-11-03",
+    items: [
+      "Creator lists have a Stream history: every game set as Now playing, by day, for the last 90 days.",
+    ]
+  },
+  {
     date: "2026-11-02",
     items: [
       "No connection? Your rotation still opens with what it showed last time, and games you mark played sync when you're back online.",
