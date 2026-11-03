@@ -5131,7 +5131,7 @@ app.get("/api/me/recap", async (c) => {
 app.get("/me/recap", async (c) => {
   const user = c.get("user");
   return c.html(await layout("Monthly recap", user, `
-    <main class="narrow recap" id="recap" data-signed-in="${user ? "1" : "0"}">
+    <main class="narrow recap" id="main" tabindex="-1" data-signed-in="${user ? "1" : "0"}">
       <h1>Monthly recap</h1>
       <div class="recap-nav">
         <button type="button" class="secondary" id="recap-prev" aria-label="Previous month" disabled>&larr;</button>
@@ -9320,7 +9320,7 @@ const DAILY_PROGRESS_SCRIPT = `
 // /me/recap: month summary from local play data (signed out) or GET /api/me/recap (signed in).
 const RECAP_SCRIPT = `
 (() => {
-  const root = document.getElementById("recap");
+  const root = document.getElementById("main");
   if (!root) return;
   const signedIn = root.getAttribute("data-signed-in") === "1";
   const $ = (id) => document.getElementById(id);

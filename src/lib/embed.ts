@@ -118,7 +118,7 @@ export function renderEmbedPage(args: {
 <style>${EMBED_CSS}</style>
 </head>
 <body>
-${heading}${rows ? `<ol>${rows}</ol>` : `<p class="empty">No games in this list yet.</p>`}
+<main>${heading}${rows ? `<ol>${rows}</ol>` : `<p class="empty">No games in this list yet.</p>`}</main>
 <footer><span>Suggest a game at <a href="${esc(args.canonicalUrl)}" target="_blank" rel="noopener">${esc(args.suggestLabel)}</a></span><a href="${esc(args.siteUrl)}" target="_blank" rel="noopener">via 0x9 dles</a></footer>
 <script>${EMBED_SCRIPT}</script>
 </body>
@@ -129,7 +129,7 @@ export function renderEmbedNotFound(siteUrl: string): string {
   return `<!doctype html>
 <html lang="en" data-theme="auto">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>List not found | 0x9 dles</title><style>${EMBED_CSS}</style></head>
-<body><p class="empty">This list isn't available. It may be private or removed.</p><footer><span></span><a href="${esc(siteUrl)}" target="_blank" rel="noopener">via 0x9 dles</a></footer></body>
+<body><main><p class="empty">This list isn't available. It may be private or removed.</p></main><footer><span></span><a href="${esc(siteUrl)}" target="_blank" rel="noopener">via 0x9 dles</a></footer></body>
 </html>`;
 }
 
