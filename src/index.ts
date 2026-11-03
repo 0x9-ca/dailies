@@ -1884,6 +1884,7 @@ const publicProfileSchema = z.object({
   handle: z.preprocess((value) => (typeof value === "string" ? value.trim().toLowerCase() || null : value), z.string().regex(PROFILE_HANDLE_PATTERN).nullable()),
   showRotation: z.boolean(),
   showTwitch: z.boolean(),
+  showStreak: z.boolean().optional(),
   avatarProvider: z.enum(["discord", "twitch"]).nullable()
 });
 
@@ -1900,7 +1901,7 @@ app.put("/api/me/public-profile", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Handles are 3-30 characters: letters, numbers, - and _" }, 400);
   }
-  const { public: isPublic, handle, showRotation, showTwitch, avatarProvider } = parsed.data;
+  const { public: isPublic, handle, showRotation, showTwitch, avatarProvider, showStreak } = parsed.data;
   if (handle && RESERVED_PROFILE_HANDLES.has(handle)) {
     return c.json({ error: "That handle is reserved" }, 400);
   }
@@ -1914,10 +1915,10 @@ app.put("/api/me/public-profile", async (c) => {
   try {
     await c.env.DB.prepare(
       `UPDATE users SET profile_public = ?2, profile_handle = ?3, profile_show_rotation = ?4, profile_show_twitch = ?5,
-              profile_avatar_provider = ?6, updated_at = datetime('now')
+              profile_avatar_provider = ?6, profile_show_streak = COALESCE(?7, profile_show_streak), updated_at = datetime('now')
        WHERE id = ?1`
     )
-      .bind(auth.id, isPublic ? 1 : 0, handle, showRotation ? 1 : 0, showTwitch ? 1 : 0, avatarProvider)
+      .bind(auth.id, isPublic ? 1 : 0, handle, showRotation ? 1 : 0, showTwitch ? 1 : 0, avatarProvider, showStreak === undefined ? null : showStreak ? 1 : 0)
       .run();
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -1932,11 +1933,11 @@ app.put("/api/me/public-profile", async (c) => {
 app.get("/u/:handle", async (c) => {
   const user = c.get("user");
   const owner = await c.env.DB.prepare(
-    `SELECT id, display_name, role, creator_type, profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider
+    `SELECT id, display_name, role, creator_type, profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_show_streak, profile_avatar_provider
      FROM users WHERE profile_handle = ?1`
   )
     .bind(c.req.param("handle").toLowerCase())
-    .first<{ id: string; display_name: string | null; role: AppUser["role"]; creator_type: string | null; profile_handle: string; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
+    .first<{ id: string; display_name: string | null; role: AppUser["role"]; creator_type: string | null; profile_handle: string; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_show_streak: number; profile_avatar_provider: string | null }>();
   // A profile that isn't public looks like no profile at all, except to its owner (who gets a preview).
   const isOwner = !!user && !!owner && user.id === owner.id;
   if (!owner || (!owner.profile_public && !isOwner)) {
@@ -1977,6 +1978,28 @@ app.get("/u/:handle", async (c) => {
       .bind(owner.id)
       .all<{ slug: string; title: string; twitch_login: string | null; is_creator_list: number; game_count: number }>()
   ).results.filter((row) => row.game_count > 0);
+  let streakRow = "";
+  if (owner.profile_show_streak) {
+    const row = await c.env.DB.prepare("SELECT last, count, best, day_log FROM user_streaks WHERE user_id = ?1")
+      .bind(owner.id)
+      .first<{ last: string; count: number; best: number; day_log: string }>();
+    if (row) {
+      // The owner's time zone is unknown: a streak is current if it was last extended within the last 2 UTC days.
+      const dayKey = (offset: number) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
+      const current = row.last >= dayKey(2) ? row.count : 0;
+      let log: Record<string, number> = {};
+      try {
+        const parsed = JSON.parse(row.day_log || "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) log = parsed;
+      } catch {
+        // Ignore a corrupt log.
+      }
+      const since = dayKey(29);
+      const played = Object.entries(log).filter(([day, n]) => day >= since && Number(n) > 0).length;
+      const days = (n: number) => `${n} day${n === 1 ? "" : "s"}`;
+      streakRow = `<p class="profile-streak muted">Current streak: <strong>${days(current)}</strong> &middot; Best: <strong>${days(Math.max(row.best, current))}</strong> &middot; Played ${days(played)} in the last 30</p>`;
+    }
+  }
   const name = owner.display_name || owner.profile_handle;
   const badges = [
     owner.creator_type ? `<span class="profile-badge profile-badge-dev">${renderCheckBadge("Verified content creator")} ${owner.creator_type === "partner" ? "Twitch Partner" : owner.creator_type === "affiliate" ? "Twitch Affiliate" : "Verified creator"}</span>` : "",
@@ -1998,6 +2021,7 @@ app.get("/u/:handle", async (c) => {
           ${twitchLogin ? `<p class="twitch-watch"><a class="btn btn-twitch" href="https://www.twitch.tv/${encodeURIComponent(twitchLogin)}" target="_blank" rel="noopener noreferrer">${TWITCH_ICON_SVG}<span>${escapeHtml(twitchLogin)} on Twitch</span><span class="external-arrow" aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a></p>` : ""}
         </div>
       </header>
+      ${streakRow}
       ${ownedLists.length > 0 ? `<section>
         <h2>Lists</h2>
         <ul class="list-index">
@@ -2340,10 +2364,10 @@ app.get("/me/settings", async (c) => {
   );
   const providerNames: Record<OAuthProvider, string> = { discord: "Discord", twitch: "Twitch" };
   const publicProfile = await c.env.DB.prepare(
-    "SELECT profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_avatar_provider FROM users WHERE id = ?1"
+    "SELECT profile_handle, profile_public, profile_show_rotation, profile_show_twitch, profile_show_streak, profile_avatar_provider FROM users WHERE id = ?1"
   )
     .bind(auth.id)
-    .first<{ profile_handle: string | null; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_avatar_provider: string | null }>();
+    .first<{ profile_handle: string | null; profile_public: number; profile_show_rotation: number; profile_show_twitch: number; profile_show_streak: number; profile_avatar_provider: string | null }>();
   const avatarProviders = new Set(
     (await c.env.DB.prepare("SELECT provider, avatar_url FROM oauth_accounts WHERE user_id = ?1").bind(auth.id).all<{ provider: string; avatar_url: string | null }>()).results
       .filter((row) => safeAvatarUrl(row.avatar_url))
@@ -2408,6 +2432,7 @@ app.get("/me/settings", async (c) => {
             <input type="text" name="handle" maxlength="30" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${escapeHtml(suggestedHandle || "your-handle")}" value="${escapeHtml(publicProfile?.profile_handle || "")}" />
           </label>
           <label class="check"><input type="checkbox" name="showRotation" ${publicProfile?.profile_show_rotation ? "checked" : ""} /> Show my daily rotation</label>
+          <label class="check"><input type="checkbox" name="showStreak" ${publicProfile?.profile_show_streak ? "checked" : ""} /> Show my streak on my public profile</label>
           ${linkedProviders.has("twitch") ? `<label class="check"><input type="checkbox" name="showTwitch" ${publicProfile?.profile_show_twitch ? "checked" : ""} /> Show a link to my Twitch channel</label>` : ""}
           <fieldset>
             <legend>Picture</legend>

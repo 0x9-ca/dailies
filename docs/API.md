@@ -64,7 +64,7 @@
 
 ## Public profile (signed-in user)
 
-- `PUT /api/me/public-profile` (`{ public, handle, showRotation, showTwitch, avatarProvider }`; the profile page `GET /u/:handle` is a 404 unless `public` is on, except for its owner. 409 handle taken, 400 invalid or reserved handle, or Twitch/avatar provider not linked)
+- `PUT /api/me/public-profile` (`{ public, handle, showRotation, showTwitch, showStreak?, avatarProvider }`; the profile page `GET /u/:handle` is a 404 unless `public` is on, except for its owner. 409 handle taken, 400 invalid or reserved handle, or Twitch/avatar provider not linked)
 
 ## Fan-dles (signed-in user)
 

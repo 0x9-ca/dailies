@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN profile_show_streak INTEGER NOT NULL DEFAULT 0;
