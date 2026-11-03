@@ -3211,7 +3211,8 @@ app.get("/manifest.webmanifest", (c) =>
       shortcuts: [
         { name: "Today's rotation", url: "/me/rotation" },
         { name: "Monthly recap", url: "/me/recap" },
-        { name: "New games", url: "/new" }
+        { name: "New games", url: "/new" },
+        { name: "Random game", url: "/random" }
       ]
     }),
     200,
@@ -3226,6 +3227,7 @@ Disallow: /api/
 Disallow: /admin
 Disallow: /me
 Disallow: /login
+Disallow: /random
 
 Sitemap: ${c.env.APP_URL}/sitemap.xml
 `;
@@ -4381,6 +4383,15 @@ app.get("/api/games/duplicate-check", async (c) => {
     }
   }
   return c.json({ matches });
+});
+
+app.get("/random", async (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = "/api/games/random";
+  const response = await app.fetch(new Request(url, { headers: c.req.raw.headers }), c.env, c.executionCtx);
+  const game = response.ok ? await response.json<{ slug: string }>() : null;
+  c.header("Cache-Control", "no-store");
+  return c.redirect(game ? `/games/${encodeURIComponent(game.slug)}` : "/games", 302);
 });
 
 app.get("/api/games/random", async (c) => {
@@ -8762,7 +8773,7 @@ function renderResetItemData(
 /** Accessible name of a vote button. Keep in step with voteLabels in GAME_ACTIONS_SCRIPT. */
 function voteButtonLabel(direction: "up" | "down", title: string, count: number): string {
   const noun = direction === "up" ? "upvote" : "downvote";
-  return `${direction === "up" ? "Upvote" : "Downvote"} ${title} (${count} ${count === 1 ? noun : `${noun}s`})`;
+  return `${count} ${count === 1 ? noun : `${noun}s`}: ${direction === "up" ? "Upvote" : "Downvote"} ${title}`;
 }
 
 /**
@@ -9948,14 +9959,14 @@ const GAME_ACTIONS_SCRIPT = `
     };
     // A game's card or row ([data-game-row]) or the game page ([data-vote-counts]).
     const voteContainer = (node) => (node instanceof Element ? node.closest("[data-game-row], [data-vote-counts]") : null);
-    // Accessible names for the vote buttons ("Upvote <title> (12 upvotes)"). Same wording as voteButtonLabel() on the server.
+    // Accessible names for the vote buttons ("12 upvotes: Upvote <title>"). Same wording as voteButtonLabel() on the server.
     const voteLabels = (container, up, down) => {
       const title = container.getAttribute("data-game-title");
       if (!title) return;
       container.querySelectorAll("[data-vote-button]").forEach((button) => {
         const isUp = button.getAttribute("data-vote-button") === "up";
         const count = isUp ? up : down;
-        button.setAttribute("aria-label", (isUp ? "Upvote " : "Downvote ") + title + " (" + count + " " + (isUp ? "upvote" : "downvote") + (count === 1 ? "" : "s") + ")");
+        button.setAttribute("aria-label", count + " " + (isUp ? "upvote" : "downvote") + (count === 1 ? "" : "s") + ": " + (isUp ? "Upvote " : "Downvote ") + title);
       });
     };
     // Shows up/down counts in one container (the counts, "% liked" and rating text), pulsing whatever changed.
