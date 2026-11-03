@@ -728,6 +728,15 @@ export const SHARED_CSS = `      :root {
         gap: 0.5rem;
         z-index: 99;
       }
+      .vote-prompt { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); animation: vote-prompt-in 0.2s ease-out; }
+      .vote-prompt:not(.inline) { position: fixed; left: 1rem; right: 1rem; bottom: 1rem; max-width: 420px; margin: 0 auto; z-index: 98; }
+      .vote-prompt.inline { list-style: none; margin: 0.4rem 0; }
+      .vote-prompt-text { flex: 1 1 100%; }
+      .vote-prompt-btn, .vote-prompt-skip { min-height: 44px; min-width: 44px; padding: 0.35rem 0.8rem; border: 1px solid var(--control-border); border-radius: 8px; background: transparent; color: var(--ink); font: inherit; cursor: pointer; }
+      .vote-prompt-skip { border-color: transparent; color: var(--muted); text-decoration: underline; }
+      .vote-prompt button:focus-visible { outline: 2px solid var(--brand-blue); outline-offset: 2px; }
+      @keyframes vote-prompt-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { .vote-prompt { animation: none; } }
       .toast {
         min-width: 220px;
         max-width: 320px;

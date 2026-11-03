@@ -8881,6 +8881,7 @@ const RESET_LOCALIZE_SCRIPT = `
     const card = link.closest("li");
     const id = link.getAttribute("data-play-id") || (card ? cardGameId(card) : "");
     window.dglMarkPlayed(id);
+    if (id) document.dispatchEvent(new CustomEvent("dgl:game-opened", { detail: { id, title: (card && card.getAttribute("data-game-title")) || link.getAttribute("data-play-title") || "" } }));
     // The one place a play click is counted (feeds the ranking score). keepalive lets it outlive the navigation.
     if (id) fetch("/api/games/" + encodeURIComponent(id) + "/click", { method: "POST", keepalive: true }).catch(() => {});
   };
@@ -9219,6 +9220,118 @@ const GAME_ACTIONS_SCRIPT = `
 // this checks /api/version once a minute while the tab is visible, and when it becomes visible again. On a new
 // version it reloads, but never while someone is in a text field or has typed into a form (that would lose their
 // work): then it waits for them to leave the field, and if a form has unsaved input it only shows a notice.
+const VOTE_PROMPT_SCRIPT = `
+(() => {
+  const KEY = "dgl_vote_prompt_v1";
+  const MONTH = 30 * 24 * 60 * 60 * 1000;
+  const MIN_AWAY = 20000;
+  const root = document.documentElement;
+  if (root.classList.contains("dgl-stream") || root.classList.contains("dgl-overlay") || /^\\/admin(\\/|$)/.test(location.pathname)) return;
+  let pending = null;
+  let shown = false;
+  let prompt = null;
+  const read = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (e) { return {}; } };
+  const remember = (id) => {
+    try {
+      const data = read();
+      const now = Date.now();
+      for (const k of Object.keys(data)) if (now - data[k] > MONTH) delete data[k];
+      data[id] = now;
+      localStorage.setItem(KEY, JSON.stringify(data));
+    } catch (e) {}
+  };
+  const rowFor = (id) => {
+    for (const el of document.querySelectorAll("[data-game-row], [data-vote-counts]")) {
+      if ((el.getAttribute("data-game-row") || el.getAttribute("data-vote-counts")) === id) return el;
+    }
+    return null;
+  };
+  const close = () => {
+    if (!prompt) return;
+    document.removeEventListener("keydown", onKey);
+    prompt.remove();
+    prompt = null;
+  };
+  const onKey = (event) => {
+    if (event.key === "Escape" && prompt) { remember(prompt.dataset.gameId); close(); }
+  };
+  const show = (id, title) => {
+    shown = true;
+    const row = rowFor(id);
+    const box = document.createElement("div");
+    box.className = "vote-prompt" + (row ? " inline" : "");
+    box.dataset.gameId = id;
+    box.setAttribute("role", "status");
+    const text = document.createElement("span");
+    text.className = "vote-prompt-text";
+    text.textContent = "How was " + title + "?";
+    const mk = (cls, label, content) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls;
+      b.setAttribute("aria-label", label);
+      b.textContent = content;
+      return b;
+    };
+    const up = mk("vote-prompt-btn", "Thumbs up: I liked " + title, "\\u{1F44D}");
+    const down = mk("vote-prompt-btn", "Thumbs down: I did not like " + title, "\\u{1F44E}");
+    const skip = mk("vote-prompt-skip", "Not now: dismiss rating prompt for " + title, "Not now");
+    box.append(text, up, down, skip);
+    const vote = async (value) => {
+      up.disabled = down.disabled = skip.disabled = true;
+      const container = row;
+      const previous = container ? Number(container.getAttribute("data-vote")) || 0 : 0;
+      const upNode = container && container.querySelector("[data-up-count]");
+      const downNode = container && container.querySelector("[data-down-count]");
+      if (upNode && downNode && previous !== value) window.dglGames.shiftVoteCounts(upNode, downNode, previous, value);
+      const ok = await window.dglGames.saveVote(id, value);
+      if (!ok) {
+        if (upNode && downNode && previous !== value) window.dglGames.shiftVoteCounts(upNode, downNode, value, previous);
+        up.disabled = down.disabled = skip.disabled = false;
+        text.textContent = "Could not save your vote.";
+        return;
+      }
+      remember(id);
+      if (container) {
+        container.setAttribute("data-vote", String(value));
+        const ub = container.querySelector('[data-vote-button="up"]');
+        const db = container.querySelector('[data-vote-button="down"]');
+        ub && ub.classList.toggle("active", value === 1);
+        db && db.classList.toggle("active", value === -1);
+        ub && ub.setAttribute("aria-pressed", value === 1 ? "true" : "false");
+        db && db.setAttribute("aria-pressed", value === -1 ? "true" : "false");
+      }
+      box.replaceChildren(Object.assign(document.createElement("span"), { textContent: "Thanks for rating " + title + "!" }));
+      window.setTimeout(close, 2500);
+    };
+    up.addEventListener("click", () => vote(1));
+    down.addEventListener("click", () => vote(-1));
+    skip.addEventListener("click", () => { remember(id); close(); });
+    if (row) row.after(box);
+    else document.body.appendChild(box);
+    prompt = box;
+    document.addEventListener("keydown", onKey);
+  };
+  document.addEventListener("dgl:game-opened", (event) => {
+    const d = event.detail || {};
+    if (d.id) pending = { id: String(d.id), title: d.title || "", at: Date.now() };
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || !pending || shown) return;
+    const p = pending;
+    if (Date.now() - p.at < MIN_AWAY) return;
+    pending = null;
+    const row = rowFor(p.id);
+    if (row && Number(row.getAttribute("data-vote")) !== 0 && row.hasAttribute("data-vote")) { if (Number(row.getAttribute("data-vote"))) return; }
+    const last = read()[p.id];
+    if (last && Date.now() - last < MONTH) return;
+    const title = p.title || (row && row.getAttribute("data-game-title")) || "";
+    if (!title || !window.dglGames) return;
+    show(p.id, title);
+  });
+})();
+`;
+
 const APP_UPDATE_SCRIPT = `
   (() => {
     const current = document.querySelector('meta[name="app-version"]')?.getAttribute("content");
@@ -10483,7 +10596,7 @@ const ASSET = {
   page_game_list: registerAsset("game-list", "js", PAGE_SCRIPTS["game-list"]),
   appCss: registerAsset("app", "css", SHARED_CSS),
   headJs: registerAsset("head", "js", joinJs(GAME_ACTIONS_SCRIPT, ROTATION_TODAY_SCRIPT)),
-  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT)),
+  appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
