@@ -96,7 +96,7 @@ for (const [short, long] of SHORT_PATHS) {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|mod-log|changelog)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|new|mod-log|changelog)?$/;
 
 app.use("*", async (c, next) => {
   const cacheable =
@@ -716,6 +716,7 @@ app.get("/", async (c) => {
         </section>
         <section>
           <h2>Newly Added</h2>
+          <p class="feed-link"><a href="/new">All new games</a> · <a href="/feed.xml" type="application/atom+xml">Feed</a></p>
           ${newGamesMarkup}
         </section>
       </div>
@@ -1103,6 +1104,77 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+// New games: approved in the last 30 days, grouped by week (Monday start, US/Eastern), newest first.
+const NEW_PAGE_DAYS = 30;
+const NEW_PAGE_FALLBACK = 12;
+
+function easternDateParts(value: string): { y: number; m: number; d: number } | null {
+  const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+  if (Number.isNaN(date.getTime())) return null;
+  const [y, m, d] = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(date).split("-").map(Number);
+  return { y, m, d };
+}
+
+/** Days since epoch of the Monday starting the (US/Eastern) week that contains this date. */
+function easternWeekStartDay(parts: { y: number; m: number; d: number }): number {
+  const day = Math.floor(Date.UTC(parts.y, parts.m - 1, parts.d) / 86400000);
+  return day - ((new Date(day * 86400000).getUTCDay() + 6) % 7);
+}
+
+app.get("/new", async (c) => {
+  const user = c.get("user");
+  let games = await listGames(c.env, { sort: "new", limit: 200, listedWithinDays: NEW_PAGE_DAYS });
+  const isRecent = games.length > 0;
+  if (!isRecent) games = await listGames(c.env, { sort: "new", limit: NEW_PAGE_FALLBACK });
+  const stamp = (listedAt: string) => { const t = new Date(listedAt.includes("T") ? listedAt : listedAt.replace(" ", "T") + "Z").getTime(); return Number.isNaN(t) ? 0 : t; };
+  games.sort((a, b) => stamp(b.listedAt) - stamp(a.listedAt));
+  const { votes: userVotes, favorites: userFavorites } = await getViewerGameState(c, games.map((game) => game.id));
+
+  const nowParts = easternDateParts(new Date().toISOString())!;
+  const thisWeek = easternWeekStartDay(nowParts);
+  const groups: Array<{ start: number; games: typeof games }> = [];
+  for (const game of games) {
+    const parts = easternDateParts(game.listedAt);
+    const start = parts ? easternWeekStartDay(parts) : thisWeek;
+    const last = groups[groups.length - 1];
+    if (last && last.start === start) last.games.push(game);
+    else groups.push({ start, games: [game] });
+  }
+  const weekLabel = (start: number) =>
+    start >= thisWeek ? "This week" : start === thisWeek - 7 ? "Last week" : `Week of ${new Date(start * 86400000).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" })}`;
+
+  const counts = new Map<string, { name: string; n: number }>();
+  for (const game of games) for (const cat of game.categories) counts.set(cat.slug, { name: cat.name, n: (counts.get(cat.slug)?.n ?? 0) + 1 });
+  const topCats = [...counts.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name)).slice(0, 2).map((cat) => cat.name);
+  const mostly = topCats.length > 0 ? `, mostly ${topCats.join(" and ")}` : "";
+  const summary = isRecent
+    ? `${plural(games.length, "new daily game")} in the last ${NEW_PAGE_DAYS} days${mostly}`
+    : `No games were added in the last ${NEW_PAGE_DAYS} days, so here are the ${plural(games.length, "most recent addition")}${mostly}`;
+
+  const sections = groups.map((group) => `<section class="new-week">
+        <h2>${escapeHtml(weekLabel(group.start))}</h2>
+        ${renderCompactGameList(group.games, user, userVotes, userFavorites, { hideable: true })}
+      </section>`).join("");
+  const newest = games[0] ? stamp(games[0].listedAt) : 0;
+  const lastmodNote = newest ? ` Latest: ${games[0].title}.` : "";
+  const description = `${summary}.${lastmodNote} Updated as games are approved.`.slice(0, 160);
+  return c.html(await layout(isRecent ? "New Daily Games" : "Latest Daily Games", user, `
+    <main>
+      <h1>${isRecent ? "New daily games" : "Latest daily games"}</h1>
+      <p class="feed-link"><a href="/feed.xml" type="application/atom+xml">Atom feed</a></p>
+      ${games.length > 0 ? `<p>${escapeHtml(summary)}. Vote for your favorites or add them to your daily rotation, or <a href="/games?sort=new">browse every game</a> by newest.</p>
+      <div id="game-results">${sections}</div>
+      ${HIDDEN_TOGGLE_MARKUP}` : `<p>No games yet. <a href="/games">Browse all games</a>.</p>`}
+    </main>
+    ${renderGameListInteractionScript({ includeImportPanel: false, promptFromQuery: false })}
+  `, c.env, {
+    path: "/new",
+    description,
+    jsonLd: [breadcrumbLd([["Home", "/"], ["New games", "/new"]]), gameItemListLd(games)],
+    feed: { href: "/feed.xml", title: "New games on 0x9 dles" }
+  }));
+});
+
 app.get("/categories", async (c) => {
   const user = c.get("user");
   const cats = (await c.env.DB.prepare(
@@ -1291,7 +1363,7 @@ app.get("/games/:slug", async (c) => {
   const isAdminOrEditor = user && (user.role === "admin" || user.role === "editor");
   const game = await c.env.DB.prepare(
     `SELECT id, title, slug, url, description, status, vote_up_count, vote_down_count, report_count, reset_basis, reset_time_minutes, reset_timezone, paywall, nsfw,
-            COALESCE(approved_at, created_at) AS listed_at, how_to_play
+            COALESCE(approved_at, created_at) AS listed_at, how_to_play, link_fail_count, last_checked_at
      FROM games
      WHERE slug = ?1 AND (?2 = 1 OR status = 'approved' OR (status = 'pending' AND submitted_by_user_id = ?3))`
   )
@@ -1313,6 +1385,8 @@ app.get("/games/:slug", async (c) => {
       nsfw: number;
       listed_at: string;
       how_to_play: string | null;
+      link_fail_count: number;
+      last_checked_at: string | null;
     }>();
   if (!game) {
     return notFoundPage(c);
@@ -1480,6 +1554,11 @@ app.get("/games/:slug", async (c) => {
   const ogVersion = shortHash([game.title, game.description ?? "", game.paywall, ...categories.results.map((cat) => cat.slug)].join("|"));
   // The reset the "Mark as played" toggle checks against (same as dglIsPlayed; none = since local midnight).
   const playReset = getResetSortData(game.reset_basis, game.reset_time_minutes, game.reset_timezone);
+  // Same for every visitor (edge-cache safe) except the extra line for the game's verified developer.
+  const linkCheckedOn = game.last_checked_at ? new Date(game.last_checked_at.replace(" ", "T") + (game.last_checked_at.includes("T") ? "" : "Z")) : null;
+  const linkNotice = game.link_fail_count >= 3
+    ? `<p class="game-actions-note link-down-note" role="note">Our link checker couldn't reach this game recently. It may be down or moved.${linkCheckedOn && !Number.isNaN(linkCheckedOn.getTime()) ? ` Last checked ${escapeHtml(linkCheckedOn.toLocaleDateString("en-US", { timeZone: "America/New_York", dateStyle: "medium" }))} ET.` : ""}${ownClaim?.status === "verified" ? " If the game moved, update its URL below." : ""}</p>`
+    : "";
   return c.html(await layout(`${game.title} – ${mainCategory ? `Daily ${categoryGameLabel(mainCategory.name)}` : "Daily Game"}`, user, `
     <main class="narrow" data-vote-counts="${escapeHtml(game.id)}" data-game-title="${escapeHtml(game.title)}">
       <h1>${escapeHtml(game.title)}${isNewlyListed(game.listed_at) ? ` ${renderNewBadge()}` : ""}${game.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}${game.nsfw ? ` <span class="nsfw-badge" title="This game contains NSFW content">nsfw</span>` : ""}</h1>
@@ -1487,6 +1566,7 @@ app.get("/games/:slug", async (c) => {
       ${developer ? `<p class="developer-line">${renderCheckBadge("Verified developer")} Verified developer${developer.display_name ? `: ${developer.profile_public && developer.profile_handle ? `<a href="/u/${encodeURIComponent(developer.profile_handle)}">${escapeHtml(developer.display_name)}</a>` : escapeHtml(developer.display_name)}` : ""}</p>` : ""}
       <p>${escapeHtml(game.description || "")}</p>
       <p class="play-row"><a class="btn btn-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${game.id}">Play ${escapeHtml(game.title)} ↗</a><button type="button" class="btn played-toggle" data-played-toggle="${escapeHtml(game.id)}" data-played-kind="${playReset?.kind ?? ""}" data-played-min="${playReset ? playReset.min : ""}" hidden>Mark as played</button></p>
+      ${linkNotice}
       <div class="game-actions" role="group" aria-label="Vote and favorite">
         <button type="button" id="vote-up" data-vote-button="up" class="${userVote === 1 ? "active" : ""}" aria-pressed="${userVote === 1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("up", game.title, game.vote_up_count))}" title="Vote up"><span aria-hidden="true">▲</span> <span id="vote-up-count" data-up-count>${game.vote_up_count}</span></button>
         <button type="button" id="vote-down" data-vote-button="down" class="${userVote === -1 ? "active" : ""}" aria-pressed="${userVote === -1 ? "true" : "false"}" aria-label="${escapeHtml(voteButtonLabel("down", game.title, game.vote_down_count))}" title="Vote down"><span aria-hidden="true">▼</span> <span id="vote-down-count" data-down-count>${game.vote_down_count}</span></button>
@@ -2741,6 +2821,7 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/mod-log", lastmod: null as string | null },
     { loc: "/changelog", lastmod: null as string | null },
     { loc: "/categories", lastmod: latestGame },
+    { loc: "/new", lastmod: newest(games.results.map((g) => toLastmod(g.approved_at ?? g.created_at))) },
     ...categoriesWithGames.results.map((cat) => ({ loc: `/categories/${encodeURIComponent(cat.slug)}`, lastmod: toLastmod(cat.changed_at) })),
     ...SIBLING_SITE_URLS.map((loc) => ({ loc, lastmod: null as string | null })),
     ...gameEntries,
@@ -2968,6 +3049,7 @@ app.get("/llms.txt", async (c) => {
     "",
     `- [All daily games](${base}/games): every game, sortable by rating, newest, trending or resetting soonest`,
     `- [All categories](${base}/categories): every category with its games and related categories`,
+    `- [New daily games](${base}/new): games added in the last 30 days, week by week`,
     `- [Curated lists](${base}/lists): lists of games picked by editors and Twitch streamers`,
     `- [Submit a game](${base}/submit): suggest a daily game that's missing`,
     "",
@@ -7112,6 +7194,8 @@ async function listGames(
     offset?: number;
     hidePaywall?: boolean;
     hideNsfw?: boolean;
+    /** Only games listed (approved) within this many days. */
+    listedWithinDays?: number;
     /** Only games this user is the verified developer of. */
     developerUserId?: string;
     /** Only these games (at most ~50; used for the typo-tolerant search results). */
@@ -7188,6 +7272,9 @@ async function listGames(
   }
   if (opts.hideNsfw) {
     whereSql += " AND games.nsfw = 0";
+  }
+  if (opts.listedWithinDays) {
+    whereSql += ` AND datetime(COALESCE(games.approved_at, games.created_at)) >= datetime('now', '-${Math.trunc(opts.listedWithinDays)} days')`;
   }
   if (opts.developerUserId) {
     whereSql += " AND games.id IN (SELECT game_id FROM game_claims WHERE user_id = ? AND status = 'verified')";
@@ -10551,6 +10638,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
         <a href="/changelog">changelog</a>
         |
         <a href="/categories">categories</a>
+        |
+        <a href="/new">new games</a>
         |
         <a href="/feed.xml">new games feed</a>
         |

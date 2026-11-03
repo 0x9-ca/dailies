@@ -11,6 +11,7 @@
 - `GET /feed.xml?category=<slug>` → the same feed limited to approved games in that active category. Unknown or inactive slugs get a 404 `application/xml` error.
 - `GET /badge/c/:slug.svg` → 320×60 SVG for a public list with games: "0x9 dles", "N dailies" and the list's short address (`<short host>/c/<slug>`). Private, unknown or empty lists get a 404 SVG. Cached an hour; for Twitch panels and socials (snippets in the list's Stream settings).
 - `GET /badge/:slug.svg` → 220×40 SVG for an approved game: "0x9 dles" and the upvote share ("N% liked", or "Play daily" before any votes). Unknown or unapproved slugs get a 404 SVG. Cached an hour; meant for `<img>` on developers' own sites.
+- `GET /new` (HTML: games approved in the last 30 days grouped by week, Monday start in US/Eastern, newest first; falls back to the 12 most recent when none; BreadcrumbList and ItemList JSON-LD; edge-cached for logged-out visitors; links `/feed.xml`).
 - `GET /api/categories`
 - `GET /api/lists`
 - `GET /api/lists/:slug` (items carry `lastPlayedAt`, a UTC ISO time or null: when the list's editors last marked the game played on stream; omitted unless Played on stream applies to the viewer, see the played route)
