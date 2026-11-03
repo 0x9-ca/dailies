@@ -111,6 +111,7 @@ app.use("*", async (c, next) => {
   // APP_UPDATE_SCRIPT always get the new HTML, never a copy cached by the previous version).
   const cacheUrl = new URL(c.req.url);
   cacheUrl.searchParams.set("__v", appVersion(c.env));
+  cacheUrl.searchParams.delete("add"); // /games/x?add=1 is the same HTML as /games/x (handled client-side)
   const cacheKey = new Request(cacheUrl.toString());
   const cached = await caches.default.match(cacheKey);
   if (cached) {
@@ -7260,6 +7261,7 @@ const DAILY_PROGRESS_MARKUP = `<section class="daily-progress" id="daily-progres
   <div class="daily-progress-bar" id="daily-progress-bar" role="progressbar" aria-valuemin="0" aria-label="Games played today"><span id="daily-progress-fill"></span></div>
   <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
   <span class="daily-done" id="daily-done" hidden>All done for today</span>
+  <button type="button" class="secondary" id="daily-share" hidden></button>
 </section>
 <section class="heatmap" id="play-heatmap" aria-labelledby="play-heatmap-title" hidden>
   <h2 id="play-heatmap-title">Play history</h2>
@@ -7279,6 +7281,7 @@ const HOME_ROTATION_MARKUP = `<section class="daily-progress daily-strip" id="da
   <p class="daily-soon" id="daily-soon" hidden><span>Resetting soon: <b id="daily-soon-title"></b> in <span id="daily-soon-in"></span></span> <a class="daily-soon-play" id="daily-soon-play" href="#" target="_blank" rel="noopener noreferrer">Play</a></p>
   <button type="button" class="btn" id="daily-play-next" hidden>Play next</button>
   <span class="daily-done" id="daily-done" hidden>All done for today</span>
+  <button type="button" class="secondary" id="daily-share" hidden></button>
 </section>`;
 
 // "Not interested" control on browse-grid cards (see HIDDEN_GAMES_SCRIPT); the eye swaps when hidden cards are shown.
@@ -7709,6 +7712,7 @@ function renderDeveloperSections(
     const badgeAlt = `${escapeHtml(game.title)} on 0x9 dles`;
     const linkSnippet = `<a href="${gamePageUrl}">${escapeHtml(game.title)} on 0x9 dles</a>`;
     const badgeSnippet = `<a href="${gamePageUrl}"><img src="${badgeUrl}" alt="${badgeAlt}" width="220" height="40"></a>`;
+    const addSnippet = `<a href="${gamePageUrl}?add=1" style="display:inline-block;padding:8px 14px;border-radius:6px;background:#2f6fed;color:#fff;font:600 14px/1.2 sans-serif;text-decoration:none">Add ${escapeHtml(game.title)} to my rotation</a>`;
     return `<section class="panel" id="linkback">
       <h2>Help players find ${escapeHtml(game.title)}</h2>
       <p>If you like, link to this page from your game and from your social accounts. It's entirely optional, but links from the places people already find you help players, and search engines, discover the game.</p>
@@ -7719,6 +7723,10 @@ function renderDeveloperSections(
       <p><img src="${escapeHtml(badgeUrl)}" width="220" height="40" alt="${badgeAlt}" /></p>
       <p><input type="text" readonly value="${escapeHtml(badgeSnippet)}" aria-label="Badge HTML" /></p>
       <p><button type="button" class="secondary" data-copy="${escapeHtml(badgeSnippet)}">Copy badge HTML</button></p>
+      <h3>Add to rotation button</h3>
+      <p>A link button that adds ${escapeHtml(game.title)} to the visitor's rotation in one click, signed in or not.</p>
+      <p><input type="text" readonly value="${escapeHtml(addSnippet)}" aria-label="Add to rotation button HTML" /></p>
+      <p><button type="button" class="secondary" data-copy="${escapeHtml(addSnippet)}">Copy button HTML</button></p>
     </section>
     <section class="panel">
       <h2>Edit your game</h2>
@@ -8164,6 +8172,10 @@ const ROTATION_TODAY_SCRIPT = `
       }
       next.hidden = !nextRow;
       done.hidden = !!nextRow;
+      if (shareBtn) {
+        shareBtn.hidden = played === 0;
+        shareBtn.textContent = nextRow ? "Share progress" : "Share today";
+      }
       try {
         const now = new Date();
         const today = window.dglDateKey(now);
@@ -8181,6 +8193,45 @@ const ROTATION_TODAY_SCRIPT = `
         streakNode.hidden = true;
       }
     };
+    // Share today: "0x9 dles · Nov 2 / ✅ 5/8 games · 🔥 12-day streak / d.0x9.ca" via the share sheet, else the clipboard.
+    const shareBtn = box.querySelector("#daily-share");
+    if (shareBtn) {
+      shareBtn.addEventListener("click", async () => {
+        const rows = getRows();
+        if (rows.length === 0) return;
+        const played = rows.filter((row) => window.dglIsPlayed(row.id, row.kind, row.min)).length;
+        const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date());
+        const streak = readStreak();
+        const live = played === rows.length && streak.count >= 2 && streak.last === window.dglDateKey(new Date());
+        const host = (window.DGL_SHORT_ORIGIN || window.location.origin).replace(/^https?:\\/\\//, "");
+        const text = "0x9 dles · " + day + "\\n✅ " + played + "/" + rows.length + " games" + (live ? " · 🔥 " + streak.count + "-day streak" : "") + "\\n" + host;
+        if (navigator.share) {
+          try {
+            await navigator.share({ text });
+            return;
+          } catch (error) {
+            if (error && error.name === "AbortError") return;
+          }
+        }
+        let ok = false;
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch {
+          const area = document.createElement("textarea");
+          area.value = text;
+          area.setAttribute("readonly", "");
+          area.style.position = "fixed";
+          area.style.opacity = "0";
+          document.body.appendChild(area);
+          area.select();
+          try { ok = document.execCommand("copy"); } catch {}
+          area.remove();
+        }
+        if (ok) window.appToast?.("Copied");
+        else window.appToast?.("Could not copy. Try again.", "error");
+      });
+    }
     next.addEventListener("click", () => {
       if (!nextRow || !nextRow.url) return;
       window.open(nextRow.url, "_blank", "noopener");

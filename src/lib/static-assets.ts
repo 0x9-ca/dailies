@@ -1459,6 +1459,37 @@ export const PAGE_SCRIPTS: Record<string, string> = {
             });
             setLocalFavoriteState(window.dglGames.isLocalFavorite(gameId));
 
+            // Deep link /games/:slug?add=1 (from a developer's "Add to my rotation" button): adds the game once the page
+            // is actually shown, then drops the parameter. Client-side only because the page is edge-cached.
+            (async () => {
+              const params = new URLSearchParams(window.location.search);
+              if (params.get("add") !== "1") return;
+              // app.js (CSRF fetch wrapper, toasts) loads after page scripts: wait for it.
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              if (document.visibilityState !== "visible") {
+                // Opened in a background tab: wait until it is shown.
+                await new Promise((resolve) => document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && resolve()));
+              }
+              params.delete("add");
+              const query = params.toString();
+              window.history.replaceState(null, "", window.location.pathname + (query ? "?" + query : "") + window.location.hash);
+              if (favoriteButton) {
+                if (favoriteButton.getAttribute("data-favorited") === "yes") { notify("Already in your rotation."); return; }
+                favoriteButton.setAttribute("data-favorited", "yes");
+                favoriteButton.textContent = "Remove favorite";
+                if (!(await window.dglGames.setAccountFavorite(gameId, true))) {
+                  favoriteButton.setAttribute("data-favorited", "no");
+                  favoriteButton.textContent = "Add favorite";
+                  notify("Could not add " + game.title + " to your rotation.", "error");
+                  return;
+                }
+              } else {
+                if (window.dglGames.isLocalFavorite(gameId)) { notify("Already in your rotation."); return; }
+                setLocalFavoriteState(await window.dglGames.toggleLocalFavorite(game));
+              }
+              notify("Added " + game.title + " to your rotation", "success");
+            })();
+
             const reportForm = document.getElementById("report-form");
             const reportStatus = document.getElementById("report-status");
             const setReportStatus = (text) => {
