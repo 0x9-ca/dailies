@@ -24,6 +24,7 @@ import { BROKEN_THRESHOLD, GAP_LIMIT, loadGameHealth } from "./lib/game-health";
 import { FANDLE_HARD_MAX_SHOWN, FANDLE_NO_EXPIRY, FANDLE_SETTING_LIMIT_MAX, FANDLE_SETTING_MEMBERSHIP_DAYS, fandleActiveSql, FANDLE_SETTING_MAX_PER_DEVELOPER, FANDLE_SETTING_MAX_SHOWN, FANDLE_MIN_FOLLOW_DAYS, FANDLE_SCOPES, TwitchCheckError, decideFandle, fetchTwitchRelationship, type FandleRelationship } from "./lib/fandles";
 import { categoryHue, renderGameOgPng } from "./lib/og";
 import { PLAY_SYNC_SCRIPT } from "./lib/play-sync";
+import { NOW_PLAYING_CSS, NOW_PLAYING_SCRIPT, gameInList, nowPlayingKey, readNowPlaying, resolveNowPlaying } from "./lib/now-playing";
 import { loadPlays, playsBodySchema, savePlays } from "./lib/user-plays";
 import { CSRF_FETCH_SCRIPT, LAYOUT_SCRIPT, PAGE_SCRIPTS, SHARED_CSS, registerAsset, serveAsset } from "./lib/static-assets";
 
@@ -2806,6 +2807,7 @@ app.get("/lists/:slug", async (c) => {
     </main>
     <script src="${ASSET.listPageJs}"></script>
     ${isAdminEditor || list.visibility !== "public" ? "" : `${renderEmbedDialog()}<script src="${ASSET.embedDialogJs}" data-origin="${escapeHtml(appOrigin(c.env))}" data-slug="${escapeHtml(list.slug)}" data-title="${escapeHtml(list.title)}"></script>`}
+    ${isAdminEditor ? "" : `<link rel="stylesheet" href="${ASSET.npCss}" /><script type="application/json" id="data-now-playing">${scriptJson({ slug: list.slug, listId: list.id, canSet: canEdit })}</script><script src="${ASSET.npJs}"></script>`}
     ${layoutOn ? `<script src="${ASSET.page_list_layout}"></script>` : ""}
     ${!isAdminEditor ? `<script>
       (() => {
@@ -6110,6 +6112,54 @@ app.put("/api/lists/:id/items/:gameId/played", async (c) => {
   }
   await purgeListPageCache(c, listId);
   return c.json({ ok: true, lastPlayedAt });
+});
+
+// Now playing: the game a creator is on. Public read (no-store, ~10s KV cache inside), editor write.
+app.get("/api/lists/:slug/now-playing", async (c) => {
+  const user = c.get("user");
+  const result = await readNowPlaying(c.env, c.req.param("slug"), async (list) =>
+    canViewList(list.visibility as "public" | "private", list.owner_user_id, user, { listTwitchUserId: list.twitch_user_id, userTwitchId: await getUserTwitchId(c.env, user) })
+  );
+  if (!result) {
+    return c.json({ error: "Not found" }, 404, { "Cache-Control": "no-store" });
+  }
+  return c.json(result, 200, { "Cache-Control": "no-store" });
+});
+
+app.put("/api/lists/:id/now-playing", async (c) => {
+  const listId = c.req.param("id");
+  const auth = await requireListEditor(c, listId);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const parsed = z.object({ gameId: z.string().min(1).max(64).nullable() }).safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const rate = await enforceRateLimit(c.env, `now-playing:${auth.id}`, 300, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
+  }
+  const list = await c.env.DB.prepare("SELECT slug FROM curated_lists WHERE id = ?1").bind(listId).first<{ slug: string }>();
+  if (!list) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const gameId = parsed.data.gameId;
+  let title: string | null = null;
+  if (gameId) {
+    const fandleLimits = await getFandleLimits(c.env);
+    if (!(await gameInList(c.env, listId, gameId, fandleActiveSql("fm", fandleLimits.membershipDays)))) {
+      return c.json({ error: "Game is not on this list" }, 400);
+    }
+    title = (await c.env.DB.prepare("SELECT title FROM games WHERE id = ?1").bind(gameId).first<{ title: string }>())?.title ?? null;
+    if (!title) {
+      return c.json({ error: "Game is not on this list" }, 400);
+    }
+  }
+  const at = gameId ? new Date().toISOString() : null;
+  await c.env.DB.prepare("UPDATE curated_lists SET now_playing_game_id = ?1, now_playing_at = ?2 WHERE id = ?3").bind(gameId, at, listId).run();
+  await c.env.CACHE.delete(nowPlayingKey(list.slug)).catch(() => undefined);
+  return c.json(resolveNowPlaying({ gameId, title, at }));
 });
 
 async function purgeListPageCache(c: Context<{ Bindings: Env; Variables: AppVariables }>, listId: string): Promise<void> {
@@ -10022,6 +10072,7 @@ const LIST_PAGE_SCRIPT = `
           if (hovered || document.hidden) { st.pos = list.scrollTop; return; }
           const max = list.scrollHeight - list.clientHeight;
           if (max <= 2) return;
+          if (Math.abs(list.scrollTop - st.pos) > 3) st.pos = list.scrollTop;
           st.t += dt;
           if (reduce.matches) {
             if (st.t >= PAGE_MS) { st.t = 0; st.pos = st.pos >= max - 1 ? 0 : Math.min(max, st.pos + list.clientHeight); list.scrollTop = st.pos; }
@@ -11120,6 +11171,8 @@ const ASSET = {
   appJs: registerAsset("app", "js", joinJs(LAYOUT_SCRIPT, RESET_LOCALIZE_SCRIPT, PLAY_SYNC_SCRIPT, SHORTCUTS_SCRIPT, APP_UPDATE_SCRIPT, PILL_FIT_SCRIPT, VOTE_PROMPT_SCRIPT)),
   listPageJs: registerAsset("list-page", "js", LIST_PAGE_SCRIPT),
   embedDialogJs: registerAsset("embed-dialog", "js", EMBED_DIALOG_SCRIPT),
+  npCss: registerAsset("now-playing", "css", NOW_PLAYING_CSS),
+  npJs: registerAsset("now-playing", "js", NOW_PLAYING_SCRIPT),
   listSortJs: registerAsset("list-sort", "js", LIST_SORT_SCRIPT),
   dailyProgressJs: registerAsset("daily-progress", "js", DAILY_PROGRESS_SCRIPT),
   page_home_strip: registerAsset("home-strip", "js", PAGE_SCRIPTS["home-strip"]),
