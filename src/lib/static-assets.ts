@@ -1368,7 +1368,42 @@ export const PAGE_SCRIPTS: Record<string, string> = {
       };
       const clearDraft = () => { try { localStorage.removeItem(DRAFT_KEY); } catch {} };
       document.querySelectorAll("[data-save-draft]").forEach((link) => link.addEventListener("click", saveDraft));
+      // Warn (never block) when the link or title looks like a game that is already listed or waiting for review.
+      const dupNotice = document.getElementById("duplicate-notice");
+      let dupTimer = 0;
+      let dupSeq = 0;
+      const checkDuplicates = async () => {
+        if (!(form instanceof HTMLFormElement) || !dupNotice) return;
+        const url = String(form.elements.url ? form.elements.url.value : "").trim();
+        const title = String(form.elements.title ? form.elements.title.value : "").trim();
+        const seq = ++dupSeq;
+        if (url.length < 4 && title.length < 3) { dupNotice.hidden = true; return; }
+        try {
+          const response = await fetch("/api/games/duplicate-check?url=" + encodeURIComponent(url) + "&title=" + encodeURIComponent(title));
+          if (!response.ok || seq !== dupSeq) return;
+          const data = await response.json();
+          const matches = data.matches || [];
+          const listed = matches.find((m) => m.status === "approved");
+          dupNotice.textContent = "";
+          if (listed) {
+            dupNotice.append("This looks like ");
+            const link = document.createElement("a");
+            link.href = "/games/" + encodeURIComponent(listed.slug);
+            link.textContent = listed.title;
+            link.target = "_blank";
+            link.rel = "noopener";
+            dupNotice.append(link, ", already on 0x9 dles.");
+          } else if (matches.length > 0) {
+            dupNotice.textContent = "A game with this link was already submitted and is waiting for review.";
+          }
+          dupNotice.hidden = matches.length === 0;
+        } catch {}
+      };
+      const scheduleDupCheck = () => { clearTimeout(dupTimer); dupTimer = setTimeout(checkDuplicates, 500); };
+      form?.elements.url?.addEventListener("input", scheduleDupCheck);
+      form?.elements.title?.addEventListener("input", scheduleDupCheck);
       restoreDraft();
+      scheduleDupCheck();
       form?.addEventListener("submit", async (event) => {
         event.preventDefault();
         if (!(form instanceof HTMLFormElement)) return;
