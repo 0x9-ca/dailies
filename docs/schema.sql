@@ -219,8 +219,8 @@ CREATE TABLE list_play_history (
   game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
   started_at TEXT NOT NULL
 );
-CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
 CREATE INDEX idx_list_play_history_game_started ON list_play_history(game_id, started_at);
+CREATE INDEX idx_list_play_history_list_started ON list_play_history(list_id, started_at);
 
 CREATE TABLE list_suggestion_votes (
   curated_list_id TEXT NOT NULL,
@@ -339,7 +339,7 @@ CREATE TABLE users (
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'editor', 'admin')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-, rotation_share_token TEXT DEFAULT NULL, profile_handle TEXT, profile_public INTEGER NOT NULL DEFAULT 0, profile_show_rotation INTEGER NOT NULL DEFAULT 0, profile_show_twitch INTEGER NOT NULL DEFAULT 0, profile_avatar_provider TEXT, creator_type TEXT);
+, rotation_share_token TEXT DEFAULT NULL, profile_handle TEXT, profile_public INTEGER NOT NULL DEFAULT 0, profile_show_rotation INTEGER NOT NULL DEFAULT 0, profile_show_twitch INTEGER NOT NULL DEFAULT 0, profile_avatar_provider TEXT, creator_type TEXT, profile_show_streak INTEGER NOT NULL DEFAULT 0);
 CREATE UNIQUE INDEX idx_users_profile_handle ON users(profile_handle) WHERE profile_handle IS NOT NULL;
 CREATE UNIQUE INDEX idx_users_rotation_share_token ON users(rotation_share_token) WHERE rotation_share_token IS NOT NULL;
 

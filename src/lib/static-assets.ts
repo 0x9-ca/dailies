@@ -434,6 +434,7 @@ export const SHARED_CSS = `      :root {
       .profile-head h1 { margin: 0; overflow-wrap: anywhere; }
       .profile-avatar { width: 96px; height: 96px; border-radius: 50%; flex: none; object-fit: cover; background: var(--bg-soft); border: 1px solid var(--border); }
       .profile-avatar-initial { display: flex; align-items: center; justify-content: center; font-size: 2.6rem; font-weight: 800; color: var(--muted); }
+      .profile-streak { margin: 0 0 1rem; }
       .profile-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
       .profile-badge { display: inline-flex; align-items: center; gap: 0.2rem; padding: 0.15rem 0.6rem; border: 1px solid var(--border); border-radius: 999px; font-size: 0.85rem; background: var(--bg-soft); }
       .profile-badge .verified-badge { margin: 0; }
@@ -3740,6 +3741,7 @@ export const PAGE_SCRIPTS: Record<string, string> = {
             handle: String(fd.get("handle") || "").trim() || null,
             showRotation: fd.has("showRotation"),
             showTwitch: fd.has("showTwitch"),
+            showStreak: fd.has("showStreak"),
             avatarProvider: String(fd.get("avatarProvider") || "") || null
           })
         });
