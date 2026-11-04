@@ -177,8 +177,10 @@ export async function syncDeveloperRoles(env: Env): Promise<number | null> {
         console.error(JSON.stringify({ message: "developer role: Discord refused the bot", detail: check.detail }));
         return Date.now() + 60 * 60 * 1000;
       case "error":
+        // Only this row is at fault: record the check so it moves behind the others, and carry on with the next one.
         console.error(JSON.stringify({ message: "developer role: Discord check failed", userId: row.user_id, detail: check.detail }));
-        return Date.now() + 2 * 60 * 1000;
+        await env.DB.prepare("UPDATE discord_role_grants SET checked_at = datetime('now'), next_check_at = datetime('now', '+2 minutes') WHERE user_id = ?1").bind(row.user_id).run();
+        break;
     }
   }
 
