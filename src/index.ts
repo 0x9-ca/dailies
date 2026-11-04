@@ -8327,7 +8327,8 @@ async function updateGameScores(env: Env, gameIds: string[]): Promise<void> {
       upVotes: row.vote_up_count,
       downVotes: row.vote_down_count,
       reportCount: row.report_count,
-      favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+      favoriteCount: row.favorite_count_user || 0,
+    anonFavoriteCount: row.favorite_count_anon || 0,
       clickCount: row.click_count || 0,
       listCount: row.list_count || 0,
       createdAtIso: row.created_at
@@ -8370,7 +8371,8 @@ async function updateGameScore(env: Env, gameId: string): Promise<void> {
     upVotes: row.vote_up_count,
     downVotes: row.vote_down_count,
     reportCount: row.report_count,
-    favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+    favoriteCount: row.favorite_count_user || 0,
+    anonFavoriteCount: row.favorite_count_anon || 0,
     clickCount: row.click_count || 0,
     listCount: row.list_count || 0,
     createdAtIso: row.created_at
@@ -8399,7 +8401,8 @@ async function recalculateAllScores(env: Env): Promise<number> {
     upVotes: row.vote_up_count,
     downVotes: row.vote_down_count,
     reportCount: row.report_count,
-    favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+    favoriteCount: row.favorite_count_user || 0,
+    anonFavoriteCount: row.favorite_count_anon || 0,
     clickCount: row.click_count || 0,
     listCount: row.list_count || 0,
     createdAtIso: row.created_at

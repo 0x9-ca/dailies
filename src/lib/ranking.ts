@@ -16,7 +16,8 @@ export function computeGameScore(params: {
   upVotes: number;
   downVotes: number;
   reportCount: number;
-  favoriteCount: number;
+  favoriteCount: number; // account favorites
+  anonFavoriteCount: number; // anonymous favorites: cheap to fake, so weighed far less
   clickCount: number;
   listCount: number;
   createdAtIso: string;
@@ -26,7 +27,7 @@ export function computeGameScore(params: {
   const ageDays = Math.max(0, ageMs / (1000 * 60 * 60 * 24));
   const freshnessBoost = Math.max(0, 0.25 - ageDays * 0.005);
   const reportPenalty = Math.min(0.4, params.reportCount * 0.05);
-  const favoriteBoost = Math.min(0.35, params.favoriteCount * 0.008);
+  const favoriteBoost = Math.min(0.35, params.favoriteCount * 0.008 + Math.min(0.03, params.anonFavoriteCount * 0.001));
   const clickBoost = Math.min(0.3, params.clickCount * 0.003);
   const listBoost = Math.min(0.2, params.listCount * 0.1);
   return Math.max(0, voteScore + freshnessBoost + favoriteBoost + clickBoost + listBoost - reportPenalty);

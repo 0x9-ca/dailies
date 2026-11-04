@@ -112,7 +112,7 @@ Cloudflare Worker app for discovering daily games. Users can submit links, vote,
 
 ## Scoring
 
-Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost (+0.003/click, max +0.30), and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures.
+Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, favorite boost (+0.008 per account favorite; anonymous favorites +0.001 each, capped at +0.03 together; total favorite boost max +0.35), click boost (+0.003/click, max +0.30), and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures.
 
 ## Rotation export/import
 
