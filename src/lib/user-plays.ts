@@ -21,16 +21,11 @@ export const playsBodySchema = z.object({
   streak: z.object({ last: z.string().regex(DAY_KEY), count: z.number().int().min(0).max(100000) }).optional(),
   best: z.number().int().min(0).max(100000).optional(),
   log: z.record(z.string().regex(DAY_KEY), z.number().int().min(0).max(1000)).optional()
-}).superRefine((body, ctx) => {
-  // Viewer-local days: tolerate time zones by allowing yesterday..tomorrow relative to UTC now.
-  const lo = utcDay(-1), hi = utcDay(1);
-  for (const item of [...(body.skipped || []), ...(body.unskipped || [])]) {
-    if (item.day < lo || item.day > hi || Number.isNaN(Date.parse(item.day))) {
-      ctx.addIssue({ code: "custom", message: "Invalid skip day" });
-      return;
-    }
-  }
 });
+
+// Viewer-local days: tolerate time zones by accepting yesterday..tomorrow relative to UTC now. Other skip days are
+// dropped one by one, never failing the body, so one stale queued entry cannot block a browser's whole sync.
+const skipDayOk = (day: string) => day >= utcDay(-1) && day <= utcDay(1) && !Number.isNaN(Date.parse(day));
 
 function isoOrNull(value: string): string | null {
   const ms = Date.parse(value);
@@ -110,10 +105,10 @@ export async function savePlays(env: Env, userId: string, body: z.infer<typeof p
     );
   }
   // Unskips first, like unplays.
-  for (const item of body.unskipped || []) {
+  for (const item of (body.unskipped || []).filter((x) => skipDayOk(x.day))) {
     stmts.push(env.DB.prepare("DELETE FROM user_skips WHERE user_id = ?1 AND day = ?2 AND game_id = ?3").bind(userId, item.day, item.gameId));
   }
-  for (const item of body.skipped || []) {
+  for (const item of (body.skipped || []).filter((x) => skipDayOk(x.day))) {
     stmts.push(
       env.DB.prepare("INSERT OR IGNORE INTO user_skips (user_id, day, game_id) SELECT ?1, ?2, games.id FROM games WHERE games.id = ?3").bind(userId, item.day, item.gameId)
     );

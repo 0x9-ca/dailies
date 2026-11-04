@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-04",
     items: [
+      "Reordering your rotation now sticks when you change the sort.",
       "You can now delete your account from Settings.",
       "Reset countdowns stay correct when clocks change.",
       "Rotation import now marks a link that only matches a site (not the exact game page) as a close match, so you can check it.",

@@ -1924,6 +1924,8 @@ export const PAGE_SCRIPTS: Record<string, string> = {
             title: item.getAttribute("data-game-title") || ""
           })).filter((row) => row.id && row.slug && row.title);
           writeFavorites(next);
+          // Re-capture the manual order so switching the sort away and back keeps this move.
+          listSorter.refresh();
         };
 
         const removeFavorite = (gameId) => {
@@ -2479,6 +2481,8 @@ export const PAGE_SCRIPTS: Record<string, string> = {
 
       const saveOrder = async () => {
         if (!list) return;
+        // Re-capture the manual order so switching the sort away and back keeps this move.
+        window.dglRotationSorter?.refresh();
         const items = Array.from(list.querySelectorAll("li[data-game-id]"));
         const payload = {
           items: items.map((item, index) => ({
@@ -2612,6 +2616,8 @@ export const PAGE_SCRIPTS: Record<string, string> = {
               btn.closest("li")?.remove();
               setStatus("Removed from rotation.");
               if (window.appToast) window.appToast("Removed from rotation.", "success");
+              // Last game gone: reload so the server renders the empty state (no Export, Copy as text or Sort).
+              if (!list || !list.querySelector("li[data-game-id]")) window.setTimeout(() => window.location.reload(), 400);
             } else {
               setStatus("Could not remove.");
               if (window.appToast) window.appToast("Could not remove from rotation.", "error");
