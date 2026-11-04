@@ -4927,6 +4927,10 @@ const anonFavoriteSchema = z.object({ anonId: z.string().uuid() });
 
 app.post("/api/games/:id/favorite-anon", async (c) => {
   const gameId = c.req.param("id");
+  const favRate = await enforceRateLimit(c.env, `favanon:${await getAnonymousVoteKey(c)}`, 300, 60 * 60);
+  if (!favRate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: favRate.retryAfterSeconds }, 429);
+  }
   const parsed = anonFavoriteSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
@@ -4945,6 +4949,10 @@ app.post("/api/games/:id/favorite-anon", async (c) => {
 
 app.delete("/api/games/:id/favorite-anon", async (c) => {
   const gameId = c.req.param("id");
+  const favRate = await enforceRateLimit(c.env, `favanon:${await getAnonymousVoteKey(c)}`, 300, 60 * 60);
+  if (!favRate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: favRate.retryAfterSeconds }, 429);
+  }
   const parsed = anonFavoriteSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
@@ -6068,13 +6076,25 @@ app.post("/api/games/:id/report", async (c) => {
   const user = c.get("user");
   const gameId = c.req.param("id");
 
+  const ipHash = user ? "" : await getAnonymousVoteKey(c);
+  const rateLimitKey = user ? `report:${user.id}` : `report:anon:${ipHash}`;
+  const reportRate = await enforceRateLimit(c.env, rateLimitKey, 20, 60 * 60);
+  if (!reportRate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: reportRate.retryAfterSeconds }, 429);
+  }
+  const parsed = reportSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+  const game = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'").bind(gameId).first<{ id: string }>();
+  if (!game) {
+    return c.json({ error: "Not found" }, 404);
+  }
+
   let reporterId: string;
-  let rateLimitKey: string;
   if (user) {
     reporterId = user.id;
-    rateLimitKey = `report:${user.id}`;
   } else {
-    const ipHash = await getAnonymousVoteKey(c);
     const anonEmail = `anon-${ipHash}@anonymous.local`;
     let anonUser = await c.env.DB.prepare("SELECT id FROM users WHERE email = ?1").bind(anonEmail).first<{ id: string }>();
     if (!anonUser) {
@@ -6083,16 +6103,13 @@ app.post("/api/games/:id/report", async (c) => {
       anonUser = { id: anonId };
     }
     reporterId = anonUser.id;
-    rateLimitKey = `report:anon:${ipHash}`;
   }
 
-  const reportRate = await enforceRateLimit(c.env, rateLimitKey, 20, 60 * 60);
-  if (!reportRate.ok) {
-    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: reportRate.retryAfterSeconds }, 429);
-  }
-  const parsed = reportSchema.safeParse(await c.req.json());
-  if (!parsed.success) {
-    return c.json({ error: "Invalid payload" }, 400);
+  const existing = await c.env.DB.prepare("SELECT 1 AS ok FROM reports WHERE game_id = ?1 AND reported_by_user_id = ?2 AND status = 'open' LIMIT 1")
+    .bind(gameId, reporterId)
+    .first();
+  if (existing) {
+    return c.json({ ok: true, alreadyReported: true });
   }
   const reportId = crypto.randomUUID();
   await c.env.DB.batch([
@@ -8676,14 +8693,41 @@ function renderGameListInteractionScript(opts: { includeImportPanel: boolean; pr
   return `<script src="${ASSET.page_game_list}" data-prompt-from-query="${opts.promptFromQuery ? 1 : 0}" data-include-import-panel="${opts.includeImportPanel ? 1 : 0}"></script>`;
 }
 
+// IPv4 stays whole; IPv6 collapses to its /64 prefix (a household owns a whole /64, so per-address keys are free to rotate).
+// IPv4-mapped IPv6 (::ffff:1.2.3.4) is the IPv4 address. Unparseable values are returned as-is.
+function normalizeIpForKey(raw: string): string {
+  let ip = raw.trim().toLowerCase();
+  const zone = ip.indexOf("%");
+  if (zone >= 0) ip = ip.slice(0, zone);
+  if (!ip.includes(":")) return ip;
+  const mapped = /^(?:0{1,4}:){0,5}:?(?:ffff:)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip) || /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip);
+  if (mapped) return mapped[1];
+  let head = ip;
+  let tail = "";
+  const dbl = ip.indexOf("::");
+  if (dbl >= 0) {
+    if (ip.indexOf("::", dbl + 1) >= 0) return ip;
+    head = ip.slice(0, dbl);
+    tail = ip.slice(dbl + 2);
+  }
+  const headParts = head ? head.split(":") : [];
+  const tailParts = tail ? tail.split(":") : [];
+  const hex = /^[0-9a-f]{1,4}$/;
+  if (![...headParts, ...tailParts].every((part) => hex.test(part))) return ip;
+  const total = headParts.length + tailParts.length;
+  if (dbl >= 0 ? total > 7 : total !== 8) return ip;
+  const groups = dbl >= 0 ? [...headParts, ...Array(8 - total).fill("0"), ...tailParts] : headParts;
+  return groups.slice(0, 4).map((g) => g.padStart(4, "0")).join(":") + "::/64";
+}
+
 function getClientIp(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): string {
   const cfIp = (c.req.header("cf-connecting-ip") || "").trim();
   if (cfIp) {
-    return cfIp;
+    return normalizeIpForKey(cfIp);
   }
   const forwarded = c.req.header("x-forwarded-for") || "";
   const first = forwarded.split(",")[0]?.trim() || "";
-  return first || "unknown";
+  return first ? normalizeIpForKey(first) : "unknown";
 }
 
 async function getAnonymousVoteKey(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): Promise<string> {
