@@ -5,6 +5,9 @@
 - `GET /api/games?sort=top|new|trending|popular|reset&category=<slug>&q=<query>&page=<n>&perPage=<n>`
 - `GET /c/:slug`, `/g/:slug`, `/r/:token` → 301 (relative `Location`, query string kept) to `/lists/:slug`, `/games/:slug`, `/rotation/:token`. Every request to `SHORT_URL`'s host (e.g. `d.0x9.ca`) is redirected to `APP_URL` (301 for GET/HEAD, else 308; absolute `Location`; short paths expanded).
 - `GET /api/version` → `{ version }`, the deployed Worker version id (pages reload when it changes).
+- `GET /api/me/session` → `{ signedIn: boolean }`, always 200, `no-store`. Public, no auth (clients use it to decide whether to read account data).
+- `GET /api/games/categories?ids=<id>,<id>,...` (up to 100 ids) → `{ <gameId>: [{ slug, name }] }` for each id (empty array when none). With `withDevelopers=1` → `{ categories: { ... }, developers: { <gameId>: { handle, name } } }` (verified developers only; `handle` is null unless their profile is public). Public, no auth.
+- `GET /api/games/rotation-info?ids=<id>,<id>,...` (up to 90 ids) → `{ <gameId>: { url, reset: { kind, min, label } | null } }` for approved games only; the logged-out rotation page uses it for links and reset times. Public, no auth.
 - `GET /api/games/vote-counts?ids=<id>,<id>,...` (up to 98 approved game ids) → `{ counts: { <id>: [up, down] } }`. Edge-cached for 10 seconds per id set; polled by pages for live vote counts.
 - `GET /categories` (HTML index of categories with games) and `GET /categories/:slug?page=<n>` (HTML landing page: intro, ranked game grid, related categories, FAQ with FAQPage and BreadcrumbList JSON-LD; 404 for unknown, inactive or empty categories). Both are edge-cached for logged-out visitors. `/games?category=<slug>` with no other filter has `/categories/<slug>` as its canonical URL.
 - `GET /feed.xml` → Atom feed of the 50 most recently listed approved games (`COALESCE(approved_at, created_at)`), `application/atom+xml`, cached 10 minutes.
@@ -41,12 +44,12 @@
 - `GET /login`
 - `GET /auth/discord`, `GET /auth/discord/callback`
 - `GET /auth/twitch`, `GET /auth/twitch/callback`
-- `POST /auth/discord/link`, `POST /auth/twitch/link` (signed in: link that provider to the current account; an existing separate account for it is merged in)
+- `POST /auth/:provider/link` (`discord` or `twitch`; signed in only, signed out redirects to `/login`; starts OAuth with intent `link` to attach that provider to the current account, and an existing separate account for it is merged in)
 - `POST /auth/logout`
 
 ## Authenticated user
 
-- `POST /api/games`
+- `POST /api/games` is also open to anonymous visitors (10 an hour per user or hashed IP; admins exempt), so it is listed here only for its signed-in options such as `isDeveloper`
 - `POST /api/games/:id/favorite`
 - `DELETE /api/games/:id/favorite`
 - `POST /api/games/:id/report`
@@ -66,6 +69,8 @@
 - `POST /api/me/push/unsubscribe` (signed in, CSRF): `{ endpoint }`, removes the caller's subscription.
 - `GET /api/me/reminders/pending` (signed in, `no-store`): `{ title, body, url }` for the reminder the service worker should show now ("3 games reset soon", "Waffledle resets in 45m"); a generic text when nothing is due.
 - `POST /api/me/favorites/reorder`
+- `POST /api/me/rotation/share` → `{ shareToken }` (signed in, CSRF; creates the public rotation link at `/rotation/<token>` and returns the existing token if there is one; the token is the display name slug, with 6 characters of the user id appended when that name is taken, or random when there is no name)
+- `DELETE /api/me/rotation/share` → `{ ok: true }` (signed in, CSRF; turns the public rotation link off)
 - `PATCH /api/me/favorites/:gameId`
 - `GET /api/me/rotation?weekday=1..7`
 - `PATCH /api/me/profile`
@@ -101,7 +106,7 @@
 - `DELETE /api/admin/client-errors/:fingerprint` and `DELETE /api/admin/client-errors` (admin only; clear one or all client error rows)
 
 - `PUT /api/admin/settings` (admin only: `{ fandleMaxPerDeveloper, fandleMaxShown, fandleMembershipDays }`: games 1-100, days 1-3650, each `null` for no limit; optional `playedOnStream: "on" | "off"` (Played on stream for everyone, or admins only). A change purges the cached list pages)
-- `POST /api/admin/creators/twitch` (admin only; `{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:twitchUserId` removes them)
+- `POST /api/admin/creators/twitch` (admin only; `{ login }`: verifies a Twitch streamer by username; `DELETE /api/admin/creators/twitch/:id` removes them, where `:id` is the Twitch user id, and drops only a hand-granted (`manual`) status)
 - `POST /api/admin/users/:id/creator` (admin only; `{ grant }`: makes a user a verified creator with a list of their own, or removes a status granted by staff; Twitch-derived statuses follow Twitch)
 - `POST /api/admin/claims/:claimId` (`{ action: "approve" | "reject" | "revoke" }`; approve verifies a manual claim)
 
@@ -115,6 +120,8 @@
 - `POST /api/admin/games/:id/restore`
 - `GET /api/admin/reports?status=open|resolved|dismissed&q=<query>`
 - `POST /api/admin/reports/bulk`
+- `POST /api/admin/reports/:id/hide` (editor/admin; `:id` is a report. Disables the reported game and resolves its open reports; 404 if the report doesn't exist)
+- `POST /api/admin/reports/:id/delete` (admin only; `:id` is a report. Deletes the reported game; 403 for editors, 404 if the report doesn't exist)
 - `POST /api/admin/reports/:id/resolve`
 - `POST /api/admin/reports/:id/dismiss`
 - `POST /api/games/:id/reset-suggestion` (signed in; 10/day per user). Body `{ reset_basis: "local"|"server", reset_time: "HH:MM", reset_timezone?: IANA name or null (server only; null = UTC), note?: string (max 200) }`. One open suggestion per user per game (a new one replaces it). 409 if it equals the current reset, 403 for staff and the game's verified developer (they edit directly).
@@ -127,6 +134,7 @@
 - `POST /api/lists`
 - `PATCH /api/lists/:id` (`title`, `description`, `slug` (staff only), `suggestionsEnabled`)
 - `PATCH /api/lists/:id/visibility` (staff, or the owner of their own creator list)
+- `PATCH /api/lists/:id/twitch` (`{ login: string | null }`; editors and admins only. Looks the username up on Twitch and tags the list with that channel (`twitch_login`, `twitch_user_id`); `null` clears the tag. 400 for an invalid username, 404 when Twitch has no such user, 502 when Twitch can't be reached. Returns `{ ok, twitchLogin }`)
 - `DELETE /api/lists/:id`
 - `POST /api/lists/:id/items`
 - `DELETE /api/lists/:id/items/:gameId`
