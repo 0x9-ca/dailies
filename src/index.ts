@@ -223,6 +223,15 @@ app.use("*", async (c, next) => {
 });
 
 // Double-submit-cookie CSRF token for browser API calls.
+// Parses the JSON body; null on an empty or malformed body so callers answer with their normal 400.
+async function readJson(c: Context<any, any, any>): Promise<unknown> {
+  try {
+    return await c.req.json();
+  } catch {
+    return null;
+  }
+}
+
 function ensureCsrfCookie(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): void {
   if (!getCookie(c, "csrf_token")) {
     setCookie(c, "csrf_token", randomToken(), {
@@ -4963,7 +4972,7 @@ app.post("/api/games/:id/vote", async (c) => {
   if (!voteRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: voteRate.retryAfterSeconds }, 429);
   }
-  const parsed = voteSchema.safeParse(await c.req.json());
+  const parsed = voteSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -5030,7 +5039,7 @@ app.delete("/api/games/:id/favorite", async (c) => {
   return c.json({ ok: true });
 });
 
-const anonFavoriteSchema = z.object({ anonId: z.string().uuid() });
+const anonFavoriteSchema = z.object({ anonId: z.guid() });
 
 app.post("/api/games/:id/favorite-anon", async (c) => {
   const gameId = c.req.param("id");
@@ -5038,7 +5047,7 @@ app.post("/api/games/:id/favorite-anon", async (c) => {
   if (!favRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: favRate.retryAfterSeconds }, 429);
   }
-  const parsed = anonFavoriteSchema.safeParse(await c.req.json());
+  const parsed = anonFavoriteSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -5060,7 +5069,7 @@ app.delete("/api/games/:id/favorite-anon", async (c) => {
   if (!favRate.ok) {
     return c.json({ error: "Rate limit exceeded", retryAfterSeconds: favRate.retryAfterSeconds }, 429);
   }
-  const parsed = anonFavoriteSchema.safeParse(await c.req.json());
+  const parsed = anonFavoriteSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -5084,7 +5093,7 @@ const adminGameUpdateSchema = z.object({
   nsfw: z.boolean().optional().default(false),
   // Omitted keeps the stored text; null or blank clears it.
   how_to_play: z.preprocess((value) => (typeof value === "string" ? value.trim() || null : value), z.string().max(2000).nullable().optional()),
-  category_ids: z.array(z.string().uuid()).max(20)
+  category_ids: z.array(z.guid()).max(20)
 });
 
 app.put("/api/games/:id/admin-update", async (c) => {
@@ -5094,7 +5103,7 @@ app.put("/api/games/:id/admin-update", async (c) => {
   }
 
   const gameId = c.req.param("id");
-  const parsed = adminGameUpdateSchema.safeParse(await c.req.json());
+  const parsed = adminGameUpdateSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -5566,7 +5575,7 @@ app.put("/api/games/:id/developer-update", async (c) => {
 });
 
 const importLocalFavoritesSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(500)
+  ids: z.array(z.guid()).min(1).max(500)
 });
 
 app.post("/api/me/favorites/import-local", async (c) => {
@@ -5575,7 +5584,7 @@ app.post("/api/me/favorites/import-local", async (c) => {
     return auth;
   }
 
-  const parsed = importLocalFavoritesSchema.safeParse(await c.req.json());
+  const parsed = importLocalFavoritesSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -5759,7 +5768,7 @@ app.get("/api/me/favorites/export", async (c) => {
 const importFavoritesSchema = z.object({
   version: z.literal(1),
   items: z.array(z.object({
-    id: z.string().uuid(),
+    id: z.guid(),
     slug: z.string(),
     title: z.string()
   })).min(1).max(500)
@@ -5770,7 +5779,7 @@ app.post("/api/me/favorites/import", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = importFavoritesSchema.safeParse(await c.req.json());
+  const parsed = importFavoritesSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -5783,7 +5792,7 @@ app.post("/api/me/favorites/import", async (c) => {
 });
 
 const reorderSchema = z.object({
-  items: z.array(z.object({ gameId: z.string().uuid(), position: z.number().int().positive() })).min(1)
+  items: z.array(z.object({ gameId: z.guid(), position: z.number().int().positive() })).min(1)
 });
 
 app.post("/api/me/favorites/reorder", async (c) => {
@@ -5791,7 +5800,7 @@ app.post("/api/me/favorites/reorder", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = reorderSchema.safeParse(await c.req.json());
+  const parsed = reorderSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -5870,7 +5879,7 @@ app.patch("/api/me/favorites/:gameId", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = weekdaySchema.safeParse(await c.req.json());
+  const parsed = weekdaySchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -5889,7 +5898,7 @@ app.patch("/api/me/profile", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = profileSchema.safeParse(await c.req.json());
+  const parsed = profileSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6604,7 +6613,7 @@ app.post("/api/lists", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = createListSchema.safeParse(await c.req.json());
+  const parsed = createListSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6629,7 +6638,7 @@ app.patch("/api/lists/:id/visibility", async (c) => {
   if (auth.role !== "editor" && auth.role !== "admin" && !(await isCreatorListOwner(c.env, c.req.param("id"), auth.id))) {
     return c.json({ error: "Forbidden" }, 403);
   }
-  const visibility = z.enum(["public", "private"]).safeParse((await c.req.json()).visibility);
+  const visibility = z.enum(["public", "private"]).safeParse(((await readJson(c)) as { visibility?: unknown } | null)?.visibility);
   if (!visibility.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6647,7 +6656,7 @@ app.patch("/api/lists/:id", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = updateListSchema.safeParse(await c.req.json());
+  const parsed = updateListSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6741,7 +6750,7 @@ app.post("/api/lists/:id/fandle-members", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = z.object({ userId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({ userId: z.guid() }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6792,7 +6801,7 @@ app.patch("/api/lists/:id/twitch", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = z.object({ login: z.string().regex(/^[A-Za-z0-9_]{4,25}$/).nullable() }).safeParse(await c.req.json());
+  const parsed = z.object({ login: z.string().regex(/^[A-Za-z0-9_]{4,25}$/).nullable() }).safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Enter a valid Twitch username (4-25 letters, numbers or underscores)" }, 400);
   }
@@ -6831,9 +6840,9 @@ app.delete("/api/lists/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const listItemSchema = z.object({ gameId: z.string().uuid(), position: z.number().int().positive() });
+const listItemSchema = z.object({ gameId: z.guid(), position: z.number().int().positive() });
 const reorderListItemsSchema = z.object({
-  items: z.array(z.object({ gameId: z.string().uuid(), position: z.number().int().positive() })).min(1)
+  items: z.array(z.object({ gameId: z.guid(), position: z.number().int().positive() })).min(1)
 });
 
 app.post("/api/lists/:id/items", async (c) => {
@@ -6842,7 +6851,7 @@ app.post("/api/lists/:id/items", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = listItemSchema.safeParse(await c.req.json());
+  const parsed = listItemSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6903,7 +6912,7 @@ app.patch("/api/lists/:id/items/reorder", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = reorderListItemsSchema.safeParse(await c.req.json());
+  const parsed = reorderListItemsSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -7153,7 +7162,7 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   if (!list.suggestionsEnabled) {
     return c.json({ error: SUGGESTIONS_OFF_ERROR, code: "disabled" }, 403);
   }
-  const parsed = z.object({ gameId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({ gameId: z.guid() }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -7354,7 +7363,7 @@ app.patch("/api/admin/games/:id/reset", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = adminResetSchema.safeParse(await c.req.json());
+  const parsed = adminResetSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -7391,7 +7400,7 @@ app.patch("/api/admin/games/:id/reset", async (c) => {
 });
 
 const bulkGamesSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200),
+  ids: z.array(z.guid()).min(1).max(200),
   action: z.enum(["approve", "reject", "disable", "restore"]),
   note: z.string().max(400).optional()
 });
@@ -7401,7 +7410,7 @@ app.post("/api/admin/games/bulk", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = bulkGamesSchema.safeParse(await c.req.json());
+  const parsed = bulkGamesSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -7462,7 +7471,7 @@ app.post("/api/admin/games/:id/reject", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const note = z.object({ note: z.string().max(400).optional() }).safeParse(await c.req.json());
+  const note = z.object({ note: z.string().max(400).optional() }).safeParse(await readJson(c));
   if (!note.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -7541,7 +7550,7 @@ function resetLinkFailCountStatement(env: Env, reportId: string): D1PreparedStat
 }
 
 const bulkReportsSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200),
+  ids: z.array(z.guid()).min(1).max(200),
   action: z.enum(["resolve", "dismiss", "hide", "delete"])
 });
 
@@ -7585,7 +7594,7 @@ app.post("/api/admin/reports/bulk", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = bulkReportsSchema.safeParse(await c.req.json());
+  const parsed = bulkReportsSchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
@@ -7682,7 +7691,7 @@ app.post("/api/admin/categories", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = categorySchema.safeParse(await c.req.json());
+  const parsed = categorySchema.safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -7705,7 +7714,7 @@ app.patch("/api/admin/categories/:id", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = categorySchema.partial().safeParse(await c.req.json());
+  const parsed = categorySchema.partial().safeParse(await readJson(c));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
