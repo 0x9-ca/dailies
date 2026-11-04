@@ -1,9 +1,12 @@
 // Matches pasted game names and links (e.g. copied from Discord) to approved games, for the rotation's Import panel.
-import { compactSearchText, damerauLevenshtein, fuzzyTitleMatch, trigramSimilarity, typoLimit } from "./search";
+import { compactSearchText, damerauLevenshtein, normalizeSearchText, trigrams, typoLimit } from "./search";
 import { urlLocationKey } from "./url";
 
 export const IMPORT_MAX_LINES = 200;
 export const IMPORT_MAX_BYTES = 10 * 1024;
+
+/** Most edit-distance runs one request may spend on fuzzy matching; later lines then get no fuzzy match (exact ones are unaffected). */
+export const IMPORT_FUZZY_BUDGET = 30000;
 
 export type ImportGame = { id: string; slug: string; title: string; url: string };
 export type ImportMatchGame = { id: string; slug: string; title: string };
@@ -58,7 +61,11 @@ export function matchImportLines(lines: ParsedLine[], games: ImportGame[]): Impo
   const byHost = new Map<string, ImportGame[]>();
   const byLocation = new Map<string, ImportGame>();
   const byTitle = new Map<string, ImportGame>();
-  const prepared = games.map((g) => ({ g, compact: compactSearchText(g.title) }));
+  const prepared = games.map((g) => {
+    const compact = compactSearchText(g.title);
+    return { g, compact, words: normalizeSearchText(g.title).split(" ").filter(Boolean), grams: trigrams(compact) };
+  });
+  let budget = IMPORT_FUZZY_BUDGET;
   for (const { g, compact } of prepared) {
     const key = urlLocationKey(g.url);
     if (key) {
@@ -76,7 +83,11 @@ export function matchImportLines(lines: ParsedLine[], games: ImportGame[]): Impo
       const host = key.split("/")[0];
       const onHost = byHost.get(host) ?? [];
       const hit = onHost.length === 1 ? onHost[0] : byLocation.get(key);
-      if (hit) return { input: line.input, match: toMatch(hit), confidence: "exact", alternatives: [] };
+      if (hit) {
+        // A host with one listed game is only a guess unless the link also points at that game's own location.
+        const sure = byLocation.has(key);
+        return { input: line.input, match: toMatch(hit), confidence: sure ? "exact" : "fuzzy", alternatives: [] };
+      }
     }
     const q = compactSearchText(line.name);
     const exact = q ? byTitle.get(q) : undefined;
@@ -84,14 +95,34 @@ export function matchImportLines(lines: ParsedLine[], games: ImportGame[]): Impo
 
     // Fuzzy: whole-title typo or trigram similarity picks the match; word-level hits only suggest alternatives.
     const scored: { g: ImportGame; rank: number; whole: boolean }[] = [];
-    if (q.length >= 3) {
-      for (const { g, compact } of prepared) {
-        const fz = fuzzyTitleMatch(line.name, g.title);
-        if (!fz) continue;
-        const sim = trigramSimilarity(q, compact);
-        const whole = damerauLevenshtein(q, compact) <= typoLimit(compact.length) || sim >= 0.6;
+    if (q.length >= 3 && budget > 0) {
+      const qGrams = trigrams(q);
+      for (const { g, compact, words, grams } of prepared) {
+        if (compact.length === 0) continue;
+        const limit = typoLimit(compact.length);
+        let shared = 0;
+        for (const gram of qGrams) if (grams.has(gram)) shared++;
+        const union = qGrams.size + grams.size - shared;
+        const sim = union === 0 ? 0 : shared / union;
+        // Edit distance is at least the length gap, so skip it unless the title or one of its words is close in length.
+        const wholeNear = Math.abs(q.length - compact.length) <= limit;
+        const nearWords = words.length > 1 ? words.filter((w) => Math.abs(q.length - w.length) <= limit) : [];
+        if (!wholeNear && nearWords.length === 0 && sim < 0.4) continue;
+        let whole = Infinity;
+        if (wholeNear || sim >= 0.4) {
+          budget--;
+          whole = damerauLevenshtein(q, compact);
+        }
+        let distance = whole;
+        for (const w of nearWords) {
+          budget--;
+          distance = Math.min(distance, damerauLevenshtein(q, w));
+        }
+        if (distance > limit && sim < 0.4) continue;
+        const isWhole = whole <= limit || sim >= 0.6;
         const lenGap = Math.abs(q.length - compact.length) / Math.max(q.length, compact.length);
-        scored.push({ g, rank: fz.score - lenGap * 0.5 + (whole ? 1 : 0), whole });
+        const score = Math.max(1 - distance / Math.max(q.length, compact.length), sim);
+        scored.push({ g, rank: score - lenGap * 0.5 + (isWhole ? 1 : 0), whole: isWhole });
       }
       scored.sort((a, b) => b.rank - a.rank || a.g.title.length - b.g.title.length);
     }
