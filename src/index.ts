@@ -680,10 +680,12 @@ app.get("/", async (c) => {
   // 8 per list for the two-column desktop layout; narrower screens show the first 5 (see .home-columns CSS).
   const famousTitles = ["NYT Wordle", "NYT Connections", "NYT Strands", "Worldle", "Globle", "Bandle", "Framed", "Costcodle"];
   // Independent reads run together; the viewer's votes and favorites follow once the game ids are known.
-  const [topGames, newGames, popularGames, playableRow, famousRows, homeCategoryRows, gameOfTheDay] = await Promise.all([
-    listGames(c.env, { sort: "top", limit: 8 }),
-    listGames(c.env, { sort: "new", limit: 8 }),
-    listGames(c.env, { sort: "popular", limit: 8, openedThisWeek: true }),
+  const [[topGames, newGames, popularGames], playableRow, famousRows, homeCategoryRows, gameOfTheDay] = await Promise.all([
+    listGamesMany(c.env, [
+      { sort: "top", limit: 8 },
+      { sort: "new", limit: 8 },
+      { sort: "popular", limit: 8, openedThisWeek: true }
+    ]),
     c.env.DB.prepare("SELECT COUNT(*) AS n FROM games WHERE status = 'approved'").first<{ n: number }>(),
     c.env.DB.prepare(
       `SELECT slug, title FROM games WHERE status = 'approved' AND title IN (${famousTitles.map((_, i) => `?${i + 1}`).join(",")})`
@@ -2798,7 +2800,11 @@ app.get("/lists/:slug", async (c) => {
   )
     .bind(list.id)
     .all<{ id: string; slug: string; title: string; url: string; paywall: number; nsfw: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null; vote_up_count: number; vote_down_count: number; position: number; last_played_at: string | null; added_at: string }>();
-  const [showPlayed, items, suggestions, fandleLimits, lastOnStreamRows] = await Promise.all([showPlayedP, itemsP, suggestionsP, fandleLimitsP, lastOnStreamP]);
+  // The Fan-dles rows need only the limits, so they load beside the list's own reads.
+  const fandleGamesP = fandlesOn && !isAdminEditor
+    ? fandleLimitsP.then((limits) => listGames(c.env, { sort: "top", limit: limits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: limits.perDeveloper, fandleMembershipDays: limits.membershipDays }))
+    : Promise.resolve([] as Awaited<ReturnType<typeof listGames>>);
+  const [showPlayed, items, suggestions, fandleLimits, lastOnStreamRows, fandleGames] = await Promise.all([showPlayedP, itemsP, suggestionsP, fandleLimitsP, lastOnStreamP, fandleGamesP]);
   const canMarkPlayed = showPlayed && canEdit;
 
   // When each game was last set as Now playing (same for every viewer; the page script turns it into a viewer-local date).
@@ -2806,13 +2812,13 @@ app.get("/lists/:slug", async (c) => {
   for (const row of lastOnStreamRows?.results ?? []) lastOnStream.set(row.game_id, row.last_at);
 
   // The viewer's own votes and favorites, for the vote/favorite buttons (read-only view only).
-  const [categoriesByGameId, developersByGameId, viewerState, fandleGames] = await Promise.all([
+  // One viewer lookup covers the list's games and the Fan-dles games.
+  const [categoriesByGameId, developersByGameId, viewerState] = await Promise.all([
     getCategoriesForGames(c.env, items.results.map((item) => item.id)),
     getDevelopersForGames(c.env, items.results.map((item) => item.id)),
     isAdminEditor
       ? Promise.resolve({ votes: new Map<string, -1 | 1>(), favorites: new Set<string>() })
-      : getViewerGameState(c, items.results.map((item) => item.id)),
-    fandlesOn && !isAdminEditor ? listGames(c.env, { sort: "top", limit: fandleLimits.shown ?? FANDLE_HARD_MAX_SHOWN, fandleListId: list.id, fandlePerDeveloper: fandleLimits.perDeveloper, fandleMembershipDays: fandleLimits.membershipDays }) : Promise.resolve([] as Awaited<ReturnType<typeof listGames>>)
+      : getViewerGameState(c, [...new Set([...items.results.map((item) => item.id), ...fandleGames.map((game) => game.id)])])
   ]);
   const { votes: userVotes, favorites: userFavorites } = viewerState;
 
@@ -2828,7 +2834,7 @@ app.get("/lists/:slug", async (c) => {
   // viewer's own; logged-out pages load theirs from the API.
 
   // Fan-dles: games by the streamer's community, on a public creator list tagged with a Twitch channel.
-  const fandleViewer = fandleGames.length > 0 ? await getViewerGameState(c, fandleGames.map((game) => game.id)) : { votes: new Map<string, -1 | 1>(), favorites: new Set<string>() };
+  const fandleViewer = viewerState;
   const fandleNotice = (({
     joined: "You're in. Your verified games now show in Fan-dles below.",
     not_following: "Twitch says you don't follow or subscribe to this channel yet. Follow it for a week (or subscribe), then check again.",
@@ -2841,10 +2847,13 @@ app.get("/lists/:slug", async (c) => {
   }) as Record<string, string>)[c.req.query("fandle") ?? ""];
   let fandleJoin = "";
   if (fandlesOn && user && !isCreatorOwner && !isAdminEditor) {
-    const membership = await c.env.DB.prepare(`SELECT source, verified_at FROM fandle_members fm WHERE list_id = ?1 AND user_id = ?2 AND ${fandleActiveSql("fm", fandleLimits.membershipDays)}`)
-      .bind(list.id, user.id)
-      .first<{ source: string; verified_at: string }>();
-    if (await hasVerifiedClaim(c.env, user.id)) {
+    const [membership, hasClaim] = await Promise.all([
+      c.env.DB.prepare(`SELECT source, verified_at FROM fandle_members fm WHERE list_id = ?1 AND user_id = ?2 AND ${fandleActiveSql("fm", fandleLimits.membershipDays)}`)
+        .bind(list.id, user.id)
+        .first<{ source: string; verified_at: string }>(),
+      hasVerifiedClaim(c.env, user.id)
+    ]);
+    if (hasClaim) {
       // Where each of the developer's games stands here, so a member is never left wondering why one isn't shown.
       const mine = membership
         ? (await c.env.DB.prepare(
@@ -2873,8 +2882,8 @@ app.get("/lists/:slug", async (c) => {
   }
   // Admins also manage who is a member.
   const isAdminUser = !!user && user.role === "admin";
-  const fandleMembers = isAdminEditor && fandlesAvailable
-    ? (await c.env.DB.prepare(
+  const fandleMembersP = isAdminEditor && fandlesAvailable
+    ? (c.env.DB.prepare(
         `SELECT fm.user_id, fm.source, COALESCE(users.display_name, users.profile_handle, 'Developer') AS name,
                 (SELECT COUNT(*) FROM game_claims WHERE game_claims.user_id = fm.user_id AND game_claims.status = 'verified') AS games
          FROM fandle_members fm JOIN users ON users.id = fm.user_id
@@ -2882,11 +2891,11 @@ app.get("/lists/:slug", async (c) => {
          ORDER BY name ASC LIMIT 200`
       )
         .bind(list.id)
-        .all<{ user_id: string; source: string; name: string; games: number }>()).results
-    : [];
+        .all<{ user_id: string; source: string; name: string; games: number }>()).then((r) => r.results)
+    : Promise.resolve([] as Array<{ user_id: string; source: string; name: string; games: number }>);
   // Editors and the streamer manage which Fan-dles show.
-  const fandleManage = isAdminEditor && fandlesAvailable
-    ? (await c.env.DB.prepare(
+  const fandleManageP = isAdminEditor && fandlesAvailable
+    ? (c.env.DB.prepare(
         `SELECT games.id, games.title, users.display_name,
                 EXISTS(SELECT 1 FROM fandle_hidden WHERE list_id = ?1 AND game_id = games.id) AS hidden
          FROM fandle_members fm
@@ -2897,8 +2906,9 @@ app.get("/lists/:slug", async (c) => {
          ORDER BY games.title ASC LIMIT 100`
       )
         .bind(list.id)
-        .all<{ id: string; title: string; display_name: string | null; hidden: number }>()).results
-    : [];
+        .all<{ id: string; title: string; display_name: string | null; hidden: number }>()).then((r) => r.results)
+    : Promise.resolve([] as Array<{ id: string; title: string; display_name: string | null; hidden: number }>);
+  const [fandleMembers, fandleManage] = await Promise.all([fandleMembersP, fandleManageP]);
 
   // Fan-dles section: no vote buttons here, and the streamer / editors get an "Add" button to copy a game to the main list.
   const onMainList = new Set(items.results.map((item) => item.id));
@@ -7946,9 +7956,7 @@ async function findSimilarGameIds(
   return { ids: top.map((match) => match.id), strongest: top[0]?.strong ?? false };
 }
 
-async function listGames(
-  env: Env,
-  opts: {
+type ListGamesOpts = {
     sort: "top" | "new" | "trending" | "popular" | "reset";
     category?: string;
     q?: string;
@@ -7970,27 +7978,80 @@ async function listGames(
     fandlePerDeveloper?: number | null;
     /** With fandleListId: how many days a check counts (none = always). */
     fandleMembershipDays?: number | null;
-  }
-): Promise<
-  Array<{
-    id: string;
-    title: string;
-    slug: string;
-    url: string;
-    description: string | null;
-    score: number;
-    voteUpCount: number;
-    voteDownCount: number;
-    resetBasis: "local" | "server" | null;
-    resetTimeMinutes: number | null;
-    resetTimezone: string | null;
-    paywall: boolean;
-    nsfw: boolean;
-    categories: Array<{ slug: string; name: string }>;
-    developer: GameDeveloper | null;
-    listedAt: string;
-  }>
-> {
+};
+
+type ListedGame = {
+  id: string;
+  title: string;
+  slug: string;
+  url: string;
+  description: string | null;
+  score: number;
+  voteUpCount: number;
+  voteDownCount: number;
+  resetBasis: "local" | "server" | null;
+  resetTimeMinutes: number | null;
+  resetTimezone: string | null;
+  paywall: boolean;
+  nsfw: boolean;
+  categories: Array<{ slug: string; name: string }>;
+  developer: GameDeveloper | null;
+  listedAt: string;
+};
+
+type ListGameRow = {
+  id: string;
+  title: string;
+  slug: string;
+  url: string;
+  description: string | null;
+  score: number;
+  vote_up_count: number;
+  vote_down_count: number;
+  reset_basis: "local" | "server" | null;
+  reset_time_minutes: number | null;
+  reset_timezone: string | null;
+  paywall: number;
+  nsfw: number;
+  listed_at: string;
+};
+
+async function listGames(env: Env, opts: ListGamesOpts): Promise<ListedGame[]> {
+  const [games] = await listGamesMany(env, [opts]);
+  return games;
+}
+
+/** Several listGames queries at once: the game rows run in parallel, then categories and developers are looked up once for all of them. */
+async function listGamesMany(env: Env, optsList: ListGamesOpts[]): Promise<ListedGame[][]> {
+  const rowSets = await Promise.all(optsList.map((opts) => listGameRows(env, opts)));
+  const allIds = [...new Set(rowSets.flatMap((rows) => rows.map((row) => row.id)))];
+  const [categoriesByGameId, developersByGameId] = await Promise.all([
+    getCategoriesForGames(env, allIds),
+    getDevelopersForGames(env, allIds)
+  ]);
+  return rowSets.map((rows) =>
+    rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      slug: row.slug,
+      url: row.url,
+      description: row.description,
+      score: row.score,
+      voteUpCount: row.vote_up_count,
+      voteDownCount: row.vote_down_count,
+      resetBasis: row.reset_basis,
+      resetTimeMinutes: row.reset_time_minutes,
+      resetTimezone: row.reset_timezone,
+      paywall: !!row.paywall,
+      nsfw: !!row.nsfw,
+      categories: categoriesByGameId.get(row.id) ?? [],
+      developer: developersByGameId.get(row.id) ?? null,
+      listedAt: row.listed_at
+    }))
+  );
+}
+
+async function listGameRows(env: Env, opts: ListGamesOpts): Promise<ListGameRow[]> {
   // Server-time resets are stored in their own time zone; convert to UTC using each zone's current offset.
   let resetOffsetSql = "0";
   const sortParams: Array<string | number> = [];
@@ -8101,46 +8162,8 @@ async function listGames(
 
   const rows = await env.DB.prepare(sql)
     .bind(...params)
-    .all<{
-      id: string;
-      title: string;
-      slug: string;
-      url: string;
-      description: string | null;
-      score: number;
-      vote_up_count: number;
-      vote_down_count: number;
-      reset_basis: "local" | "server" | null;
-      reset_time_minutes: number | null;
-      reset_timezone: string | null;
-      paywall: number;
-      nsfw: number;
-      listed_at: string;
-    }>();
-
-  const [categoriesByGameId, developersByGameId] = await Promise.all([
-    getCategoriesForGames(env, rows.results.map((row) => row.id)),
-    getDevelopersForGames(env, rows.results.map((row) => row.id))
-  ]);
-
-  return rows.results.map((row) => ({
-    id: row.id,
-    title: row.title,
-    slug: row.slug,
-    url: row.url,
-    description: row.description,
-    score: row.score,
-    voteUpCount: row.vote_up_count,
-    voteDownCount: row.vote_down_count,
-    resetBasis: row.reset_basis,
-    resetTimeMinutes: row.reset_time_minutes,
-    resetTimezone: row.reset_timezone,
-    paywall: !!row.paywall,
-    nsfw: !!row.nsfw,
-    categories: categoriesByGameId.get(row.id) ?? [],
-    developer: developersByGameId.get(row.id) ?? null,
-    listedAt: row.listed_at
-  }));
+    .all<ListGameRow>();
+  return rows.results;
 }
 
 async function updateGameScore(env: Env, gameId: string): Promise<void> {
