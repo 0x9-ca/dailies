@@ -20,12 +20,15 @@ Daily Game List is a Cloudflare Worker app with server-rendered pages and JSON A
 
 ## Auth flows
 
-### Discord OAuth
+Sign-in uses Discord or Twitch OAuth. `/login` shows the buttons (signed-in visitors are sent to `/`); `/auth/discord` and `/auth/twitch` start the flow, and `/auth/<provider>/callback` finishes it. Shared helpers: `beginOAuth`, `readOAuthCallback`, `exchangeOAuthCode`, `revokeOAuthToken`, `upsertOAuthUser`.
 
-- Browser visits `/login` which redirects to Discord OAuth2.
-- Callback validates state, exchanges code, fetches user profile and guild membership.
-- Discord guild roles (admin/editor) are mapped to application roles.
-- User record is upserted in D1 and session is created.
+- Each provider's callback checks a `state` cookie. The provider access token is revoked right after the profile read and never stored. Only the provider user id, the initial display name and the avatar URL are kept.
+- A first sign-in creates a user with a placeholder email (`<provider>-<id>@users.noreply.dailies`, never shown).
+- **Discord:** guild roles map to `editor`/`admin`, re-synced on every Discord login (losing the role demotes the user).
+- **Twitch:** no scopes are requested and sign-in always yields role `user`. Twitch's broadcaster type sets creator status.
+- **Linking:** from Settings, a signed-in user links the other provider with `POST /auth/:provider/link` (intent carried in the state cookie). If that provider account already belongs to another user, `mergeUsers()` moves everything onto the signed-in user and deletes the other. Unlinking is `DELETE /api/me/accounts/:provider` and is refused for the last account.
+- **Logout:** `POST /auth/logout`.
+- Fan-dles uses a separate Twitch authorization (`POST /auth/twitch/fandle`) that asks for follow and subscription scopes, checks one channel relationship and revokes the token. It never creates a session.
 
 ## Voting and favorites
 
@@ -39,22 +42,22 @@ Daily Game List is a Cloudflare Worker app with server-rendered pages and JSON A
 ## Click tracking
 
 - `POST /api/games/:id/click` increments `click_count` on the game row.
-- Clicks are triggered from the "Open game" link on game detail pages.
+- The client sends a click for every outbound game open (card game links and the Play button). Embeds send the same count through `POST /api/embed/click/:gameId`.
 - Click count feeds into the game score computation (+0.003/click, capped at +0.30).
 
 ## Scoring
 
-Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost, and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures. Score is recomputed on vote changes, link check results, and manual admin recalculation.
+Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost, and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures. The daily cron recalculates all scores.
 
 ## Paywall flag
 
-- Games can be marked as `paywall` (boolean) by editors/admins via the game detail page edit form.
+- Games can be marked as `paywall` (boolean) by editors/admins via the game detail page edit form, or by a verified developer.
 - A green `$` badge renders after the game title on all card views (homepage, browse, rotation, lists, game detail).
 
 ## Submission and moderation flow
 
-1. Logged-in user submits game via `/api/games`.
-2. URL is canonicalized and checked for duplicates.
+1. A visitor submits a game via `POST /api/games`: signed in or anonymous, rate limited (10 an hour; admins exempt).
+2. URL is canonicalized and checked for duplicates (a normalized-URL match with a non-rejected game returns 409).
 3. Category suggestions are attached when valid.
 4. Optional reset metadata can be included (`resetBasis`, `resetTime`, `resetTimezone`).
 5. Role behavior:
@@ -74,14 +77,17 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - Games can store `reset_basis` (`local` or `server`) and `reset_time_minutes`.
 - Server-time resets can also store `reset_timezone`, an IANA zone name such as `America/New_York` (validated with `Intl`). It is cleared when the basis is not `server`; a `server` game with no zone is treated as UTC.
 - Browse and API support `sort=reset` to order by next reset time (soonest first). Each zone's current UTC offset (DST-aware) is computed in the Worker and applied in the SQL ordering.
-- Admin moderation page can update reset metadata per game.
+- Admin moderation page can update reset metadata per game. Signed-in users can also suggest a reset (`POST /api/games/:id/reset-suggestion`), which editors apply or dismiss at `/admin/resets`.
 
 ## Scheduled jobs
 
-- `scheduled` handler runs link checks for approved games.
-- Uses `HEAD`, fallback `GET`, increments `link_fail_count` on failures.
-- After threshold, auto-creates open `broken` report.
-- Also cleans stale rate-limit rows.
+The daily cron (`15 8 * * *`) runs in the `scheduled` handler, and each job has its own try/catch:
+
+- Link checks for approved games: uses `HEAD`, falls back to `GET`, increments `link_fail_count` on failures, and after the threshold auto-creates an open `broken` report.
+- Score recalculation, cleanup of stale rate-limit and session rows, developer claim re-checks and Dle Developer role maintenance.
+- A backstop flush of the Discord new-game announcement queue. The `AnnouncementScheduler` Durable Object normally sends it.
+
+A separate `*/15` cron sends push reminders (`runPushReminders()`).
 
 ## Security controls
 
@@ -89,19 +95,20 @@ Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, 
 - CSRF double-submit cookie pattern for mutating APIs.
 - Role-based access controls at route level.
 - Fixed-window rate limiting stored in D1.
+- OAuth tokens are revoked right after the profile read and never stored (see Auth flows).
 
 ## Sequence diagrams
 
 ### Discord OAuth sign-in
 
 ```text
-Browser -> Worker: GET /login
+Browser -> Worker: GET /auth/discord (sets state cookie)
 Worker -> Browser: redirect to Discord OAuth2
 Browser -> Discord: authorize
-Discord -> Worker: GET /auth/discord/callback (code)
-Worker -> Discord: exchange code for token + fetch user/guild
+Discord -> Worker: GET /auth/discord/callback (code, state)
+Worker -> Discord: exchange code for token, fetch profile and guild roles, revoke token
 Worker -> D1: upsert user, map guild roles
-Worker -> Browser: set session cookie, redirect /
+Worker -> Browser: set session cookie, redirect to the page they came from (or /)
 ```
 
 ### Standard user submission
