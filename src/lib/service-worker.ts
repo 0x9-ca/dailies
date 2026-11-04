@@ -12,7 +12,8 @@ const PAGES = "dgl-pages-v1";
 const MAX_STATIC = 40;
 const PRECACHE = ${JSON.stringify(["/offline", ...precache])};
 const KEEP_NO_STORE = ["/", "/me/rotation"];
-const SKIP = /^\\/(api|auth|admin|embed)\\//;
+const SKIP = /^\\/(api|auth|admin|embed)(\\/|$)/;
+const MAX_PAGES = 50;
 
 async function trimStatic(cache) {
   const keys = await cache.keys();
@@ -49,10 +50,23 @@ self.addEventListener("message", (event) => {
   }
 });
 
+async function trimPages(cache) {
+  const keys = await cache.keys();
+  let extra = keys.length - MAX_PAGES;
+  for (const req of keys) {
+    if (extra <= 0) break;
+    const p = new URL(req.url).pathname;
+    if (p === "/" || p === "/me/rotation") continue;
+    await cache.delete(req);
+    extra--;
+  }
+}
+
 function storable(response, path) {
   if (!response || !response.ok || response.type !== "basic") return false;
   const cc = (response.headers.get("Cache-Control") || "").toLowerCase();
   if (cc.includes("no-store") && !KEEP_NO_STORE.includes(path)) return false;
+  if (response.headers.get("X-Dgl-Signed-In") && path !== "/me/rotation") return false;
   return true;
 }
 
@@ -67,6 +81,7 @@ async function navigate(request, url) {
       const copy = response.clone();
       const cache = await caches.open(PAGES);
       await cache.put(url.pathname + url.search, copy);
+      await trimPages(cache);
     }
     return response;
   } catch (err) {
