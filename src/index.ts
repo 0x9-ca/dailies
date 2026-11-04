@@ -588,6 +588,8 @@ app.get("/login", async (c) => {
   if (user) {
     return c.redirect("/");
   }
+  const nextPath = safeNextPath(c.req.query("next"));
+  const nextQs = nextPath ? `?next=${encodeURIComponent(nextPath)}` : "";
 
   return c.html(await layout("Login", null, `
     <style>
@@ -600,11 +602,11 @@ app.get("/login", async (c) => {
       <div style="display:flex;flex-direction:column;gap:0.75rem;align-items:stretch;">
           <h1 style="margin:0;font-size:1.5rem;text-align:center;">Log in</h1>
           <p style="max-width:22rem;margin:0 0 0.25rem;text-align:center;">Sign in to keep your rotation on every device, submit games and claim ones you made.</p>
-          <a class="btn" href="/auth/discord" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
+          <a class="btn" href="/auth/discord${nextQs}" style="background:#5865F2;border-color:#5865F2;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
             ${DISCORD_ICON_SVG}
             Login using Discord
           </a>
-          ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
+          ${c.env.OAUTH_TWITCH_CLIENT_ID ? `<a class="btn" href="/auth/twitch${nextQs}" style="background:#9146FF;border-color:#9146FF;color:#fff;display:inline-flex;align-items:center;justify-content:flex-start;gap:0.5rem;text-decoration:none;">
             ${TWITCH_ICON_SVG}
             Login using Twitch
           </a>` : ""}
@@ -2532,7 +2534,7 @@ app.get("/me/rotation", async (c) => {
 });
 
 app.get("/me/settings", async (c) => {
-  const auth = requireAuth(c);
+  const auth = await requirePageAuth(c);
   if (auth instanceof Response) {
     return auth;
   }
@@ -3604,7 +3606,7 @@ for (const path of ["/admin", "/admin/*"]) {
 }
 
 app.get("/admin", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -3650,7 +3652,7 @@ async function findPossibleDuplicates(env: Env, pending: Array<{ id: string; tit
 }
 
 app.get("/admin/submissions", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -3741,7 +3743,7 @@ app.get("/admin/submissions", async (c) => {
 });
 
 app.get("/admin/claims", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -3841,7 +3843,7 @@ async function playedOnStreamFor(env: Env, user: AppUser | null): Promise<boolea
 }
 
 app.get("/admin/stats", async (c) => {
-  const auth = requireRole(c, ["admin"]);
+  const auth = await requirePageAuth(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -3975,7 +3977,7 @@ app.get("/admin/stats", async (c) => {
 });
 
 app.get("/admin/settings", async (c) => {
-  const auth = requireRole(c, ["admin"]);
+  const auth = await requirePageAuth(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4060,7 +4062,7 @@ app.put("/api/admin/settings", async (c) => {
 });
 
 app.get("/admin/creators", async (c) => {
-  const auth = requireRole(c, ["admin"]);
+  const auth = await requirePageAuth(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4248,7 +4250,7 @@ app.post(CLIENT_ERRORS_PATH, async (c) => {
 });
 
 app.get("/admin/errors", async (c) => {
-  const auth = requireRole(c, ["admin"]);
+  const auth = await requirePageAuth(c, ["admin"]);
   if (auth instanceof Response) return auth;
   const rows = await c.env.DB.prepare("SELECT fingerprint, message, source, line, stack, page, version, first_seen, last_seen, count FROM client_errors ORDER BY last_seen DESC LIMIT 500")
     .all<{ fingerprint: string; message: string; source: string | null; line: number | null; stack: string | null; page: string | null; version: string | null; first_seen: string; last_seen: string; count: number }>();
@@ -4298,7 +4300,7 @@ app.delete("/api/admin/client-errors", async (c) => {
 });
 
 app.get("/admin/health", async (c) => {
-  const auth = requireRole(c, ["admin"]);
+  const auth = await requirePageAuth(c, ["admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4348,7 +4350,7 @@ app.get("/admin/health", async (c) => {
 });
 
 app.get("/admin/reports", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4423,7 +4425,7 @@ app.get("/admin/reports", async (c) => {
 });
 
 app.get("/admin/categories", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -4468,7 +4470,7 @@ app.get("/admin/categories", async (c) => {
 });
 
 app.get("/admin/lists", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -6173,7 +6175,7 @@ app.post("/api/games/:id/reset-suggestion", async (c) => {
 });
 
 app.get("/admin/resets", async (c) => {
-  const auth = requireRole(c, ["editor", "admin"]);
+  const auth = await requirePageAuth(c, ["editor", "admin"]);
   if (auth instanceof Response) {
     return auth;
   }
@@ -12084,6 +12086,23 @@ function isDevEnv(env: Env): boolean {
 }
 
 // A real page for missing games, lists, categories and URLs, so visitors (and crawlers) get somewhere to go next.
+/**
+ * Auth guard for browser pages (the API guards return JSON). Signed out: redirect to /login, keeping the page as the
+ * destination. Signed in without the role: the normal 404 page, so staff pages are not advertised.
+ */
+async function requirePageAuth(c: Context<{ Bindings: Bindings; Variables: AppVariables }>, roles?: AppUser["role"][]): Promise<AppUser | Response> {
+  const user = c.get("user");
+  if (!user) {
+    const url = new URL(c.req.url);
+    const next = safeNextPath(url.pathname + url.search);
+    return c.redirect(next ? `/login?next=${encodeURIComponent(next)}` : "/login", 302);
+  }
+  if (roles && !roles.includes(user.role)) {
+    return notFoundPage(c);
+  }
+  return user;
+}
+
 async function notFoundPage(c: Context<{ Bindings: Bindings; Variables: AppVariables }>): Promise<Response> {
   return c.html(await layout("Page not found", c.get("user"), `
     <main class="narrow">
