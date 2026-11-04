@@ -120,7 +120,7 @@ for (const [short, long] of SHORT_PATHS) {
 // Visitors with a session, or who have voted (dgl_voted cookie, set by dglGames.saveVote), get a fresh render that
 // shows their own votes. Cached copies never contain cookies; the CSRF cookie is added per response instead.
 const PUBLIC_CACHE_SECONDS = 60;
-const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|new|mod-log|changelog|offline|embed\/lists\/[^/]+)?$/;
+const PUBLIC_CACHE_PATHS = /^\/(games(\/[^/]+)?|lists(\/[^/]+)?|categories(\/[^/]+)?|new|mod-log|changelog|daily|offline|embed\/lists\/[^/]+)?$/;
 
 // The embed widget never shows per-visitor state and sets no cookies, so it is cached whatever cookies the request has.
 function isEmbedPath(path: string): boolean {
@@ -637,11 +637,19 @@ async function getGameOfTheDay(env: Env, now: number = Date.now()): Promise<Game
   if (cached) {
     return cached;
   }
-  const pool = await gameOfTheDayPool(env);
-  if (pool.length === 0) {
-    return null;
+  // The stored pick wins; it is written once (insert-or-ignore) so later pool changes never alter a day.
+  let id = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id;
+  if (!id) {
+    const pool = await gameOfTheDayPool(env);
+    if (pool.length === 0) {
+      return null;
+    }
+    id = pool[gameOfTheDayIndex(dateKey, pool.length)];
+    await env.DB.prepare("INSERT OR IGNORE INTO daily_picks (day, game_id, picked_at) VALUES (?1, ?2, ?3)")
+      .bind(dateKey, id, new Date(now).toISOString())
+      .run();
+    id = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id ?? id;
   }
-  const id = pool[gameOfTheDayIndex(dateKey, pool.length)];
   await setCachedJson(env, cacheKey, id, secondsUntilNextUtcDay(now));
   return loadGameOfTheDay(env, id);
 }
@@ -661,6 +669,7 @@ function renderGameOfTheDay(game: GameOfTheDay): string {
         <div class="gotd-foot">
           <div class="meta gotd-meta">${renderLikedLabel(game.vote_up_count, game.vote_down_count)}</div>
           <a class="btn btn-play gotd-play" href="${escapeHtml(game.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${escapeHtml(game.id)}">Play<span class="visually-hidden"> ${escapeHtml(game.title)}</span> ↗</a>
+          <a class="gotd-past" href="/daily">Past picks</a>
         </div>
       </section>`;
 }
@@ -960,6 +969,43 @@ app.get("/changelog", async (c) => {
       </section>`).join("")}
     </main>
   `, c.env, { path: "/changelog", description: "What's new on 0x9 dles: every feature update since launch." }));
+});
+
+app.get("/daily", async (c) => {
+  const PAGE = 20;
+  const DAYS = 60;
+  const today = utcDateKey(Date.now());
+  const oldest = utcDateKey(Date.parse(`${today}T00:00:00Z`) - (DAYS - 1) * 86_400_000);
+  const beforeParam = c.req.query("before") ?? "";
+  const before = /^\d{4}-\d{2}-\d{2}$/.test(beforeParam) ? beforeParam : "9999-12-31";
+  const rows = await c.env.DB.prepare(
+    `SELECT dp.day, g.id, g.slug, g.url, g.title, g.vote_up_count, g.vote_down_count, g.paywall
+     FROM daily_picks dp JOIN games g ON g.id = dp.game_id
+     WHERE dp.day >= ?1 AND dp.day <= ?2 AND dp.day < ?3 AND g.status = 'approved' AND g.nsfw = 0
+     ORDER BY dp.day DESC LIMIT ?4`
+  )
+    .bind(oldest, today, before, PAGE + 1)
+    .all<{ day: string; id: string; slug: string; url: string; title: string; vote_up_count: number; vote_down_count: number; paywall: number }>();
+  const more = rows.results.length > PAGE;
+  const picks = rows.results.slice(0, PAGE);
+  const categories = picks.length ? await getCategoriesForGames(c.env, picks.map((p) => p.id)) : new Map();
+  const formatDay = (day: string) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+  return c.html(await layout("Past games of the day | 0x9 dles", c.get("user"), `
+    <main class="narrow daily-archive">
+      <h1>Past games of the day</h1>
+      <p>The last ${DAYS} days of picks. Days are UTC.</p>
+      ${picks.length === 0 ? `<p class="meta">No picks recorded${beforeParam ? " before that date" : " yet"}.</p>` : `<ol class="daily-list">
+        ${picks.map((p) => `<li class="daily-item" data-vote-counts="${escapeHtml(p.id)}">
+          <time datetime="${escapeHtml(p.day)}">${escapeHtml(formatDay(p.day))}</time>
+          <h2><a href="/games/${encodeURIComponent(p.slug)}">${escapeHtml(p.title)}</a>${p.paywall ? ` <span class="paywall-badge" title="This game requires payment to play">$</span>` : ""}</h2>
+          ${renderCategoryPills(categories.get(p.id))}
+          <div class="gotd-foot"><div class="meta">${renderLikedLabel(p.vote_up_count, p.vote_down_count)}</div>
+          <a class="btn btn-play" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer" data-play-id="${escapeHtml(p.id)}">Play<span class="visually-hidden"> ${escapeHtml(p.title)}</span> ↗</a></div>
+        </li>`).join("")}
+      </ol>`}
+      <p class="daily-nav">${beforeParam ? `<a href="/daily">Newest</a> ` : ""}${more ? `<a rel="next" href="/daily?before=${picks[picks.length - 1].day}">Older picks</a>` : ""}</p>
+    </main>
+  `, c.env, { path: "/daily", description: "Every recent Game of the day on 0x9 dles, newest first." }));
 });
 
 app.get("/games", async (c) => {
@@ -3140,6 +3186,7 @@ app.get("/sitemap.xml", async (c) => {
     { loc: "/lists", lastmod: latestList },
     { loc: "/mod-log", lastmod: null as string | null },
     { loc: "/changelog", lastmod: null as string | null },
+    { loc: "/daily", lastmod: null as string | null },
     { loc: "/categories", lastmod: latestGame },
     { loc: "/new", lastmod: newest(games.results.map((g) => toLastmod(g.approved_at ?? g.created_at))) },
     ...categoriesWithGames.results.map((cat) => ({ loc: `/categories/${encodeURIComponent(cat.slug)}`, lastmod: toLastmod(cat.changed_at) })),
@@ -11766,6 +11813,8 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
           <div><dt><kbd>g</kbd> then <kbd>b</kbd></dt><dd>Go to Browse</dd></div>
           <div><dt><kbd>g</kbd> then <kbd>r</kbd></dt><dd>Go to Rotation</dd></div>
           <div data-stream-shortcut hidden><dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>Stream mode: show the list, suggestions or Fan-dles (editors use the arrows)</dd></div>
+          <div data-stream-shortcut hidden><dt><kbd>p</kbd> / <kbd>Shift</kbd>+<kbd>P</kbd></dt><dd>Stream mode: mark the hovered or focused game as now playing / clear it (editors)</dd></div>
+          <div data-stream-shortcut hidden><dt><kbd>Esc</kbd></dt><dd>Stream mode: leave stream mode</dd></div>
           <div data-stream-shortcut hidden><dt><kbd>←</kbd> <kbd>→</kbd> or <kbd>[</kbd> <kbd>]</kbd></dt><dd>Stream mode: previous or next pane</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>Close this list</dd></div>
         </dl>
