@@ -4,6 +4,13 @@ export type ChangelogDay = { date: string; items: string[] };
 
 export const CHANGELOG: ChangelogDay[] = [
   {
+    date: "2026-11-04",
+    items: [
+      "See past Games of the day at /daily.",
+      "Press ? in stream mode to see its keyboard shortcuts.",
+    ],
+  },
+  {
     date: "2026-11-03",
     items: [
       "Browse has a Popular this week sort, and the home page shows this week's most-played games.",

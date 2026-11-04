@@ -104,6 +104,12 @@ CREATE TABLE curated_lists (
 );
 CREATE UNIQUE INDEX idx_curated_lists_one_creator ON curated_lists(owner_user_id) WHERE kind = 'creator';
 
+CREATE TABLE daily_picks (
+  day TEXT PRIMARY KEY,
+  game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  picked_at TEXT NOT NULL
+);
+
 CREATE TABLE discord_role_grants (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   discord_user_id TEXT NOT NULL,

@@ -810,6 +810,12 @@ export const SHARED_CSS = `      :root {
       .gotd-title a:hover { text-decoration: underline; }
       .gotd-desc { margin: 0 0 0.5rem; color: var(--muted); }
       .game-of-the-day .category-pills { margin: 0 0 0.25rem; }
+      .gotd-past { font-size: 0.9rem; }
+      .daily-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
+      .daily-item { padding: 0.8rem 1rem; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+      .daily-item h2 { margin: 0.2rem 0 0.35rem; font-size: 1.15rem; overflow-wrap: anywhere; }
+      .daily-item time { color: var(--muted); font-size: 0.85rem; font-weight: 700; }
+      .daily-nav { display: flex; gap: 1rem; margin-top: 1rem; }
       .gotd-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 0.75rem; margin-top: 0.6rem; }
       .gotd-meta { color: var(--muted); font-size: 0.95rem; }
       .game-of-the-day .btn-play { font-size: 1rem; padding: 0.6rem 1rem; }
