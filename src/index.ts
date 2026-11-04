@@ -1944,13 +1944,17 @@ async function ensureCreatorList(env: Env, userId: string, twitch?: { twitchId: 
   const user = await env.DB.prepare("SELECT display_name FROM users WHERE id = ?1").bind(userId).first<{ display_name: string | null }>();
   const name = (user?.display_name || twitch?.twitchLogin || "Creator").trim().slice(0, 60);
   const id = crypto.randomUUID();
-  let slug = slugify(name) || "creator";
-  // A taken slug (an editor's list for the same streamer, say) falls back to "-dailies", then to a short id.
-  for (const candidate of [`${slug}-dailies`, `${slug}-${userId.slice(0, 6)}`]) {
-    if (!(await env.DB.prepare("SELECT 1 FROM curated_lists WHERE slug = ?1").bind(slug).first())) break;
+  const baseSlug = slugify(name) || "creator";
+  // A taken slug (an editor's list for the same streamer, say) falls back to "-dailies", then a short user id, then random.
+  let slug = baseSlug;
+  for (const candidate of [baseSlug, `${baseSlug}-dailies`, `${baseSlug}-${userId.slice(0, 6)}`]) {
     slug = candidate;
+    if (!(await env.DB.prepare("SELECT 1 FROM curated_lists WHERE slug = ?1").bind(slug).first())) break;
+    slug = "";
   }
+  if (!slug) slug = `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
   const description = twitch ? `Daily games played by ${name} on Twitch.` : `Daily games picked by ${name}.`;
+  for (let attempt = 0; ; attempt++) {
   try {
     await env.DB.batch([
       env.DB.prepare(
@@ -1970,12 +1974,16 @@ async function ensureCreatorList(env: Env, userId: string, twitch?: { twitchId: 
          )`
       ).bind(id, userId, twitch?.twitchId ?? null)
     ]);
+    break;
   } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
     // A concurrent sign-in created it first.
-    if (isUniqueViolation(error)) {
-      return (await env.DB.prepare("SELECT id FROM curated_lists WHERE owner_user_id = ?1 AND kind = 'creator'").bind(userId).first<{ id: string }>())?.id ?? null;
-    }
-    throw error;
+    const mine = await env.DB.prepare("SELECT id FROM curated_lists WHERE owner_user_id = ?1 AND kind = 'creator'").bind(userId).first<{ id: string }>();
+    if (mine) return mine.id;
+    // Otherwise the slug was taken in the meantime: retry with a random suffix.
+    if (attempt >= 3) throw error;
+    slug = `${baseSlug}-${crypto.randomUUID().slice(0, 8)}`;
+  }
   }
   // Fan-dles members (and hidden games) from the streamer's earlier tagged list(s) carry over to their own list.
   if (twitch) {
@@ -12241,6 +12249,25 @@ async function mergeUsers(env: Env, fromId: string, intoId: string): Promise<voi
     env.DB.prepare("DELETE FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1").bind(fromId),
     reassign("list_suggestions", "suggested_by_user_id"),
     reassign("list_blocked_games", "blocked_by_user_id"),
+    reassign("creator_allowlist", "added_by_user_id"),
+    reassign("fandle_hidden", "hidden_by_user_id"),
+    reassign("fandle_members", "added_by_user_id"),
+    reassign("reset_suggestions", "resolved_by"),
+    reassign("site_settings", "updated_by_user_id"),
+    // An open reset suggestion for a game the target already suggested stays with the target (unique index).
+    env.DB.prepare("UPDATE OR IGNORE reset_suggestions SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
+    env.DB.prepare("INSERT OR IGNORE INTO user_skips (user_id, day, game_id) SELECT ?2, day, game_id FROM user_skips WHERE user_id = ?1").bind(fromId, intoId),
+    env.DB.prepare(
+      `INSERT INTO user_plays_reset (user_id, reset_at) SELECT ?2, reset_at FROM user_plays_reset WHERE user_id = ?1
+       ON CONFLICT(user_id) DO UPDATE SET reset_at = MAX(user_plays_reset.reset_at, excluded.reset_at)`
+    ).bind(fromId, intoId),
+    env.DB.prepare("UPDATE OR IGNORE discord_role_grants SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
+    // Devices move over; the account keeps its 5 most recently added.
+    env.DB.prepare("UPDATE push_subscriptions SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
+    env.DB.prepare(
+      `DELETE FROM push_subscriptions WHERE user_id = ?1
+         AND id NOT IN (SELECT id FROM push_subscriptions WHERE user_id = ?1 ORDER BY created_at DESC, id LIMIT 5)`
+    ).bind(intoId),
     env.DB.prepare("UPDATE OR IGNORE fandle_members SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
     // A claim the target account already has for the same game stays; the other is dropped with the user row.
     env.DB.prepare("UPDATE OR IGNORE game_claims SET user_id = ?2 WHERE user_id = ?1").bind(fromId, intoId),
