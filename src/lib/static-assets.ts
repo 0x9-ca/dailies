@@ -1701,9 +1701,10 @@ export const PAGE_SCRIPTS: Record<string, string> = {
                 body: JSON.stringify(payload)
               });
               if (response.ok) {
+                const body = await response.json().catch(() => ({}));
                 reportForm.reset();
-                setReportStatus("Report submitted. Thank you.");
-                if (window.appToast) window.appToast("Report submitted.", "success");
+                setReportStatus(body && body.alreadyReported ? "You already reported this game. Thank you." : "Report submitted. Thank you.");
+                if (window.appToast) window.appToast(body && body.alreadyReported ? "You already reported this game." : "Report submitted.", "success");
               } else {
                 setReportStatus("Could not submit report.");
                 if (window.appToast) window.appToast("Could not submit report.", "error");
