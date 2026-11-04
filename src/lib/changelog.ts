@@ -8,6 +8,7 @@ export const CHANGELOG: ChangelogDay[] = [
     items: [
       "You can now delete your account from Settings.",
       "Reset countdowns stay correct when clocks change.",
+      "Rotation import now marks a link that only matches a site (not the exact game page) as a close match, so you can check it.",
       "See past Games of the day at /daily.",
       "Press ? in stream mode to see its keyboard shortcuts.",
     ],

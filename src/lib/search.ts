@@ -33,7 +33,7 @@ export function damerauLevenshtein(a: string, b: string): number {
   return d[rows - 1][cols - 1];
 }
 
-function trigrams(value: string): Set<string> {
+export function trigrams(value: string): Set<string> {
   const padded = `  ${value} `;
   const grams = new Set<string>();
   for (let i = 0; i + 3 <= padded.length; i++) grams.add(padded.slice(i, i + 3));
