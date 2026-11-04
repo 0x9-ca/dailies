@@ -94,6 +94,28 @@ for (const name of ["staging", "production"]) {
   }
 }
 
+// Per-env deployed bindings, routes, crons and workers_dev.
+for (const name of ["staging", "production"]) {
+  const e = `env.${name}`;
+  const has = (list, key, val) => Array.isArray(list) && list.some((x) => x && x[key] === val);
+  if (!has(get(config, `${e}.d1_databases`), "binding", "DB")) failures.push(`${e}.d1_databases needs a DB binding`);
+  if (!has(get(config, `${e}.kv_namespaces`), "binding", "CACHE")) failures.push(`${e}.kv_namespaces needs a CACHE binding`);
+  const dos = get(config, `${e}.durable_objects.bindings`);
+  for (const b of ["ANNOUNCER", "ROLE_SYNC"]) {
+    if (!has(dos, "name", b)) failures.push(`${e}.durable_objects.bindings needs ${b}`);
+  }
+  if (get(config, `${e}.workers_dev`) !== false) failures.push(`${e}.workers_dev must be false`);
+  const routes = get(config, `${e}.routes`);
+  if (!Array.isArray(routes) || routes.length < 2 || !routes.every((r) => r.custom_domain === true)) {
+    failures.push(`${e}.routes needs two custom domains`);
+  }
+  // Crons: the env's own triggers, else the top-level ones (checked against the dry-run output, see wrangler docs).
+  const crons = get(config, `${e}.triggers.crons`) ?? get(config, "triggers.crons");
+  for (const cron of ["15 8 * * *", "*/15 * * * *"]) {
+    if (!Array.isArray(crons) || !crons.includes(cron)) failures.push(`${e} is missing cron "${cron}"`);
+  }
+}
+
 if (failures.length > 0) {
   console.error("wrangler.jsonc validation failed:");
   for (const failure of failures) {
