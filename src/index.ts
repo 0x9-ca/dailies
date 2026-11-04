@@ -66,6 +66,15 @@ app.use("*", async (c, next) => {
   }
 });
 
+// Largest legitimate API body is a favorites import (500 items, roughly 170 KB at the field limits); 256 KB leaves headroom.
+// Requests with no Content-Length (chunked) are not measured here.
+const MAX_API_BODY_BYTES = 256 * 1024;
+app.use("/api/*", async (c, next) => {
+  const length = Number(c.req.header("content-length"));
+  if (Number.isFinite(length) && length > MAX_API_BODY_BYTES) return c.json({ error: "Request body too large" }, 413);
+  await next();
+});
+
 // The short host only forwards to APP_URL (expanding short paths), so cookies and sessions live on one host.
 app.use("*", async (c, next) => {
   if (!isShortHost(c.env, c.req.url)) return next();
