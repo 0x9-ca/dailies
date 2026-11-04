@@ -75,9 +75,8 @@ const EMBED_SCRIPT = `
       var m = Number(els[i].getAttribute("data-min"));
       if (!isFinite(m)) continue;
       var now = new Date(), next = new Date(now);
-      if (els[i].getAttribute("data-kind") === "utc") next.setUTCHours(Math.floor(m / 60), m % 60, 0, 0);
-      else next.setHours(Math.floor(m / 60), m % 60, 0, 0);
-      if (next <= now) next.setTime(next.getTime() + 864e5);
+      if (els[i].getAttribute("data-kind") === "utc") { next.setUTCHours(Math.floor(m / 60), m % 60, 0, 0); if (next <= now) next.setTime(next.getTime() + 864e5); }
+      else { next.setHours(Math.floor(m / 60), m % 60, 0, 0); if (next <= now) next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, Math.floor(m / 60), m % 60); }
       var left = Math.ceil((next - now) / 6e4), h = Math.floor(left / 60);
       els[i].textContent = "Resets in " + (h > 0 ? h + "h " : "") + (left % 60) + "m";
     }

@@ -169,16 +169,24 @@ export async function dueGames(env: Env, requests: { userId: string; tz: string;
       if (skipped.has(`${req.userId}|${today}|${g.game_id}`)) continue;
       // Reset as a minute of the day on the clock it is defined on: viewer's zone, a named zone, or UTC.
       let clockOffset = 0;
-      let minute = g.reset_time_minutes;
-      if (g.reset_basis === "local") clockOffset = off;
-      else if (g.reset_basis === "server" && g.reset_timezone) minute = (((minute - offsetOf(g.reset_timezone)) % 1440) + 1440) % 1440;
+      let clockZone: string | null = null;
+      const minute = g.reset_time_minutes;
+      if (g.reset_basis === "local") { clockOffset = off; clockZone = req.tz; }
+      else if (g.reset_basis === "server" && g.reset_timezone) { clockOffset = offsetOf(g.reset_timezone); clockZone = g.reset_timezone; }
       const msOfDay = (((now + clockOffset * MIN) % DAY_MS) + DAY_MS) % DAY_MS;
       let delta = (minute * MIN - msOfDay + DAY_MS) % DAY_MS;
       if (delta === 0) delta = DAY_MS;
-      const resetAt = now + delta;
-      const minutesLeft = Math.ceil(delta / MIN);
+      let resetAt = now + delta;
+      let prevResetAt = resetAt - DAY_MS;
+      if (clockZone) {
+        // The zone's offset can differ at the reset instant (a DST change in between): shift by the difference.
+        const atReset = tzOffsetMinutes(clockZone, resetAt);
+        resetAt += (clockOffset - atReset) * MIN;
+        prevResetAt = resetAt - DAY_MS + (atReset - tzOffsetMinutes(clockZone, resetAt - DAY_MS)) * MIN;
+      }
+      const minutesLeft = Math.max(0, Math.ceil((resetAt - now) / MIN));
       if (minutesLeft > req.lead) continue;
-      if ((playedAt.get(`${req.userId}|${g.game_id}`) || 0) > resetAt - DAY_MS) continue;
+      if ((playedAt.get(`${req.userId}|${g.game_id}`) || 0) > prevResetAt) continue;
       due.push({ gameId: g.game_id, title: g.title, slug: g.slug, minutesLeft, resetAt, day: localDay(resetAt, off) });
     }
     due.sort((a, b) => a.minutesLeft - b.minutesLeft);
