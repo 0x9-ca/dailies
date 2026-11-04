@@ -107,6 +107,12 @@ app.use("*", async (c, next) => {
   }
 });
 
+// Marks signed-in HTML so the service worker (src/lib/service-worker.ts) saves such pages offline only for /me/rotation.
+app.use("*", async (c, next) => {
+  await next();
+  if (c.get("user") && (c.res.headers.get("Content-Type") ?? "").startsWith("text/html")) c.header("X-Dgl-Signed-In", "1");
+});
+
 // Short paths for sharing (no clash with the long routes): /c/<list>, /g/<game>, /r/<rotation token>. Relative
 // redirects keep the visitor on the host they used.
 for (const [short, long] of SHORT_PATHS) {
@@ -127,6 +133,44 @@ function isEmbedPath(path: string): boolean {
   return path.startsWith("/embed/");
 }
 
+// Query parameters that change a cached page's HTML, per route. Every other parameter (cache busters, utm_*, the
+// client-side ones such as ?add, ?view, ?top, ?pos, ?edit on a logged-out list) is dropped from the cache key, so those
+// URLs share the plain page's entry. Values are normalized the way the route reads them, so junk values don't make
+// new entries. Cached routes: / (importLocal), /games (sort, category, q, hidePaywall, hideNsfw, page),
+// /games/:slug, /categories, /new, /changelog, /lists, /offline (none), /categories/:slug and /mod-log (page),
+// /daily (before), /lists/:slug (fandle notice), /embed/lists/:slug (theme, limit, title, transparent).
+const FANDLE_NOTICE_KEYS = ["joined", "not_following", "too_new", "cancelled", "conflict", "need_claim", "self", "error"];
+function pageCacheQuery(path: string, q: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams();
+  const get = (name: string) => q.get(name) ?? undefined;
+  const page = () => { const n = parsePositiveInt(get("page"), 1); if (n > 1) out.set("page", String(n)); };
+  if (path === "/") {
+    if (get("importLocal") === "1") out.set("importLocal", "1");
+  } else if (path === "/games") {
+    const sort = get("sort");
+    if (sort && sort !== "top") out.set("sort", sort); // unknown sorts are kept as given: the route may treat them differently from "top"
+    for (const name of ["category", "q"]) if (get(name)) out.set(name, get(name)!);
+    for (const name of ["hidePaywall", "hideNsfw"]) if (get(name) === "1") out.set(name, "1");
+    page();
+  } else if (path === "/mod-log" || path.startsWith("/categories/")) {
+    page();
+  } else if (path === "/daily") {
+    const before = get("before") ?? "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(before)) out.set("before", before);
+  } else if (path.startsWith("/lists/")) {
+    const notice = get("fandle");
+    if (notice && FANDLE_NOTICE_KEYS.includes(notice)) out.set("fandle", notice);
+  } else if (path.startsWith("/embed/lists/")) {
+    const o = parseEmbedOptions((name) => get(name));
+    if (o.theme !== "auto") out.set("theme", o.theme);
+    if (o.limit !== null) out.set("limit", String(o.limit));
+    if (!o.showTitle) out.set("title", "0");
+    if (o.transparent) out.set("transparent", "1");
+  }
+  out.sort();
+  return out;
+}
+
 app.use("*", async (c, next) => {
   const cacheable =
     c.req.method === "GET" &&
@@ -141,9 +185,16 @@ app.use("*", async (c, next) => {
 
   // Keyed by deployed version too, so a deploy starts with an empty page cache (pages reloaded by
   // APP_UPDATE_SCRIPT always get the new HTML, never a copy cached by the previous version).
+  // A list page's live refresh asks for a unique ?live= to get a fresh render: it neither reads nor writes the cache.
+  if (c.req.query("live") !== undefined) {
+    await next();
+    c.header("Cache-Control", "no-cache");
+    c.header("X-Page-Cache", "BYPASS");
+    return;
+  }
   const cacheUrl = new URL(c.req.url);
+  cacheUrl.search = pageCacheQuery(c.req.path, cacheUrl.searchParams).toString();
   cacheUrl.searchParams.set("__v", appVersion(c.env));
-  cacheUrl.searchParams.delete("add"); // /games/x?add=1 is the same HTML as /games/x (handled client-side)
   const cacheKey = new Request(cacheUrl.toString());
   const cached = await caches.default.match(cacheKey);
   if (cached) {
@@ -9425,7 +9476,9 @@ const ROTATION_TODAY_SCRIPT = `
     const next = box.querySelector("#daily-play-next");
     const done = box.querySelector("#daily-done");
     const STREAK_KEY = "dgl_streak_v1";
+    let memStreak = null;
     const readStreak = () => {
+      if (memStreak) return { last: memStreak.last, count: memStreak.count };
       try {
         const parsed = JSON.parse(window.localStorage.getItem(STREAK_KEY) || "{}");
         return parsed && typeof parsed.last === "string" && Number(parsed.count) > 0 ? { last: parsed.last, count: Math.floor(Number(parsed.count)) } : { last: "", count: 0 };
@@ -9480,7 +9533,7 @@ const ROTATION_TODAY_SCRIPT = `
         if (!nextRow && played > 0 && streak.last !== today) {
           streak.count = streak.last === yesterdayKey ? streak.count + 1 : 1;
           streak.last = today;
-          window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak));
+          try { window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak)); memStreak = null; } catch { memStreak = { last: streak.last, count: streak.count }; }
         }
         const live = streak.count >= 2 && (streak.last === today || streak.last === yesterdayKey);
         streakNode.hidden = !live;
@@ -10384,7 +10437,11 @@ const GAME_ACTIONS_SCRIPT = `
   window.dglGames = (() => {
     const FAVORITES_KEY = "dgl_local_favorites_v1";
     const ANON_ID_KEY = "dgl_anon_favorites_id_v1";
+    // In-memory copies for browsers where localStorage throws (blocked storage, full quota): they last for the page.
+    let memFavorites = null;
+    let memAnonId = "";
     const readLocalFavorites = () => {
+      if (memFavorites) return memFavorites.slice();
       try {
         const parsed = JSON.parse(window.localStorage.getItem(FAVORITES_KEY) || "[]");
         return Array.isArray(parsed) ? parsed.filter((row) => row && typeof row.id === "string" && row.id.length > 0) : [];
@@ -10393,18 +10450,25 @@ const GAME_ACTIONS_SCRIPT = `
       }
     };
     const writeLocalFavorites = (items) => {
-      window.localStorage.setItem(FAVORITES_KEY, JSON.stringify(items));
+      try {
+        window.localStorage.setItem(FAVORITES_KEY, JSON.stringify(items));
+        memFavorites = null;
+      } catch {
+        memFavorites = items.slice();
+      }
     };
     // The API only accepts a UUID. randomUUID is missing outside secure contexts (e.g. the LAN dev URL), and older
     // clients stored non-UUID ids, so those are replaced.
     const getAnonId = () => {
-      let value = window.localStorage.getItem(ANON_ID_KEY) || "";
+      let value = memAnonId;
+      if (!value) { try { value = window.localStorage.getItem(ANON_ID_KEY) || ""; } catch {} }
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
         value = crypto.randomUUID
           ? crypto.randomUUID()
           : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
-        window.localStorage.setItem(ANON_ID_KEY, value);
+        try { window.localStorage.setItem(ANON_ID_KEY, value); } catch {}
       }
+      memAnonId = value;
       return value;
     };
     const isLocalFavorite = (gameId) => readLocalFavorites().some((row) => row.id === gameId);
