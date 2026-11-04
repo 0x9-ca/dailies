@@ -2137,7 +2137,7 @@ app.get("/rotation/:shareToken", async (c) => {
     .first<{ id: string; display_name: string | null }>();
   
   if (!owner) {
-    return c.text("Rotation not found or link has been disabled", 404);
+    return notFoundPage(c);
   }
   
   const favorites = await c.env.DB.prepare(
@@ -11574,7 +11574,7 @@ async function notFoundPage(c: Context<{ Bindings: Bindings; Variables: AppVaria
         <a class="btn" href="/">Go to the home page</a>
       </div>
     </main>
-  `, c.env, { path: c.req.path, noindex: true }), 404);
+  `, c.env, { path: c.req.path, noindex: true, notFound: true }), 404);
 }
 
 /** Previous / numbered / Next links (first, last and a window around this page keep every page within a few clicks). */
@@ -11676,7 +11676,7 @@ async function hasAnyCuratedLists(env: Env): Promise<boolean> {
   return value;
 }
 
-async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string }; headHtml?: string }): Promise<string> {
+async function layout(title: string, user: AppUser | null, body: string, env: Env, opts?: { description?: string; path?: string; jsonLd?: unknown[]; noindex?: boolean; notFound?: boolean; image?: { path: string; alt: string }; feed?: { href: string; title: string }; headHtml?: string }): Promise<string> {
   const isAdminEditor = !!user && (user.role === "editor" || user.role === "admin");
   // The lists link only needs to know whether any list exists: remembered per isolate for 30s instead of a query per page.
   const hasListsPromise = hasAnyCuratedLists(env);
@@ -11725,7 +11725,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <script src="${ASSET.headJs}"></script>
     <title>${escapeHtml(fullTitle)}</title>
     <meta name="description" content="${escapeHtml(description)}" />
-    <link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />
+    ${opts?.notFound ? "" : `<link rel="canonical" href="https://dailies.0x9.ca${pagePath}" />`}
     <meta property="og:title" content="${escapeHtml(fullTitle)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     ${opts?.noindex ? `<meta name="robots" content="noindex,follow" />` : ""}
@@ -11744,7 +11744,7 @@ async function layout(title: string, user: AppUser | null, body: string, env: En
     <meta property="og:image:height" content="630" />
     <meta property="og:image:alt" content="${escapeHtml(image.alt)}" />
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />
+    ${opts?.notFound ? "" : `<meta property="og:url" content="https://dailies.0x9.ca${pagePath}" />`}
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:image" content="https://dailies.0x9.ca${escapeHtml(image.path)}" />
     <meta name="twitter:image:alt" content="${escapeHtml(image.alt)}" />
@@ -12338,7 +12338,12 @@ const ROTATION_WEEK_SCRIPT = `
     row.appendChild(all);
     const st = document.createElement("span"); st.className = "days-status days-sum"; st.setAttribute("role", "status"); st.setAttribute("aria-live", "polite");
     row.appendChild(st); ed.appendChild(row); main.appendChild(ed);
-    toggle.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); const open = ed.hidden; ed.hidden = !open; toggle.setAttribute("aria-expanded", String(open)); });
+    const setOpen = (open) => {
+      ed.hidden = !open; toggle.setAttribute("aria-expanded", String(open));
+      if (open) { const first = ed.querySelector(".days-day"); if (first) first.focus(); } else toggle.focus();
+    };
+    toggle.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setOpen(ed.hidden); });
+    ed.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); } });
     ed.addEventListener("click", (e) => e.stopPropagation());
     refreshRow(li);
   };
@@ -12349,8 +12354,8 @@ const ROTATION_WEEK_SCRIPT = `
     if (!li) return;
     decorate(li);
     const ed = li.querySelector(".days-ed"); const t = li.querySelector(".days-toggle");
-    ed.hidden = false; t.setAttribute("aria-expanded", "true");
     li.scrollIntoView({ block: "center" });
+    ed.hidden = false; t.setAttribute("aria-expanded", "true");
     const first = ed.querySelector(".days-day"); if (first) first.focus();
   };
   const renderWeek = () => {

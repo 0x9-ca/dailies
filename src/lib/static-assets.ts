@@ -434,7 +434,7 @@ export const SHARED_CSS = `      :root {
       .stack-form [data-reset-group] > label { display: flex; flex-direction: column; gap: 0.25rem; }
       textarea { padding:0.5rem; border-radius:6px; border:1px solid var(--control-border); background:var(--bg-soft); color:var(--ink); }
       fieldset { border:1px solid var(--border); border-radius:8px; padding:0.6rem; }
-      .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; }
+      .check { display:inline-flex; align-items:center; gap:0.35rem; margin-right:0.7rem; margin-bottom:0.4rem; min-height:24px; }
       .offline-banner { background: var(--card); color: var(--warn); border-bottom: 1px solid var(--border); padding: 0.5rem 1rem; text-align: center; font-weight: 600; font-size: 0.9rem; }
       .status { min-height: 1.2rem; color:var(--accent); font-weight: 600; }
       .status.error { color: #cc6666; }
@@ -810,7 +810,7 @@ export const SHARED_CSS = `      :root {
       .gotd-title a:hover { text-decoration: underline; }
       .gotd-desc { margin: 0 0 0.5rem; color: var(--muted); }
       .game-of-the-day .category-pills { margin: 0 0 0.25rem; }
-      .gotd-past { font-size: 0.9rem; }
+      .gotd-past { font-size: 0.9rem; display: inline-flex; align-items: center; min-height: 24px; }
       .daily-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.75rem; }
       .daily-item { padding: 0.8rem 1rem; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
       .daily-item h2 { margin: 0.2rem 0 0.35rem; font-size: 1.15rem; overflow-wrap: anywhere; }
@@ -873,6 +873,10 @@ export const SHARED_CSS = `      :root {
       .shortcuts-dialog kbd { display: inline-block; min-width: 1.6rem; padding: 0.1rem 0.4rem; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--bg-soft); color: var(--ink); font: 700 0.9rem/1.4 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; text-align: center; }
       .shortcuts-dialog .actions { margin-top: 0.9rem; display: flex; justify-content: flex-end; }
       .footer-button { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+      /* Footer links and the shortcuts button: each line is 24px and the tap overlay stays inside it, so neighbouring lines never overlap. */
+      footer p { line-height: 24px; }
+      footer a, footer .footer-button { position: relative; }
+      footer a::after, footer .footer-button::after { content: ""; position: absolute; inset: -5px -4px; }
       .hide-btn { display: inline-flex; align-items: center; justify-content: center; color: var(--muted); }
       .hide-btn svg { width: 1.05rem; height: 1.05rem; }
       .hide-btn .i-show { display: none; }
@@ -1033,14 +1037,10 @@ export const SHARED_CSS = `      :root {
       }
       /* Phone tap targets, last so it wins over the rules above: everything tappable reaches 44px. */
       @media (max-width: 700px) {
-        /* Header, menu and footer links: the same look, but the tappable box reaches 44px. */
+        /* Header and menu links: the same look, but the tappable box reaches 44px. */
         .brand, .site-nav a { display: inline-flex; align-items: center; min-height: 44px; }
         .nav-menu > summary { min-height: 44px; }
         .nav-menu-panel > a, .nav-menu-panel button { min-height: 44px; display: flex; align-items: center; }
-        footer a { position: relative; }
-        footer a::after { content: ""; position: absolute; inset: -1.15rem -0.5rem; }
-        footer .footer-button { position: relative; }
-        footer .footer-button::after { content: ""; position: absolute; inset: -1.15rem -0.5rem; }
         /* Fields: 44px tall, and 16px text so iOS doesn't zoom the page on focus. */
         input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), select, textarea { min-height: 44px; font-size: 16px; }
         textarea { min-height: 5.5rem; }
