@@ -47,7 +47,7 @@ Sign-in uses Discord or Twitch OAuth. `/login` shows the buttons (signed-in visi
 
 ## Scoring
 
-Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost, and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures. The daily cron recalculates all scores.
+Game score is computed from: Wilson lower bound of vote ratio, freshness bonus, click boost, and list membership boost (+0.10/list, max +0.20). Penalties apply for reports and link failures. It also counts favorites (account favorites weigh far more than anonymous ones; see AGENTS.md). A game's score is updated when it gets a vote, favorite, report, click or approval, and the daily cron recalculates all scores.
 
 ## Paywall flag
 
