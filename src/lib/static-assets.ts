@@ -3633,8 +3633,9 @@ export const PAGE_SCRIPTS: Record<string, string> = {
   "home-strip": `      // Today's rotation strip: needs the visitor's own data, so it is filled in the browser (edge-cache safe).
       (() => {
         let rows = [];
-        const widget = window.dglProgressWidget(document.getElementById("daily-progress"), () => rows);
-        window.dglTodayRotation.get(0).then((items) => { rows = items || []; widget.update(); });
+        let weekMask = 0;
+        const widget = window.dglProgressWidget(document.getElementById("daily-progress"), () => rows, () => weekMask);
+        window.dglTodayRotation.get(0).then((items) => { rows = items || []; weekMask = (items && items.weekMask) || 0; widget.update(); });
       })();
       document.getElementById("feeling-auspicious-btn")?.addEventListener("click", async () => {
         // Open the tab synchronously (within the click handler) so browsers don't block it as a popup;
