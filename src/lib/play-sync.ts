@@ -44,6 +44,12 @@ export const PLAY_SYNC_SCRIPT = `
   const flush = async () => {
     if (busy) { schedule(2000); return; }
     const p = readPending();
+    // Skips older than yesterday are no longer accepted by the server; drop them so they never block the queue.
+    const keepDay = window.dglDateKey(new Date(Date.now() - DAY));
+    const freshSkips = (list) => list.filter((x) => typeof x.day === "string" && x.day >= keepDay);
+    if (freshSkips(p.skipped).length !== p.skipped.length || freshSkips(p.unskipped).length !== p.unskipped.length) {
+      p.skipped = freshSkips(p.skipped); p.unskipped = freshSkips(p.unskipped); jset(PENDING, p);
+    }
     const streak = readStreak();
     const log = recentLog();
     const best = Math.max(readBest(), streak ? streak.count : 0);
@@ -55,7 +61,9 @@ export const PLAY_SYNC_SCRIPT = `
       const body = { plays, unplayed, skipped, unskipped, log, best };
       if (streak) body.streak = streak;
       const res = await fetch("/api/me/plays", { method: "POST", headers: { "Content-Type": "application/json" }, keepalive: true, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error("sync");
+      // 400 means the server will never accept this batch: drop it (below) instead of retrying it forever.
+      // Network errors, 429 and 5xx keep the queue for the next attempt.
+      if (!res.ok && res.status !== 400) throw new Error("sync");
       const sent = new Set(plays.map((x) => "p" + x.gameId + x.playedAt).concat(unplayed.map((x) => "u" + x.gameId + x.since), skipped.map((x) => "s" + x.gameId + x.day), unskipped.map((x) => "k" + x.gameId + x.day)));
       const cur = readPending();
       cur.plays = cur.plays.filter((x) => !sent.has("p" + x.gameId + x.playedAt));

@@ -2494,7 +2494,7 @@ app.get("/me/rotation", async (c) => {
     </main>
     <script src="${ASSET.listSortJs}"></script>
     <script>
-      window.dglListSort.init(document.getElementById("rotation-list"), document.getElementById("list-sort-select"));
+      window.dglRotationSorter = window.dglListSort.init(document.getElementById("rotation-list"), document.getElementById("list-sort-select"));
     </script>
     <script src="${ASSET.dailyProgressJs}"></script>
     <script>
