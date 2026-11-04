@@ -1502,6 +1502,11 @@ app.get("/games/:slug", async (c) => {
       last_checked_at: string | null;
     }>();
   if (!game) {
+    // A renamed game keeps the first 8 characters of its id in its slug, so an old URL can find it.
+    const moved = await findRenamedGameSlug(c.env, slug, !!isAdminOrEditor, user?.id ?? null);
+    if (moved) {
+      return c.redirect(`/games/${encodeURIComponent(moved)}${new URL(c.req.url).search}`, 301);
+    }
     return notFoundPage(c);
   }
 
@@ -4906,15 +4911,20 @@ app.post("/api/games/:id/favorite", async (c) => {
   if (!game) {
     return c.json({ error: "Not found" }, 404);
   }
-  const maxPosRow = await c.env.DB.prepare("SELECT COALESCE(MAX(position), 0) AS maxPosition FROM favorites WHERE user_id = ?1")
-    .bind(auth.id)
-    .first<{ maxPosition: number }>();
-  const position = (maxPosRow?.maxPosition || 0) + 1;
-  await c.env.DB.prepare(
-    "INSERT OR IGNORE INTO favorites (user_id, game_id, position) VALUES (?1, ?2, ?3)"
+  // Position is computed inside the INSERT so concurrent adds can't collide.
+  const added = await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO favorites (user_id, game_id, position)
+     SELECT ?1, ?2, COALESCE(MAX(position), 0) + 1 FROM favorites WHERE user_id = ?1`
   )
-    .bind(auth.id, gameId, position)
+    .bind(auth.id, gameId)
     .run();
+  if (((added.meta as { changes?: number } | undefined)?.changes ?? 0) === 0) {
+    // Nothing inserted: fine if it is already a favorite, otherwise the write really failed.
+    const present = await c.env.DB.prepare("SELECT 1 AS x FROM favorites WHERE user_id = ?1 AND game_id = ?2").bind(auth.id, gameId).first();
+    if (!present) {
+      return c.json({ error: "Could not add favorite" }, 500);
+    }
+  }
   await updateGameScore(c.env, gameId);
   await invalidateGameCaches(c.env);
   return c.json({ ok: true });
@@ -5482,37 +5492,11 @@ app.post("/api/me/favorites/import-local", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
 
-  const existingMax = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(position), 0) AS maxPosition FROM favorites WHERE user_id = ?1"
-  )
-    .bind(auth.id)
-    .first<{ maxPosition: number }>();
-
-  let nextPosition = (existingMax?.maxPosition || 0) + 1;
-  let imported = 0;
-  const updatedGameIds = new Set<string>();
-  for (const gameId of parsed.data.ids) {
-    const game = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'").bind(gameId).first<{ id: string }>();
-    if (!game) {
-      continue;
-    }
-    const result = await c.env.DB.prepare("INSERT OR IGNORE INTO favorites (user_id, game_id, position) VALUES (?1, ?2, ?3)")
-      .bind(auth.id, gameId, nextPosition)
-      .run();
-    const changed = (result.meta as { changes?: number } | undefined)?.changes || 0;
-    if (changed > 0) {
-      imported += 1;
-      nextPosition += 1;
-      updatedGameIds.add(gameId);
-    }
+  const rate = await enforceRateLimit(c.env, `fav:import:${auth.id}`, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
   }
-
-  for (const gameId of updatedGameIds) {
-    await updateGameScore(c.env, gameId);
-  }
-  if (updatedGameIds.size > 0) {
-    await invalidateGameCaches(c.env);
-  }
+  const imported = await importFavoriteIds(c.env, auth.id, parsed.data.ids);
 
   return c.json({ ok: true, imported });
 });
@@ -5702,37 +5686,11 @@ app.post("/api/me/favorites/import", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload", issues: parsed.error.flatten() }, 400);
   }
-  const existingMax = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(position), 0) AS maxPosition FROM favorites WHERE user_id = ?1"
-  )
-    .bind(auth.id)
-    .first<{ maxPosition: number }>();
-  let nextPosition = (existingMax?.maxPosition || 0) + 1;
-  let imported = 0;
-  const updatedGameIds = new Set<string>();
-  for (const item of parsed.data.items) {
-    const game = await c.env.DB.prepare("SELECT id FROM games WHERE id = ?1 AND status = 'approved'")
-      .bind(item.id)
-      .first<{ id: string }>();
-    if (!game) continue;
-    const result = await c.env.DB.prepare(
-      "INSERT OR IGNORE INTO favorites (user_id, game_id, position) VALUES (?1, ?2, ?3)"
-    )
-      .bind(auth.id, item.id, nextPosition)
-      .run();
-    const changed = (result.meta as { changes?: number } | undefined)?.changes || 0;
-    if (changed > 0) {
-      imported += 1;
-      nextPosition += 1;
-      updatedGameIds.add(item.id);
-    }
+  const rate = await enforceRateLimit(c.env, `fav:import:${auth.id}`, 30, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Rate limit exceeded", retryAfterSeconds: rate.retryAfterSeconds }, 429);
   }
-  for (const gameId of updatedGameIds) {
-    await updateGameScore(c.env, gameId);
-  }
-  if (updatedGameIds.size > 0) {
-    await invalidateGameCaches(c.env);
-  }
+  const imported = await importFavoriteIds(c.env, auth.id, parsed.data.items.map((item) => item.id));
   return c.json({ ok: true, imported });
 });
 
@@ -6672,16 +6630,24 @@ app.post("/api/lists/:id/items", async (c) => {
       return c.json({ error: "Game not found" }, 404);
     }
   }
-  const maxPos = await c.env.DB.prepare(
-    "SELECT COALESCE(MAX(position), 0) as maxPos FROM curated_list_items WHERE curated_list_id = ?1"
-  ).bind(listId).first<{ maxPos: number }>();
-  const nextPos = (maxPos?.maxPos ?? 0) + 1;
-  await c.env.DB.prepare(
+  const inserted = await c.env.DB.prepare(
     `INSERT OR IGNORE INTO curated_list_items (curated_list_id, game_id, position, added_by_user_id)
-     VALUES (?1, ?2, ?3, ?4)`
+     SELECT ?1, ?2, COALESCE(MAX(position), 0) + 1, ?3 FROM curated_list_items WHERE curated_list_id = ?1
+     RETURNING position`
   )
-    .bind(listId, parsed.data.gameId, nextPos, auth.id)
-    .run();
+    .bind(listId, parsed.data.gameId, auth.id)
+    .first<{ position: number }>();
+  let nextPos = inserted?.position ?? null;
+  if (nextPos === null) {
+    // Nothing inserted: fine if the game is already on the list, otherwise the write really failed.
+    const present = await c.env.DB.prepare("SELECT position FROM curated_list_items WHERE curated_list_id = ?1 AND game_id = ?2")
+      .bind(listId, parsed.data.gameId)
+      .first<{ position: number }>();
+    if (!present) {
+      return c.json({ error: "Could not add game" }, 500);
+    }
+    nextPos = present.position;
+  }
   // Adding a game directly lifts any suggestion block and settles an open suggestion for it.
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM list_blocked_games WHERE curated_list_id = ?1 AND game_id = ?2").bind(listId, parsed.data.gameId),
@@ -7703,6 +7669,21 @@ async function runLinkChecks(env: Env): Promise<void> {
   await invalidateGameCaches(env);
 }
 
+/** For a missing /games/<slug> ending in "-<8 hex>": the current slug of the one visible game with that id prefix, if it differs. */
+async function findRenamedGameSlug(env: Env, slug: string, privileged: boolean, userId: string | null): Promise<string | null> {
+  const match = /-([0-9a-f]{8})$/.exec(slug);
+  if (!match) return null;
+  const rows = await env.DB.prepare(
+    `SELECT slug FROM games
+     WHERE id LIKE ?1 AND (?2 = 1 OR status = 'approved' OR (status = 'pending' AND submitted_by_user_id = ?3))
+     LIMIT 2`
+  )
+    .bind(`${match[1]}%`, privileged ? 1 : 0, userId)
+    .all<{ slug: string }>();
+  if (rows.results.length !== 1 || rows.results[0].slug === slug) return null;
+  return rows.results[0].slug;
+}
+
 function uniqueSlug(title: string, id: string): string {
   const base = slugify(title) || "game";
   return `${base}-${id.slice(0, 8)}`;
@@ -8181,7 +8162,7 @@ async function listGameRows(env: Env, opts: ListGamesOpts): Promise<ListGameRow[
     LEFT JOIN categories ON categories.id = game_categories.category_id
     ${clicksJoinSql}
     ${whereSql}
-    ORDER BY ${sortSql}
+    ORDER BY ${sortSql}, games.id ASC
     LIMIT ?
     OFFSET ?
   `;
@@ -8190,6 +8171,73 @@ async function listGameRows(env: Env, opts: ListGamesOpts): Promise<ListGameRow[
     .bind(...params)
     .all<ListGameRow>();
   return rows.results;
+}
+
+// Adds approved games to a user's favorites in a fixed number of queries (ids travel as one JSON
+// array, so D1's bound-parameter limit doesn't apply). Already-favorited and unknown ids are skipped.
+async function importFavoriteIds(env: Env, userId: string, ids: string[]): Promise<number> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return 0;
+  const fresh = await env.DB.prepare(
+    `SELECT g.id AS id FROM games g
+     WHERE g.status = 'approved' AND g.id IN (SELECT value FROM json_each(?1))
+       AND NOT EXISTS (SELECT 1 FROM favorites f WHERE f.user_id = ?2 AND f.game_id = g.id)`
+  )
+    .bind(JSON.stringify(unique), userId)
+    .all<{ id: string }>();
+  const order = new Map(unique.map((id, i) => [id, i]));
+  const toAdd = fresh.results.map((r) => r.id).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
+  if (toAdd.length === 0) return 0;
+  const result = await env.DB.prepare(
+    `INSERT OR IGNORE INTO favorites (user_id, game_id, position)
+     SELECT ?1, j.value, (SELECT COALESCE(MAX(position), 0) FROM favorites WHERE user_id = ?1) + j.key + 1
+     FROM json_each(?2) j`
+  )
+    .bind(userId, JSON.stringify(toAdd))
+    .run();
+  const imported = (result.meta as { changes?: number } | undefined)?.changes ?? 0;
+  if (imported > 0) {
+    await updateGameScores(env, toAdd);
+    await invalidateGameCaches(env);
+  }
+  return imported;
+}
+
+// Same formula as updateGameScore, for many games in 2 queries.
+async function updateGameScores(env: Env, gameIds: string[]): Promise<void> {
+  if (gameIds.length === 0) return;
+  const rows = await env.DB.prepare(
+    `SELECT games.id, games.vote_up_count, games.vote_down_count, games.report_count, games.created_at, games.click_count,
+            (SELECT COUNT(*) FROM favorites WHERE game_id = games.id) AS favorite_count_user,
+            (SELECT COUNT(*) FROM anonymous_favorites WHERE game_id = games.id) AS favorite_count_anon,
+            (SELECT COUNT(*) FROM curated_list_items WHERE game_id = games.id) AS list_count
+     FROM games WHERE games.id IN (SELECT value FROM json_each(?1))`
+  )
+    .bind(JSON.stringify(gameIds))
+    .all<{
+      id: string; vote_up_count: number; vote_down_count: number; report_count: number; created_at: string;
+      click_count: number; favorite_count_user: number; favorite_count_anon: number; list_count: number;
+    }>();
+  const scores = rows.results.map((row) => ({
+    id: row.id,
+    s: computeGameScore({
+      upVotes: row.vote_up_count,
+      downVotes: row.vote_down_count,
+      reportCount: row.report_count,
+      favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+      clickCount: row.click_count || 0,
+      listCount: row.list_count || 0,
+      createdAtIso: row.created_at
+    })
+  }));
+  if (scores.length === 0) return;
+  await env.DB.prepare(
+    `UPDATE games SET score = j.s, updated_at = datetime('now')
+     FROM (SELECT json_extract(value, '$.id') AS id, json_extract(value, '$.s') AS s FROM json_each(?1)) j
+     WHERE games.id = j.id`
+  )
+    .bind(JSON.stringify(scores))
+    .run();
 }
 
 async function updateGameScore(env: Env, gameId: string): Promise<void> {
