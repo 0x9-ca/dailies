@@ -3374,16 +3374,38 @@ export const PAGE_SCRIPTS: Record<string, string> = {
         if (statusNode) statusNode.textContent = text;
       };
 
-      const runAction = async (gameId, action) => {
-        const payload = action === "reject" ? { note: window.prompt("Reject note (optional):") || "" } : {};
+      const fail = async (response, fallback) => {
+        let message = fallback;
+        if (response) {
+          const body = await response.json().catch(() => ({}));
+          if (body && body.error) message = body.error;
+        }
+        setStatus(message);
+        if (window.appToast) window.appToast(message, "error");
+      };
+
+      const runAction = async (gameId, action, title) => {
+        let payload = {};
+        if (action === "reject") {
+          const note = window.prompt("Reject note (optional):");
+          if (note === null) return;
+          payload = { note };
+        }
+        if (action === "disable" && !window.confirm("Disable " + (title || "this game") + "? It will be hidden from the site.")) return;
         setStatus("Running " + action + "...");
-        const response = await fetch("/api/admin/games/" + gameId + "/" + action, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
+        let response;
+        try {
+          response = await fetch("/api/admin/games/" + gameId + "/" + action, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+        } catch (error) {
+          await fail(null, "Network error. Try again.");
+          return;
+        }
         if (!response.ok) {
-          setStatus("Action failed.");
+          await fail(response, "Action failed.");
           return;
         }
         setStatus("Action complete. Refreshing...");
@@ -3404,15 +3426,27 @@ export const PAGE_SCRIPTS: Record<string, string> = {
           setStatus("Select at least one submission first.");
           return;
         }
-        const note = action === "reject" ? window.prompt("Reject note for selected submissions (optional):") || "" : "";
+        if (action !== "reject" && !window.confirm("Bulk " + action + " " + ids.length + " game(s)?")) return;
+        let note = "";
+        if (action === "reject") {
+          const entered = window.prompt("Reject " + ids.length + " game(s). Note (optional):");
+          if (entered === null) return;
+          note = entered;
+        }
         setStatus("Running bulk " + action + " on " + ids.length + " item(s)...");
-        const response = await fetch("/api/admin/games/bulk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action, ids, note })
-        });
+        let response;
+        try {
+          response = await fetch("/api/admin/games/bulk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action, ids, note })
+          });
+        } catch (error) {
+          await fail(null, "Network error. Try again.");
+          return;
+        }
         if (!response.ok) {
-          setStatus("Bulk action failed.");
+          await fail(response, "Bulk action failed.");
           return;
         }
         setStatus("Bulk action complete. Refreshing...");
@@ -3424,7 +3458,9 @@ export const PAGE_SCRIPTS: Record<string, string> = {
           const gameId = button.getAttribute("data-game-id");
           const action = button.getAttribute("data-action");
           if (!gameId || !action) return;
-          void runAction(gameId, action);
+          const card = button.closest("article");
+          const titleNode = card ? card.querySelector("h2") : null;
+          void runAction(gameId, action, titleNode ? (titleNode.firstChild ? titleNode.firstChild.textContent : "").trim() : "");
         });
       });
 
@@ -3453,25 +3489,31 @@ export const PAGE_SCRIPTS: Record<string, string> = {
           const basisNode = document.querySelector("select[data-reset-basis='" + gameId + "']");
           const timeNode = document.querySelector("input[data-reset-time='" + gameId + "']");
           const zoneNode = document.querySelector("[data-reset-timezone='" + gameId + "']");
-          if (!(basisNode instanceof HTMLSelectElement) || !(timeNode instanceof HTMLInputElement) || !(zoneNode instanceof HTMLInputElement)) {
+          if (!(basisNode instanceof HTMLSelectElement) || !(timeNode instanceof HTMLInputElement) || !((zoneNode instanceof HTMLSelectElement || zoneNode instanceof HTMLInputElement))) {
             return;
           }
           setStatus("Saving reset settings...");
-          const response = await fetch("/api/admin/games/" + gameId + "/reset", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              resetBasis: basisNode.value || null,
-              resetTime: timeNode.value || null,
-              resetTimezone: basisNode.value === "server" ? (zoneNode.value.trim() || null) : null
-            })
-          });
+          let response;
+          try {
+            response = await fetch("/api/admin/games/" + gameId + "/reset", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                resetBasis: basisNode.value || null,
+                resetTime: timeNode.value || null,
+                resetTimezone: basisNode.value === "server" ? (zoneNode.value.trim() || null) : null
+              })
+            });
+          } catch (error) {
+            await fail(null, "Network error. Try again.");
+            return;
+          }
           if (!response.ok) {
-            const body = await response.json().catch(() => ({}));
-            setStatus(body.error || "Could not save reset settings.");
+            await fail(response, "Could not save reset settings.");
             return;
           }
           setStatus("Reset settings saved.");
+          if (window.appToast) window.appToast("Reset settings saved.", "success");
         });
       });
     `,
@@ -4152,7 +4194,10 @@ export const PAGE_SCRIPTS: Record<string, string> = {
       });
       document.querySelectorAll("[data-allowlist-remove]").forEach((button) => {
         button.addEventListener("click", async () => {
-          const id = button.closest("[data-twitch-id]").getAttribute("data-twitch-id");
+          const holder = button.closest("[data-twitch-id]");
+          const id = holder.getAttribute("data-twitch-id");
+          const who = holder.querySelector("strong") ? holder.querySelector("strong").textContent : "this streamer";
+          if (!window.confirm("Remove verification for " + who + "?")) return;
           const res = await fetch("/api/admin/creators/twitch/" + encodeURIComponent(id), { method: "DELETE" });
           if (res.ok) window.location.href = "/admin/creators";
           else failWith("Could not remove that streamer.");
@@ -4161,6 +4206,10 @@ export const PAGE_SCRIPTS: Record<string, string> = {
       document.querySelectorAll("[data-creator-action]").forEach((button) => {
         button.addEventListener("click", async () => {
           const card = button.closest("[data-user-id]");
+          if (button.getAttribute("data-creator-action") !== "grant") {
+            const who = card.querySelector("strong") ? card.querySelector("strong").textContent : "this user";
+            if (!window.confirm("Remove creator status from " + who + "?")) return;
+          }
           const res = await fetch("/api/admin/users/" + card.getAttribute("data-user-id") + "/creator", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

@@ -1198,7 +1198,7 @@ app.get("/games", async (c) => {
   const categoryPagePath = activeCategory ? `/categories/${encodeURIComponent(activeCategory.slug)}` : "";
   // Later pages list different games, so each is its own canonical page (the sort order is not).
   // A plain category filter (no search, sort or hide filters) is the same list as the category's landing page.
-  const plainCategory = !!activeCategory && sort === "top" && !q && !hidePaywall && !hideNsfw;
+  const plainCategory = !!activeCategory && games.length > 0 && sort === "top" && !q && !hidePaywall && !hideNsfw;
   const canonicalPath = plainCategory
     ? (page > 1 ? `${categoryPagePath}?page=${page}` : categoryPagePath)
     : page > 1 ? `${categoryPath}${activeCategory ? "&" : "?"}page=${page}` : categoryPath;
@@ -1206,7 +1206,7 @@ app.get("/games", async (c) => {
   const activeFilterCount = [sort !== "top", !!category, hidePaywall, hideNsfw].filter(Boolean).length;
   const sortLabels: Record<string, string> = { top: "Top rated", new: "Newest", trending: "Trending", popular: "Popular this week", reset: "Resetting soonest" };
   const crumbs: Array<[string, string]> = [["Home", "/"], ["Games", "/games"]];
-  if (activeCategory) crumbs.push([activeCategory.name, categoryPagePath]);
+  if (activeCategory) crumbs.push([activeCategory.name, games.length > 0 ? categoryPagePath : categoryPath]);
   const categoryFeedPath = activeCategory ? `/feed.xml?category=${encodeURIComponent(activeCategory.slug)}` : "";
   return c.html(await layout(pageTitle, user, `
     <main>
@@ -1253,8 +1253,8 @@ app.get("/games", async (c) => {
     description: (activeCategory
       ? `${categoryDescription ? `${categoryDescription} ` : ""}${totalGames} daily game${totalGames === 1 ? "" : "s"} in the ${activeCategory.name} category, ranked by community votes.`
       : `Browse all ${totalGames} daily games: Wordle-style puzzles for words, geography, music, movies and more. Filter by category, sort by rating, trending or newest.`) + pageSuffix,
-    jsonLd: [breadcrumbLd(crumbs), gameItemListLd(games, offset)],
-    noindex: !!q || hidePaywall || hideNsfw,
+    jsonLd: games.length > 0 ? [breadcrumbLd(crumbs), gameItemListLd(games, offset)] : [breadcrumbLd(crumbs)],
+    noindex: !!q || hidePaywall || hideNsfw || games.length === 0,
     feed: activeCategory ? { href: categoryFeedPath, title: `New games in ${activeCategory.name} on 0x9 dles` } : undefined
   }));
 });
@@ -3756,6 +3756,7 @@ app.get("/admin/claims", async (c) => {
       document.querySelectorAll("[data-claim-action]").forEach((button) => {
         button.addEventListener("click", async () => {
           const card = button.closest("[data-claim-id]");
+          if (button.getAttribute("data-claim-action") === "revoke" && !window.confirm("Remove this verification? The developer loses their edit rights on the game.")) return;
           const res = await fetch("/api/admin/claims/" + card.getAttribute("data-claim-id"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -7409,7 +7410,7 @@ app.post("/api/admin/games/bulk", async (c) => {
   const statements = parsed.data.ids.map((gameId) => {
     if (parsed.data.action === "approve") {
       return c.env.DB.prepare(
-        "UPDATE games SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?2"
+        "UPDATE games SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now'), content_updated_at = datetime('now') WHERE id = ?2 AND status != 'approved'"
       ).bind(auth.id, gameId);
     }
     if (parsed.data.action === "reject") {
@@ -7446,7 +7447,7 @@ app.post("/api/admin/games/:id/approve", async (c) => {
   await c.env.DB.prepare(
     `UPDATE games
      SET status = 'approved', approved_at = datetime('now'), approved_by_user_id = ?1, updated_at = datetime('now'), content_updated_at = datetime('now')
-     WHERE id = ?2`
+     WHERE id = ?2 AND status != 'approved'`
   )
     .bind(auth.id, gameId)
     .run();
@@ -7547,11 +7548,16 @@ const bulkReportsSchema = z.object({
 // Hide (disable) or delete the games behind the given reports. Hiding also resolves every open report for
 // those games; deleting cascades the reports away with the game.
 async function applyGameActionForReports(env: Env, userId: string, reportIds: string[], action: "hide" | "delete"): Promise<number> {
-  const placeholders = reportIds.map((_, i) => `?${i + 1}`).join(",");
-  const found = await env.DB.prepare(`SELECT DISTINCT game_id FROM reports WHERE id IN (${placeholders})`)
-    .bind(...reportIds)
-    .all<{ game_id: string }>();
-  const gameIds = found.results.map((row) => row.game_id);
+  const gameIdSet = new Set<string>();
+  for (let i = 0; i < reportIds.length; i += 90) {
+    const chunk = reportIds.slice(i, i + 90);
+    const placeholders = chunk.map((_, j) => `?${j + 1}`).join(",");
+    const found = await env.DB.prepare(`SELECT DISTINCT game_id FROM reports WHERE id IN (${placeholders})`)
+      .bind(...chunk)
+      .all<{ game_id: string }>();
+    for (const row of found.results) gameIdSet.add(row.game_id);
+  }
+  const gameIds = [...gameIdSet];
   if (gameIds.length === 0) {
     return 0;
   }
@@ -7680,6 +7686,10 @@ app.post("/api/admin/categories", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
+  const slugTaken = await c.env.DB.prepare("SELECT 1 FROM categories WHERE slug = ?1").bind(parsed.data.slug).first();
+  if (slugTaken) {
+    return c.json({ error: `A category with the slug "${parsed.data.slug}" already exists.` }, 409);
+  }
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
     "INSERT INTO categories (id, slug, name, description, is_active, created_by_user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
@@ -7704,6 +7714,12 @@ app.patch("/api/admin/categories/:id", async (c) => {
     .first<{ id: string; slug: string; name: string; description: string | null; is_active: number }>();
   if (!existing) {
     return c.json({ error: "Not found" }, 404);
+  }
+  if (parsed.data.slug && parsed.data.slug !== existing.slug) {
+    const slugTaken = await c.env.DB.prepare("SELECT 1 FROM categories WHERE slug = ?1 AND id != ?2").bind(parsed.data.slug, existing.id).first();
+    if (slugTaken) {
+      return c.json({ error: `A category with the slug "${parsed.data.slug}" already exists.` }, 409);
+    }
   }
   await c.env.DB.prepare(
     `UPDATE categories
