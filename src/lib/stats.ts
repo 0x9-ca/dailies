@@ -14,13 +14,13 @@ const DAYS = 14;
 
 /** Each entry is a query returning one row with one integer column `n`. */
 const SCALARS: Record<string, string> = {
-  usersTotal: "SELECT COUNT(*) n FROM users WHERE id != '00000000-0000-0000-0000-000000000001'",
-  usersNew7: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-7 days') AND id != '00000000-0000-0000-0000-000000000001'",
-  usersNew30: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-30 days') AND id != '00000000-0000-0000-0000-000000000001'",
-  usersNew1: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-1 day') AND id != '00000000-0000-0000-0000-000000000001'",
+  usersTotal: "SELECT COUNT(*) n FROM users WHERE id != '00000000-0000-0000-0000-000000000001' AND email NOT LIKE '%@anonymous.local'",
+  usersNew7: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-7 days') AND id != '00000000-0000-0000-0000-000000000001' AND email NOT LIKE '%@anonymous.local'",
+  usersNew30: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-30 days') AND id != '00000000-0000-0000-0000-000000000001' AND email NOT LIKE '%@anonymous.local'",
+  usersNew1: "SELECT COUNT(*) n FROM users WHERE created_at > datetime('now','-1 day') AND id != '00000000-0000-0000-0000-000000000001' AND email NOT LIKE '%@anonymous.local'",
   usersEditors: "SELECT COUNT(*) n FROM users WHERE role = 'editor'",
   usersAdmins: "SELECT COUNT(*) n FROM users WHERE role = 'admin'",
-  usersSignedIn: "SELECT COUNT(DISTINCT user_id) n FROM sessions WHERE expires_at > datetime('now')",
+  usersSignedIn: "SELECT COUNT(DISTINCT user_id) n FROM sessions WHERE datetime(expires_at) > datetime('now')",
   usersDiscord: "SELECT COUNT(DISTINCT user_id) n FROM oauth_accounts WHERE provider = 'discord'",
   usersTwitch: "SELECT COUNT(DISTINCT user_id) n FROM oauth_accounts WHERE provider = 'twitch'",
   usersBothProviders: "SELECT COUNT(*) n FROM (SELECT user_id FROM oauth_accounts WHERE provider IN ('discord','twitch') GROUP BY user_id HAVING COUNT(DISTINCT provider) = 2)",
@@ -83,7 +83,7 @@ const TOP_QUERIES = {
 } as const;
 
 const SERIES_QUERIES = {
-  users: `SELECT date(created_at) d, COUNT(*) n FROM users WHERE created_at > datetime('now','-${DAYS} days') AND id != '00000000-0000-0000-0000-000000000001' GROUP BY d`,
+  users: `SELECT date(created_at) d, COUNT(*) n FROM users WHERE created_at > datetime('now','-${DAYS} days') AND id != '00000000-0000-0000-0000-000000000001' AND email NOT LIKE '%@anonymous.local' GROUP BY d`,
   votes: `SELECT d, SUM(n) n FROM (SELECT date(created_at) d, COUNT(*) n FROM votes WHERE created_at > datetime('now','-${DAYS} days') GROUP BY d UNION ALL SELECT date(created_at) d, COUNT(*) n FROM anonymous_votes WHERE created_at > datetime('now','-${DAYS} days') GROUP BY d) GROUP BY d`,
   games: `SELECT date(created_at) d, COUNT(*) n FROM games WHERE created_at > datetime('now','-${DAYS} days') GROUP BY d`
 } as const;
