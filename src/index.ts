@@ -5971,7 +5971,15 @@ app.delete("/api/me", async (c) => {
   const reassign = (table: string, column: string) =>
     db.prepare(`UPDATE ${table} SET ${column} = ?2 WHERE ${column} = ?1`).bind(userId, SYSTEM_USER_ID);
   const autoTitle = "COALESCE((SELECT display_name FROM users WHERE id = ?1), twitch_login, 'Creator') || '''s Dailies'";
+  const twitchIds = "(SELECT provider_user_id FROM oauth_accounts WHERE user_id = ?1 AND provider = 'twitch')";
   await db.batch([
+    // Personal data in the log: rows about this account (display name, profile handle, provider names), streamer
+    // verifications that name their Twitch channel, Fan-dles member entries that carry their id, and the slug of their
+    // auto-named creator list. The rows stay; the rest of the metadata is non-personal.
+    db.prepare(`UPDATE audit_log SET metadata_json = '{}' WHERE entity_type = 'user' AND (entity_id = ?1 OR entity_id IN ${twitchIds})`).bind(userId),
+    db.prepare(`UPDATE audit_log SET metadata_json = json_remove(metadata_json, '$.twitchLogin', '$.twitchUserId') WHERE action = 'set_twitch_owner' AND json_extract(metadata_json, '$.twitchUserId') IN ${twitchIds}`).bind(userId),
+    db.prepare("UPDATE audit_log SET metadata_json = json_remove(metadata_json, '$.userId') WHERE action IN ('fandle_add_member', 'fandle_remove_member') AND json_extract(metadata_json, '$.userId') = ?1").bind(userId),
+    db.prepare("UPDATE audit_log SET metadata_json = json_remove(metadata_json, '$.slug') WHERE action = 'create_creator_list' AND entity_id IN (SELECT id FROM curated_lists WHERE owner_user_id = ?1 AND kind = 'creator')").bind(userId),
     // Verified developer claims: log the removal (no name) and mark the game page as changed, before the claims go.
     db.prepare(
       `INSERT INTO audit_log (id, actor_user_id, entity_type, entity_id, action, metadata_json)
