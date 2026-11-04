@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-04",
     items: [
+      "Days with no games in your rotation no longer break your streak.",
       "Reordering your rotation now sticks when you change the sort.",
       "You can now delete your account from Settings.",
       "Reset countdowns stay correct when clocks change.",

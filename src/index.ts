@@ -2159,9 +2159,22 @@ app.get("/u/:handle", async (c) => {
       .bind(owner.id)
       .first<{ last: string; count: number; best: number; day_log: string }>();
     if (row) {
-      // The owner's time zone is unknown: a streak is current if it was last extended within the last 2 UTC days.
+      // The owner's time zone is unknown: a streak is current if it was last extended within the last 2 UTC days, or only days with no scheduled games (favorites.weekday_mask) lie between.
       const dayKey = (offset: number) => new Date(Date.now() - offset * 86400000).toISOString().slice(0, 10);
-      const current = row.last >= dayKey(2) ? row.count : 0;
+      let isCurrent = row.last >= dayKey(2);
+      if (!isCurrent) {
+        // Days with no scheduled games (by the current rotation's weekday masks) don't break a streak: walk back over them.
+        const maskRows = await c.env.DB.prepare("SELECT DISTINCT weekday_mask FROM favorites WHERE user_id = ?1").bind(owner.id).all<{ weekday_mask: number }>();
+        const weekMask = maskRows.results.reduce((acc, r) => acc | (r.weekday_mask & 127), 0);
+        if (weekMask) {
+          for (let k = 2; k <= 8 && !isCurrent; k++) {
+            const day = dayKey(k);
+            if (day === row.last) isCurrent = true;
+            else if ((weekMask & (1 << ((new Date(day + "T00:00:00Z").getUTCDay() + 6) % 7))) !== 0) break;
+          }
+        }
+      }
+      const current = isCurrent ? row.count : 0;
       let log: Record<string, number> = {};
       try {
         const parsed = JSON.parse(row.day_log || "{}");
@@ -6512,16 +6525,23 @@ app.get("/api/me/rotation", async (c) => {
   }
   const weekday = Number(c.req.query("weekday") || "1");
   const bit = Math.pow(2, Math.max(0, Math.min(6, weekday - 1)));
-  const rows = await c.env.DB.prepare(
-    `SELECT games.id, games.slug, games.title, favorites.position, favorites.weekday_mask
-     FROM favorites
-     JOIN games ON games.id = favorites.game_id
-     WHERE favorites.user_id = ?1 AND (favorites.weekday_mask & ?2) > 0
-     ORDER BY favorites.position ASC`
-  )
-    .bind(auth.id, bit)
-    .all();
-  return c.json(rows);
+  const [rows, masks] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT games.id, games.slug, games.title, favorites.position, favorites.weekday_mask
+       FROM favorites
+       JOIN games ON games.id = favorites.game_id
+       WHERE favorites.user_id = ?1 AND (favorites.weekday_mask & ?2) > 0
+       ORDER BY favorites.position ASC`
+    )
+      .bind(auth.id, bit)
+      .all(),
+    c.env.DB.prepare("SELECT DISTINCT weekday_mask FROM favorites JOIN games ON games.id = favorites.game_id WHERE favorites.user_id = ?1")
+      .bind(auth.id)
+      .all<{ weekday_mask: number }>()
+  ]);
+  // weekMask: the weekdays (Monday = bit 0) on which the rotation has any game, for streak continuity.
+  const weekMask = masks.results.reduce((acc, r) => acc | (r.weekday_mask & 127), 0);
+  return c.json({ ...rows, weekMask });
 });
 
 app.get("/api/lists", async (c) => {
@@ -9837,7 +9857,19 @@ const ROTATION_TODAY_SCRIPT = `
   };
   // Skipped today and not played since: the game drops out of today's counts, Play next, reminders and the streak.
   window.dglIsSkipped = (id, kind, min, skipped) => (skipped || window.dglSkippedToday()).has(id) && !(window.dglIsPlayed && window.dglIsPlayed(id, kind, min));
-  window.dglProgressWidget = (box, getRows) => {
+  // Does a streak whose last day is lastKey carry on into today? Yes when last is yesterday, or when every day between
+  // is one with no scheduled games in the current rotation (weekMask: union of the games' weekday masks, Monday = bit 0;
+  // 0 or missing = unknown, so only yesterday counts). The walk goes back at most 7 days. Skipped days still count as scheduled.
+  window.dglStreakChains = (lastKey, weekMask) => {
+    const now = new Date();
+    for (let back = 1; back <= 7; back++) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back);
+      if (window.dglDateKey(d) === lastKey) return true;
+      if (!weekMask || (weekMask & (1 << ((d.getDay() + 6) % 7))) !== 0) return false;
+    }
+    return false;
+  };
+  window.dglProgressWidget = (box, getRows, getWeekMask) => {
     const text = box.querySelector("#daily-progress-text");
     const streakNode = box.querySelector("#daily-progress-streak");
     const fill = box.querySelector("#daily-progress-fill");
@@ -9897,14 +9929,14 @@ const ROTATION_TODAY_SCRIPT = `
       try {
         const now = new Date();
         const today = window.dglDateKey(now);
-        const yesterdayKey = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+        const weekMask = getWeekMask ? getWeekMask() : 0;
         const streak = readStreak();
         if (!nextRow && played > 0 && streak.last !== today) {
-          streak.count = streak.last === yesterdayKey ? streak.count + 1 : 1;
+          streak.count = window.dglStreakChains(streak.last, weekMask) ? streak.count + 1 : 1;
           streak.last = today;
           try { window.localStorage.setItem(STREAK_KEY, JSON.stringify(streak)); memStreak = null; } catch { memStreak = { last: streak.last, count: streak.count }; }
         }
-        const live = streak.count >= 2 && (streak.last === today || streak.last === yesterdayKey);
+        const live = streak.count >= 2 && (streak.last === today || window.dglStreakChains(streak.last, weekMask));
         streakNode.hidden = !live;
         if (live) streakNode.textContent = streak.count + "-day streak";
       } catch {
@@ -9967,12 +9999,15 @@ const ROTATION_TODAY_SCRIPT = `
     const load = async () => {
       const weekday = ((new Date().getDay() + 6) % 7) + 1;
       let base = [];
+      let weekMask = 127;
       const session = await fetch("/api/me/session").then((r) => (r.ok ? r.json() : null), () => null);
       if (!session) return null;
       if (session.signedIn) {
         const r = await fetch("/api/me/rotation?weekday=" + weekday);
         if (!r.ok) return null;
-        base = (await r.json()).results || [];
+        const body = await r.json();
+        base = body.results || [];
+        weekMask = Number(body.weekMask) || 0;
       } else {
         base = window.dglGames.readLocalFavorites();
       }
@@ -9983,10 +10018,12 @@ const ROTATION_TODAY_SCRIPT = `
         if (r.ok) Object.assign(info, await r.json());
       }
       // Games without info are no longer listed.
-      return base.filter((g) => info[g.id]).map((g) => ({
+      const items = base.filter((g) => info[g.id]).map((g) => ({
         id: g.id, slug: g.slug, title: g.title, url: info[g.id].url,
         kind: info[g.id].reset ? info[g.id].reset.kind : "", min: info[g.id].reset ? info[g.id].reset.min : ""
       }));
+      items.weekMask = weekMask;
+      return items;
     };
     // Resolves to today's games ([] when none, null when the request failed). Reuses the last answer if it is
     // younger than maxAgeMs and from the same day.
@@ -10095,7 +10132,12 @@ const DAILY_PROGRESS_SCRIPT = `
       const link = li.querySelector("a.card-link");
       return { id: li.getAttribute("data-game-id"), url: link ? link.href : "", kind: li.dataset.resetKind, min: li.dataset.resetMin };
     });
-    const widget = window.dglProgressWidget(box, getRows);
+    // Union of every game's weekday mask (no mask = every day): the days on which the rotation has any game.
+    const weekMask = () => Array.from(list.querySelectorAll("li[data-game-id]")).reduce((acc, li) => {
+      const mask = li.getAttribute("data-weekday-mask");
+      return acc | (mask == null || mask === "" ? 127 : Number(mask) & 127);
+    }, 0);
+    const widget = window.dglProgressWidget(box, getRows, weekMask);
     // Skip today: a button in each of today's rows (both render paths; the anonymous list is built by script, so rows are
     // decorated here and on every list change). Skipped rows dim and sort last (CSS order, so the saved order is untouched).
     const syncSkipUi = () => {
@@ -10226,7 +10268,11 @@ const DAILY_PROGRESS_SCRIPT = `
       const now = new Date();
       const today = window.dglDateKey(now);
       const yesterday = window.dglDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
-      const current = streak.last === today || streak.last === yesterday ? streak.count : 0;
+      const weekMask = Array.from(document.querySelectorAll("#rotation-list li[data-game-id], #local-rotation-list li[data-game-id]")).reduce((acc, li) => {
+        const mask = li.getAttribute("data-weekday-mask");
+        return acc | (mask == null || mask === "" ? 127 : Number(mask) & 127);
+      }, 0);
+      const current = streak.last === today || window.dglStreakChains(streak.last, weekMask) ? streak.count : 0;
       if (current > best) {
         best = current;
         try { window.localStorage.setItem("dgl_streak_best_v1", String(best)); } catch {}
