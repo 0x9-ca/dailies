@@ -2662,6 +2662,16 @@ app.get("/me/settings", async (c) => {
         <ul id="hidden-games-list" class="hidden-games-list"></ul>
         <div class="actions"><button type="button" id="hidden-games-clear">Unhide all</button></div>
       </section>
+      <section class="panel" id="delete-account">
+        <h2>Delete account</h2>
+        <p>This permanently deletes your sign-in links, sessions, votes, favorites and rotation, play history and streaks, reset suggestions, reminder devices, developer claims and Fan-dles membership, and your public profile. It can't be undone.</p>
+        <p>Games you submitted, lists, reports and moderation log entries stay on the site without your name. If you are an admin, another admin must exist first.</p>
+        <label for="delete-account-confirm">Type DELETE to confirm</label>
+        <div class="actions">
+          <input id="delete-account-confirm" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="DELETE" />
+          <button type="button" id="delete-account-button" class="danger" disabled>Delete my account</button>
+        </div>
+      </section>
       <p id="me-settings-status" class="status" aria-live="polite"></p>
     </main>
     <script src="${ASSET.page_settings_hidden}"></script>
@@ -5916,6 +5926,132 @@ app.delete("/api/me/accounts/:provider", async (c) => {
     c.env.DB.prepare("UPDATE users SET profile_avatar_provider = CASE WHEN profile_avatar_provider = ?2 THEN NULL ELSE profile_avatar_provider END, profile_show_twitch = CASE WHEN ?2 = 'twitch' THEN 0 ELSE profile_show_twitch END WHERE id = ?1").bind(auth.id, provider)
   ]);
   await writeAudit(c.env, auth.id, "user", auth.id, "unlink_account", { provider });
+  return c.json({ ok: true });
+});
+
+// Self-serve account deletion. Content other people rely on (games, lists, reports, log entries) moves to the system
+// user; everything personal is deleted. One atomic batch; vote totals and scores are refreshed afterwards.
+const deleteAccountSchema = z.object({ confirm: z.literal("DELETE") });
+const DELETE_ACCOUNT_CHUNK = 1500;
+
+app.delete("/api/me", async (c) => {
+  const auth = requireAuth(c);
+  if (auth instanceof Response) {
+    return auth;
+  }
+  const userId = auth.id;
+  if (userId === SYSTEM_USER_ID) {
+    return c.json({ error: "This account can't be deleted." }, 403);
+  }
+  const rate = await enforceRateLimit(c.env, `delete-account:${userId}`, 5, 60 * 60);
+  if (!rate.ok) {
+    return c.json({ error: "Too many attempts. Please try again later." }, 429);
+  }
+  const parsed = deleteAccountSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "Type DELETE to confirm." }, 400);
+  }
+  if (auth.role === "admin") {
+    const others = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND id NOT IN (?1, ?2)")
+      .bind(userId, SYSTEM_USER_ID)
+      .first<{ n: number }>();
+    if (!others || others.n === 0) {
+      return c.json({ error: "You are the only admin. Make someone else an admin before deleting this account." }, 409);
+    }
+  }
+
+  const affected = await c.env.DB.prepare("SELECT game_id FROM votes WHERE user_id = ?1 UNION SELECT game_id FROM favorites WHERE user_id = ?1")
+    .bind(userId)
+    .all<{ game_id: string }>();
+  const gameIds = affected.results.map((row) => row.game_id);
+  const chunks: string[][] = [];
+  for (let i = 0; i < gameIds.length; i += DELETE_ACCOUNT_CHUNK) chunks.push(gameIds.slice(i, i + DELETE_ACCOUNT_CHUNK));
+
+  const db = c.env.DB;
+  const reassign = (table: string, column: string) =>
+    db.prepare(`UPDATE ${table} SET ${column} = ?2 WHERE ${column} = ?1`).bind(userId, SYSTEM_USER_ID);
+  const autoTitle = "COALESCE((SELECT display_name FROM users WHERE id = ?1), twitch_login, 'Creator') || '''s Dailies'";
+  await db.batch([
+    // Verified developer claims: log the removal (no name) and mark the game page as changed, before the claims go.
+    db.prepare(
+      `INSERT INTO audit_log (id, actor_user_id, entity_type, entity_id, action, metadata_json)
+       SELECT lower(hex(randomblob(16))), ?2, 'game', games.id, 'developer_removed', json_object('title', games.title, 'slug', games.slug, 'via', 'account_deleted')
+       FROM game_claims JOIN games ON games.id = game_claims.game_id WHERE game_claims.user_id = ?1 AND game_claims.status = 'verified'`
+    ).bind(userId, SYSTEM_USER_ID),
+    db.prepare(
+      "UPDATE games SET content_updated_at = datetime('now') WHERE id IN (SELECT game_id FROM game_claims WHERE user_id = ?1 AND status = 'verified')"
+    ).bind(userId),
+    db.prepare("DELETE FROM game_claims WHERE user_id = ?1").bind(userId),
+    // Creator list: becomes a plain list without the streamer's channel tag. An auto-named list ("<name>'s Dailies")
+    // also loses the name in its title, description and slug.
+    db.prepare(
+      `UPDATE curated_lists SET
+         slug = CASE WHEN title = ${autoTitle} THEN 'list-' || substr(id, 1, 8) ELSE slug END,
+         description = CASE WHEN title = ${autoTitle} THEN NULL ELSE description END,
+         title = CASE WHEN title = ${autoTitle} THEN 'Former creator list' ELSE title END,
+         kind = 'curated', twitch_login = NULL, twitch_user_id = NULL, updated_at = datetime('now')
+       WHERE owner_user_id = ?1 AND kind = 'creator'`
+    ).bind(userId),
+    db.prepare("DELETE FROM creator_allowlist WHERE twitch_user_id IN (SELECT provider_user_id FROM oauth_accounts WHERE user_id = ?1 AND provider = 'twitch')").bind(userId),
+    // A suggestion whose only vote was this user's goes away (like taking back the last vote); others lose one vote.
+    db.prepare(
+      `DELETE FROM list_suggestions WHERE EXISTS (
+         SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.voter_key = 'user:' || ?1)
+       AND NOT EXISTS (
+         SELECT 1 FROM list_suggestion_votes v WHERE v.curated_list_id = list_suggestions.curated_list_id AND v.game_id = list_suggestions.game_id AND v.voter_key != 'user:' || ?1)`
+    ).bind(userId),
+    db.prepare("DELETE FROM list_suggestion_votes WHERE voter_key = 'user:' || ?1").bind(userId),
+    // Kept, now owned by the system user.
+    reassign("games", "submitted_by_user_id"),
+    reassign("games", "approved_by_user_id"),
+    reassign("audit_log", "actor_user_id"),
+    reassign("categories", "created_by_user_id"),
+    reassign("curated_lists", "owner_user_id"),
+    reassign("curated_lists", "created_by_user_id"),
+    reassign("curated_lists", "updated_by_user_id"),
+    reassign("curated_list_items", "added_by_user_id"),
+    reassign("game_categories", "assigned_by_user_id"),
+    reassign("list_blocked_games", "blocked_by_user_id"),
+    reassign("list_suggestions", "suggested_by_user_id"),
+    reassign("reports", "reported_by_user_id"),
+    reassign("reports", "resolved_by_user_id"),
+    reassign("fandle_hidden", "hidden_by_user_id"),
+    reassign("fandle_members", "added_by_user_id"),
+    reassign("reset_suggestions", "resolved_by"),
+    reassign("site_settings", "updated_by_user_id"),
+    reassign("creator_allowlist", "added_by_user_id"),
+    // Personal data.
+    db.prepare("DELETE FROM reset_suggestions WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM votes WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM favorites WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM user_plays WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM user_plays_reset WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM user_skips WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM user_streaks WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM push_sent WHERE subscription_id IN (SELECT id FROM push_subscriptions WHERE user_id = ?1)").bind(userId),
+    db.prepare("DELETE FROM push_subscriptions WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM fandle_members WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM discord_role_grants WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM rate_limits WHERE key LIKE '%:' || ?1").bind(userId),
+    db.prepare("DELETE FROM sessions WHERE user_id = ?1").bind(userId),
+    db.prepare("DELETE FROM oauth_accounts WHERE user_id = ?1").bind(userId),
+    // Totals for the games they voted on (the votes are gone now).
+    ...chunks.map((ids) =>
+      db.prepare(
+        `UPDATE games SET
+           vote_up_count = (SELECT COUNT(*) FROM votes WHERE game_id = games.id AND value = 1) + (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = games.id AND value = 1),
+           vote_down_count = (SELECT COUNT(*) FROM votes WHERE game_id = games.id AND value = -1) + (SELECT COUNT(*) FROM anonymous_votes WHERE game_id = games.id AND value = -1),
+           updated_at = datetime('now')
+         WHERE id IN (SELECT value FROM json_each(?1))`
+      ).bind(JSON.stringify(ids))
+    ),
+    db.prepare("DELETE FROM users WHERE id = ?1").bind(userId)
+  ]);
+  for (const ids of chunks) {
+    await updateGameScores(c.env, ids);
+  }
+  await invalidateGameCaches(c.env);
+  deleteCookie(c, c.env.SESSION_COOKIE_NAME, { path: "/" });
   return c.json({ ok: true });
 });
 

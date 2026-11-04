@@ -3959,6 +3959,47 @@ export const PAGE_SCRIPTS: Record<string, string> = {
           window.location.reload();
         });
       });
+
+      const deleteInput = document.getElementById("delete-account-confirm");
+      const deleteButton = document.getElementById("delete-account-button");
+      if (deleteInput && deleteButton) {
+        deleteInput.addEventListener("input", () => {
+          deleteButton.disabled = deleteInput.value !== "DELETE";
+        });
+        const clearPages = () => {
+          try { if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: "clear-pages" }); } catch (e) {}
+          if (!window.caches) return Promise.resolve();
+          return caches.keys().then((names) => Promise.all(names.filter((n) => n.indexOf("dgl-pages-") === 0).map((n) => caches.delete(n)))).catch(() => {});
+        };
+        const dropPush = () => {
+          try { window.localStorage.removeItem("dgl_push_v1"); } catch (e) {}
+          if (!("serviceWorker" in navigator) || !("PushManager" in window)) return Promise.resolve();
+          return navigator.serviceWorker.getRegistration().then((reg) => (reg ? reg.pushManager.getSubscription() : null)).then((sub) => (sub ? sub.unsubscribe() : null)).catch(() => {});
+        };
+        deleteButton.addEventListener("click", async () => {
+          if (deleteInput.value !== "DELETE") return;
+          if (!window.confirm("Delete your account for good? This can't be undone.")) return;
+          deleteButton.disabled = true;
+          setStatus("Deleting your account...");
+          try {
+            const response = await fetch("/api/me", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: deleteInput.value }) });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              const message = data.error || "Could not delete your account.";
+              setStatus(message);
+              if (window.appToast) window.appToast(message, "error");
+              deleteButton.disabled = deleteInput.value !== "DELETE";
+              return;
+            }
+            await Promise.race([Promise.all([clearPages(), dropPush()]), new Promise((resolve) => setTimeout(resolve, 1500))]);
+            window.location.assign("/");
+          } catch (error) {
+            setStatus("Could not delete your account.");
+            if (window.appToast) window.appToast("Could not delete your account.", "error");
+            deleteButton.disabled = deleteInput.value !== "DELETE";
+          }
+        });
+      }
     `,
   "lists-page": `      (() => {
         const form = document.getElementById("create-list-form");

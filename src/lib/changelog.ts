@@ -6,6 +6,7 @@ export const CHANGELOG: ChangelogDay[] = [
   {
     date: "2026-11-04",
     items: [
+      "You can now delete your account from Settings.",
       "See past Games of the day at /daily.",
       "Press ? in stream mode to see its keyboard shortcuts.",
     ],
