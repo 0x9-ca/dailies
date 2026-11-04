@@ -2674,6 +2674,11 @@ app.get("/embed/lists/:slug", async (c) => {
     .all<{ id: string; title: string; url: string; paywall: number; reset_basis: "local" | "server" | null; reset_time_minutes: number | null; reset_timezone: string | null }>();
   const items: EmbedItem[] = rows.results.map((row) => {
     const reset = getResetSortData(row.reset_basis, row.reset_time_minutes, row.reset_timezone);
+    // The embed's tiny script only knows "utc" and "local": a zone kind falls back to its render-time UTC minute.
+    if (reset && reset.kind.startsWith("tz:")) {
+      reset.min = Number(reset.kind.slice(reset.kind.lastIndexOf("@") + 1));
+      reset.kind = "utc";
+    }
     return {
       id: row.id,
       title: row.title,
@@ -4608,7 +4613,7 @@ app.get("/api/games/rotation-info", async (c) => {
     .map((id) => id.trim())
     .filter((id) => id.length > 0)
     .slice(0, 90);
-  const result: Record<string, { url: string; reset: { kind: "utc" | "local"; min: number; label: string } | null }> = {};
+  const result: Record<string, { url: string; reset: { kind: string; min: number; label: string } | null }> = {};
   if (ids.length > 0) {
     const placeholders = ids.map((_id, index) => `?${index + 1}`).join(", ");
     const rows = await c.env.DB.prepare(
@@ -9170,7 +9175,9 @@ const DEVELOPER_SCRIPT = `
   }
 `;
 
-type ResetSortData = { kind: "utc" | "local"; min: number };
+// kind: "local" (min = viewer clock), "utc" (min = UTC time of day), or "tz:<IANA zone>@<utc min>" (min = clock time in
+// that zone; the number after @ is the UTC minute at render time, the fallback for a browser without that zone).
+type ResetSortData = { kind: string; min: number };
 
 /**
  * Where a game's daily reset falls on a 24h clock, for client-side "resetting soonest" sorting.
@@ -9189,7 +9196,12 @@ function getResetSortData(
     return { kind: "local", min: minutes };
   }
   const offset = basis === "server" && timeZone ? timeZoneOffsetMinutes(timeZone) : 0;
-  return { kind: "utc", min: (((minutes - offset) % 1440) + 1440) % 1440 };
+  const utcMin = (((minutes - offset) % 1440) + 1440) % 1440;
+  // The offset changes with DST, so the page carries the zone and the browser works out the real instant.
+  if (basis === "server" && timeZone && /^[A-Za-z0-9_+\-]+(\/[A-Za-z0-9_+\-]+){0,2}$/.test(timeZone)) {
+    return { kind: `tz:${timeZone}@${utcMin}`, min: minutes };
+  }
+  return { kind: "utc", min: utcMin };
 }
 
 function renderResetItemData(
@@ -9630,7 +9642,7 @@ const ROTATION_TODAY_SCRIPT = `
           if (game.kind === "" || game.min === "" || window.dglIsPlayed(game.id, game.kind, game.min) || skippedNow.has(game.id)) return;
           const reset = window.dglResetCountdown(game.kind, game.min);
           if (!reset || reset.minutesLeft > settings.minutes) return;
-          const resetAt = reset.lastResetAt + 24 * 60 * 60 * 1000;
+          const resetAt = reset.nextResetAt;
           if (reminded[game.id] === resetAt) return;
           reminded[game.id] = resetAt;
           try {
@@ -10137,21 +10149,61 @@ const RECAP_SCRIPT = `
 `;
 
 const RESET_LOCALIZE_SCRIPT = `
+  // Next and previous reset as real instants. "local": the viewer's wall clock, built with calendar arithmetic so a
+  // DST change day gives the true next occurrence (not +24h). A time that doesn't exist that day (spring forward)
+  // happens at the shifted time; one that occurs twice (fall back) uses its first occurrence. "utc": fixed UTC time of
+  // day. "tz:<zone>@<utc min>": a clock time in a named zone, using that zone's offset at the reset instant; a browser
+  // without the zone falls back to the UTC minute.
+  const zoneFormats = {};
+  const zoneOffsetMs = (zone, t) => {
+    let f = zoneFormats[zone];
+    if (!f) f = zoneFormats[zone] = new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" });
+    const p = {};
+    f.formatToParts(new Date(t)).forEach((part) => { p[part.type] = Number(part.value); });
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - Math.floor(t / 1000) * 1000;
+  };
+  // The UTC instant at which the zone's wall clock reads wallMs (a Date.UTC of the wanted wall time).
+  const zoneInstant = (zone, wallMs, near) => {
+    let t = wallMs - zoneOffsetMs(zone, near);
+    t = wallMs - zoneOffsetMs(zone, t);
+    return wallMs - zoneOffsetMs(zone, t);
+  };
+  const resetInstants = (kind, m, nowMs) => {
+    const h = Math.floor(m / 60), mi = m % 60;
+    const now = new Date(nowMs);
+    let at;
+    if (typeof kind === "string" && kind.indexOf("tz:") === 0) {
+      const sep = kind.lastIndexOf("@");
+      const zone = kind.slice(3, sep);
+      try {
+        const w = new Date(nowMs + zoneOffsetMs(zone, nowMs));
+        const y = w.getUTCFullYear(), mo = w.getUTCMonth(), d = w.getUTCDate();
+        at = (day) => zoneInstant(zone, Date.UTC(y, mo, d + day, h, mi), nowMs);
+        at(0);
+      } catch {
+        return resetInstants("utc", Number(kind.slice(sep + 1)), nowMs);
+      }
+    } else if (kind === "utc") {
+      at = (day) => Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + day, h, mi);
+    } else {
+      at = (day) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + day, h, mi).getTime();
+    }
+    const today = at(0);
+    return today > nowMs ? { next: today, last: at(-1) } : { next: at(1), last: today };
+  };
   window.dglResetCountdown = (kind, min) => {
     const m = Number(min);
     if (!Number.isFinite(m)) return null;
-    const now = new Date();
-    const next = new Date(now);
-    if (kind === "utc") next.setUTCHours(Math.floor(m / 60), m % 60, 0, 0);
-    else next.setHours(Math.floor(m / 60), m % 60, 0, 0);
-    if (next <= now) next.setTime(next.getTime() + 24 * 60 * 60 * 1000);
-    const minutesLeft = Math.ceil((next.getTime() - now.getTime()) / 60000);
+    const nowMs = Date.now();
+    const inst = resetInstants(kind, m, nowMs);
+    const minutesLeft = Math.max(0, Math.ceil((inst.next - nowMs) / 60000));
     const hours = Math.floor(minutesLeft / 60);
     return {
-      at: next.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      at: new Date(inst.next).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
       in: (hours > 0 ? hours + "h " : "") + (minutesLeft % 60) + "m",
       minutesLeft,
-      lastResetAt: next.getTime() - 24 * 60 * 60 * 1000
+      nextResetAt: inst.next,
+      lastResetAt: inst.last
     };
   };
   // When this browser last opened each game ({ gameId: epoch ms }), so cards played since the last reset can be
@@ -10801,6 +10853,7 @@ const LIST_SORT_SCRIPT = `
       const kind = li.dataset.resetKind;
       const min = Number(li.dataset.resetMin);
       if (!kind || li.dataset.resetMin === undefined || !Number.isFinite(min)) return Infinity;
+      if (window.dglResetCountdown) { const r = window.dglResetCountdown(kind, min); if (r) return r.minutesLeft; }
       const current = kind === "utc" ? now.getUTCHours() * 60 + now.getUTCMinutes() : now.getHours() * 60 + now.getMinutes();
       return (((min - current) % 1440) + 1440) % 1440;
     };
