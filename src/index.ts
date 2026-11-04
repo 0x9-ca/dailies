@@ -5038,7 +5038,7 @@ app.delete("/api/games/:id/favorite", async (c) => {
   return c.json({ ok: true });
 });
 
-const anonFavoriteSchema = z.object({ anonId: z.string().uuid() });
+const anonFavoriteSchema = z.object({ anonId: z.guid() });
 
 app.post("/api/games/:id/favorite-anon", async (c) => {
   const gameId = c.req.param("id");
@@ -5092,7 +5092,7 @@ const adminGameUpdateSchema = z.object({
   nsfw: z.boolean().optional().default(false),
   // Omitted keeps the stored text; null or blank clears it.
   how_to_play: z.preprocess((value) => (typeof value === "string" ? value.trim() || null : value), z.string().max(2000).nullable().optional()),
-  category_ids: z.array(z.string().uuid()).max(20)
+  category_ids: z.array(z.guid()).max(20)
 });
 
 app.put("/api/games/:id/admin-update", async (c) => {
@@ -5574,7 +5574,7 @@ app.put("/api/games/:id/developer-update", async (c) => {
 });
 
 const importLocalFavoritesSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(500)
+  ids: z.array(z.guid()).min(1).max(500)
 });
 
 app.post("/api/me/favorites/import-local", async (c) => {
@@ -5767,7 +5767,7 @@ app.get("/api/me/favorites/export", async (c) => {
 const importFavoritesSchema = z.object({
   version: z.literal(1),
   items: z.array(z.object({
-    id: z.string().uuid(),
+    id: z.guid(),
     slug: z.string(),
     title: z.string()
   })).min(1).max(500)
@@ -5791,7 +5791,7 @@ app.post("/api/me/favorites/import", async (c) => {
 });
 
 const reorderSchema = z.object({
-  items: z.array(z.object({ gameId: z.string().uuid(), position: z.number().int().positive() })).min(1)
+  items: z.array(z.object({ gameId: z.guid(), position: z.number().int().positive() })).min(1)
 });
 
 app.post("/api/me/favorites/reorder", async (c) => {
@@ -6749,7 +6749,7 @@ app.post("/api/lists/:id/fandle-members", async (c) => {
   if (auth instanceof Response) {
     return auth;
   }
-  const parsed = z.object({ userId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({ userId: z.guid() }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -6839,9 +6839,9 @@ app.delete("/api/lists/:id", async (c) => {
   return c.json({ ok: true });
 });
 
-const listItemSchema = z.object({ gameId: z.string().uuid(), position: z.number().int().positive() });
+const listItemSchema = z.object({ gameId: z.guid(), position: z.number().int().positive() });
 const reorderListItemsSchema = z.object({
-  items: z.array(z.object({ gameId: z.string().uuid(), position: z.number().int().positive() })).min(1)
+  items: z.array(z.object({ gameId: z.guid(), position: z.number().int().positive() })).min(1)
 });
 
 app.post("/api/lists/:id/items", async (c) => {
@@ -7161,7 +7161,7 @@ app.post("/api/lists/:id/suggestions", async (c) => {
   if (!list.suggestionsEnabled) {
     return c.json({ error: SUGGESTIONS_OFF_ERROR, code: "disabled" }, 403);
   }
-  const parsed = z.object({ gameId: z.string().uuid() }).safeParse(await c.req.json().catch(() => null));
+  const parsed = z.object({ gameId: z.guid() }).safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "Invalid payload" }, 400);
   }
@@ -7399,7 +7399,7 @@ app.patch("/api/admin/games/:id/reset", async (c) => {
 });
 
 const bulkGamesSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200),
+  ids: z.array(z.guid()).min(1).max(200),
   action: z.enum(["approve", "reject", "disable", "restore"]),
   note: z.string().max(400).optional()
 });
@@ -7549,7 +7549,7 @@ function resetLinkFailCountStatement(env: Env, reportId: string): D1PreparedStat
 }
 
 const bulkReportsSchema = z.object({
-  ids: z.array(z.string().uuid()).min(1).max(200),
+  ids: z.array(z.guid()).min(1).max(200),
   action: z.enum(["resolve", "dismiss", "hide", "delete"])
 });
 
