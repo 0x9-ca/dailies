@@ -71,6 +71,7 @@
 - `PATCH /api/me/profile`
 - `DELETE /api/me/sessions/:id`
 - `DELETE /api/me/accounts/:provider` (unlink `discord` or `twitch`; refused for the last sign-in; unlinking Discord drops editor/admin)
+- `DELETE /api/me` (delete the signed-in account; body `{ "confirm": "DELETE" }`, else 400; 409 when the caller is the only admin; rate limited 5/hour. Games, lists, reports, categories, log entries and settings they created move to the system user; sessions, sign-ins, votes, favorites, plays, skips, streaks, push devices, reset suggestions, claims, Fan-dles membership and Discord role grants are deleted. Clears the session cookie.)
 
 ## Public profile (signed-in user)
 
