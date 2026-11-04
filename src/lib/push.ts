@@ -7,6 +7,7 @@ const MIN = 60_000;
 const DAY_MS = 24 * 60 * MIN;
 const CHUNK = 90; // D1 allows 100 bound variables per statement
 export const PUSH_MAX_PER_RUN = 500;
+const PUSH_CURSOR_KEY = "push:cursor:v1";
 export const PUSH_MAX_PER_USER = 5;
 const SEND_CONCURRENCY = 20;
 
@@ -188,14 +189,22 @@ export async function dueGames(env: Env, requests: { userId: string; tz: string;
 
 const keyOf = (s: { user_id: string; tz: string; lead_minutes: number }) => `${s.user_id}|${s.tz}|${s.lead_minutes}`;
 
-/** The cron job: at most PUSH_MAX_PER_RUN subscriptions, least recently notified first. */
+/** The cron job: at most PUSH_MAX_PER_RUN subscriptions per run, in id order with a KV cursor. */
 export async function runPushReminders(env: Env): Promise<{ checked: number; sent: number; removed: number }> {
   if (!pushEnabled(env)) return { checked: 0, sent: 0, removed: 0 };
   const now = Date.now();
   await env.DB.prepare("DELETE FROM push_sent WHERE day < ?1").bind(new Date(now - 3 * DAY_MS).toISOString().slice(0, 10)).run();
+  // Walk all subscriptions in id-ordered slices of PUSH_MAX_PER_RUN with the cursor (last id seen) in KV, so
+  // subscriptions that never get a push can't hold the window and starve the rest. A short slice wraps to the start.
+  const cursor = (await env.CACHE.get(PUSH_CURSOR_KEY)) ?? "";
   const subs = (await env.DB.prepare(
-    "SELECT id, user_id, endpoint, lead_minutes, tz FROM push_subscriptions ORDER BY COALESCE(last_sent_day, '') ASC, created_at ASC LIMIT ?1"
-  ).bind(PUSH_MAX_PER_RUN).all<PushSub>()).results;
+    "SELECT id, user_id, endpoint, lead_minutes, tz FROM push_subscriptions WHERE id > ?1 ORDER BY id ASC LIMIT ?2"
+  ).bind(cursor, PUSH_MAX_PER_RUN).all<PushSub>()).results;
+  const nextCursor = subs.length < PUSH_MAX_PER_RUN ? "" : subs[subs.length - 1].id;
+  if (nextCursor !== cursor) {
+    if (nextCursor) await env.CACHE.put(PUSH_CURSOR_KEY, nextCursor);
+    else await env.CACHE.delete(PUSH_CURSOR_KEY);
+  }
   if (subs.length === 0) return { checked: 0, sent: 0, removed: 0 };
 
   const due = await dueGames(env, subs.map((s) => ({ userId: s.user_id, tz: s.tz, lead: s.lead_minutes })), now);

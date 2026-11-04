@@ -637,21 +637,6 @@ function dateHash(dateKey: string): number {
   return hash;
 }
 
-function gameOfTheDayIndex(dateKey: string, poolSize: number): number {
-  const dayMs = 86_400_000;
-  const today = Date.parse(`${dateKey}T00:00:00Z`);
-  const recent = new Set<number>();
-  for (let back = 1; back <= GOTD_REPEAT_DAYS; back++) {
-    recent.add(dateHash(utcDateKey(today - back * dayMs)) % poolSize);
-  }
-  let index = dateHash(dateKey) % poolSize;
-  // Step past indices the recent days would have used, as long as the pool has an unused one.
-  if (recent.size < poolSize) {
-    while (recent.has(index)) index = (index + 1) % poolSize;
-  }
-  return index;
-}
-
 async function gameOfTheDayPool(env: Env): Promise<string[]> {
   const qualified = await env.DB.prepare(
     `SELECT id FROM games
@@ -688,30 +673,56 @@ async function loadGameOfTheDay(env: Env, id: string): Promise<GameOfTheDay | nu
   return { ...game, categories: categories.get(id) ?? [] };
 }
 
-/** The game of the day for the UTC date of `now`, or null when no game is listed. */
+/**
+ * Picks today's game from the pool, skipping the real picks of the previous GOTD_REPEAT_DAYS days (read from
+ * daily_picks). A small pool that those days would exhaust falls back to the whole pool minus yesterday's pick.
+ */
+async function pickGameOfTheDay(env: Env, dateKey: string): Promise<string | null> {
+  const pool = await gameOfTheDayPool(env);
+  if (pool.length === 0) return null;
+  const since = utcDateKey(Date.parse(`${dateKey}T00:00:00Z`) - GOTD_REPEAT_DAYS * 86_400_000);
+  const recent = (await env.DB.prepare("SELECT day, game_id FROM daily_picks WHERE day >= ?1 AND day < ?2 ORDER BY day DESC")
+    .bind(since, dateKey).all<{ day: string; game_id: string }>()).results;
+  let candidates = pool.filter((id) => !recent.some((r) => r.game_id === id));
+  if (candidates.length === 0) candidates = pool.filter((id) => id !== recent[0]?.game_id);
+  if (candidates.length === 0) candidates = pool;
+  return candidates[dateHash(dateKey) % candidates.length];
+}
+
+/**
+ * The game of the day for the UTC date of `now`, or null when no game is listed. The pick is stored once per day
+ * in daily_picks and stays put, unless that game is no longer available (hidden, rejected, NSFW): then today's row
+ * alone is replaced by a new pick. Past rows are never changed. KV holds the id until UTC midnight; a row is
+ * guaranteed before KV is written, so the cache-hit path needs no D1 write.
+ */
 async function getGameOfTheDay(env: Env, now: number = Date.now()): Promise<GameOfTheDay | null> {
   const dateKey = utcDateKey(now);
-  const cacheKey = `gotd:v1:${dateKey}`;
+  const cacheKey = `gotd:v2:${dateKey}`;
   const cachedId = await getCachedJson<string>(env, cacheKey);
-  const cached = cachedId ? await loadGameOfTheDay(env, cachedId) : null;
-  if (cached) {
-    return cached;
+  if (cachedId) {
+    const cached = await loadGameOfTheDay(env, cachedId);
+    if (cached) return cached;
   }
-  // The stored pick wins; it is written once (insert-or-ignore) so later pool changes never alter a day.
-  let id = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id;
-  if (!id) {
-    const pool = await gameOfTheDayPool(env);
-    if (pool.length === 0) {
-      return null;
+  const stored = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id;
+  if (stored) {
+    const game = await loadGameOfTheDay(env, stored);
+    if (game) {
+      if (cachedId !== stored) await setCachedJson(env, cacheKey, stored, secondsUntilNextUtcDay(now));
+      return game;
     }
-    id = pool[gameOfTheDayIndex(dateKey, pool.length)];
-    await env.DB.prepare("INSERT OR IGNORE INTO daily_picks (day, game_id, picked_at) VALUES (?1, ?2, ?3)")
-      .bind(dateKey, id, new Date(now).toISOString())
-      .run();
-    id = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id ?? id;
   }
-  await setCachedJson(env, cacheKey, id, secondsUntilNextUtcDay(now));
-  return loadGameOfTheDay(env, id);
+  // No pick yet, or the stored one is unavailable: choose (again) and record it for today only.
+  const picked = await pickGameOfTheDay(env, dateKey);
+  if (!picked) return null;
+  const verb = stored ? "INSERT OR REPLACE" : "INSERT OR IGNORE";
+  await env.DB.prepare(`${verb} INTO daily_picks (day, game_id, picked_at) VALUES (?1, ?2, ?3)`)
+    .bind(dateKey, picked, new Date(now).toISOString())
+    .run();
+  // Another request may have recorded a pick first; the row wins.
+  const id = (await env.DB.prepare("SELECT game_id FROM daily_picks WHERE day = ?1").bind(dateKey).first<{ game_id: string }>())?.game_id ?? picked;
+  const game = await loadGameOfTheDay(env, id);
+  if (game) await setCachedJson(env, cacheKey, id, secondsUntilNextUtcDay(now));
+  return game;
 }
 
 function gameOfTheDaySnippet(description: string | null): string {
@@ -4561,8 +4572,10 @@ app.get("/api/games", async (c) => {
   const page = Math.max(1, parsePositiveInt(c.req.query("page"), 1));
   const perPage = Math.min(100, Math.max(1, parsePositiveInt(c.req.query("perPage"), 25)));
   const offset = (page - 1) * perPage;
-  const key = `games:${sort}:${category || "all"}:${q || "none"}:${hidePaywall ? 1 : 0}:${hideNsfw ? 1 : 0}:${page}:${perPage}`;
-  const cached = await getCachedJson<unknown[]>(c.env, key);
+  // Free-text searches are never cached in KV: one key per arbitrary string would flood the cache (and make
+  // invalidation expensive). The query is a plain indexed LIKE, cheap to run.
+  const key = q ? null : `games:${sort}:${category || "all"}:${hidePaywall ? 1 : 0}:${hideNsfw ? 1 : 0}:${page}:${perPage}`;
+  const cached = key ? await getCachedJson<unknown[]>(c.env, key) : null;
   if (cached) {
     const results = Array.isArray(cached) ? cached : [];
     return c.json({
@@ -4576,7 +4589,7 @@ app.get("/api/games", async (c) => {
   const withExtra = await listGames(c.env, { sort, category, q, hidePaywall, hideNsfw, limit: perPage + 1, offset });
   const hasMore = withExtra.length > perPage;
   const results = withExtra.slice(0, perPage);
-  await setCachedJson(c.env, key, results);
+  if (key) await setCachedJson(c.env, key, results);
   return c.json({ results, page, perPage, hasMore, cached: false });
 });
 
@@ -6192,8 +6205,8 @@ async function recordGameClick(c: Context<{ Bindings: Bindings; Variables: AppVa
   if (!update.meta.changes) {
     return c.json({ ok: true });
   }
+  // No cache invalidation for clicks: the score and "popular" order catch up when the 60s list caches expire.
   await updateGameScore(c.env, gameId);
-  await invalidateGameCaches(c.env);
   return c.json({ ok: true });
 }
 
@@ -7601,12 +7614,28 @@ export default {
       ));
       return;
     }
-    ctx.waitUntil(runLinkChecks(env));
-    ctx.waitUntil(recalculateAllScores(env));
-    ctx.waitUntil(runClaimRechecks(env));
-    ctx.waitUntil(runDeveloperRoleMaintenance(env));
+    // Each job has its own try/catch and log line, so one failure (or a D1 limit hit) cannot lose the others.
+    // DB_TRACE (dev only) counts D1 round trips for the whole run and logs one line when every job has finished.
+    const trace = env.DB_TRACE ? withDbTrace(env, new Request(`http://cron.invalid/scheduled?cron=${encodeURIComponent(event.cron)}`)) : null;
+    if (trace) env = trace.env;
+    const running: Promise<unknown>[] = [];
+    const job = (name: string, fn: () => Promise<unknown>) => {
+      const p = fn().then(
+        (result) => console.log(JSON.stringify({ message: "cron job done", job: name, result: result ?? null })),
+        (error) => console.error(JSON.stringify({ message: "cron job failed", job: name, error: String(error) }))
+      );
+      running.push(p);
+      ctx.waitUntil(p);
+    };
+    job("cleanup", () => runCleanup(env));
+    job("game-of-the-day", () => getGameOfTheDay(env).then((g) => g?.id ?? null));
+    job("recalculate-scores", async () => { const n = await recalculateAllScores(env); await invalidateGameCaches(env); return n; });
+    job("link-checks", () => runLinkChecks(env));
+    job("claim-rechecks", () => runClaimRechecks(env));
+    job("developer-roles", () => runDeveloperRoleMaintenance(env));
     // Backstop: anything the announcement alarm somehow left in the queue goes out with the daily run.
-    ctx.waitUntil(flushAnnouncementQueue(env));
+    job("announcements", () => flushAnnouncementQueue(env));
+    if (trace) ctx.waitUntil(Promise.all(running).then(() => trace.done(200)));
   }
 };
 
@@ -7679,7 +7708,12 @@ async function checkLink(url: string): Promise<LinkCheckResult> {
   return head === "ok" ? head : attempt("GET");
 }
 
-async function runLinkChecks(env: Env): Promise<void> {
+// Links are checked in small parallel groups. The wall-clock budget stops new groups from starting, and the
+// oldest-checked-first order means whatever is skipped goes first on the next run.
+const LINK_CHECK_CONCURRENCY = 10;
+const LINK_CHECK_BUDGET_MS = 5 * 60_000;
+
+async function runLinkChecks(env: Env): Promise<{ checked: number; ok: number; broken: number; unknown: number }> {
   const rows = await env.DB.prepare(
     `SELECT id, url, link_fail_count
      FROM games
@@ -7688,44 +7722,54 @@ async function runLinkChecks(env: Env): Promise<void> {
      LIMIT ?1`
   ).bind(LINK_CHECK_BATCH_SIZE).all<{ id: string; url: string; link_fail_count: number }>();
 
-  for (const row of rows.results) {
-    const result = await checkLink(row.url);
-
-    if (result === "unknown") {
-      await env.DB.prepare("UPDATE games SET last_checked_at = datetime('now') WHERE id = ?1").bind(row.id).run();
-      continue;
-    }
-
-    if (result === "ok") {
-      await env.DB.prepare(
-        "UPDATE games SET link_fail_count = 0, last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?1"
-      ).bind(row.id).run();
-      continue;
-    }
-
-    const nextFailCount = row.link_fail_count + 1;
-    await env.DB.prepare(
-      "UPDATE games SET link_fail_count = ?1, last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?2"
-    ).bind(nextFailCount, row.id).run();
-
-    if (nextFailCount >= 3) {
-      const existingOpen = await env.DB.prepare(
-        "SELECT id FROM reports WHERE game_id = ?1 AND reason = 'broken' AND status = 'open'"
-      ).bind(row.id).first();
-      if (!existingOpen) {
-        const systemUserId = "00000000-0000-0000-0000-000000000001";
-        await env.DB.prepare(
-          "INSERT INTO reports (id, game_id, reported_by_user_id, reason, note) VALUES (?1, ?2, ?3, 'broken', ?4)"
-        ).bind(crypto.randomUUID(), row.id, systemUserId, "Auto-report: link checker failed 3 times").run();
-      }
-    }
+  const started = Date.now();
+  const unknownIds: string[] = [];
+  const okIds: string[] = [];
+  const brokenIds: string[] = [];
+  for (let i = 0; i < rows.results.length && Date.now() - started < LINK_CHECK_BUDGET_MS; i += LINK_CHECK_CONCURRENCY) {
+    const group = rows.results.slice(i, i + LINK_CHECK_CONCURRENCY);
+    const results = await Promise.all(group.map((row) => checkLink(row.url)));
+    group.forEach((row, n) => {
+      (results[n] === "unknown" ? unknownIds : results[n] === "ok" ? okIds : brokenIds).push(row.id);
+    });
   }
 
+  // Three set-based writes (plus the auto-reports) instead of one per game.
+  const statements: D1PreparedStatement[] = [];
+  if (unknownIds.length > 0) {
+    statements.push(env.DB.prepare("UPDATE games SET last_checked_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?1))").bind(JSON.stringify(unknownIds)));
+  }
+  if (okIds.length > 0) {
+    statements.push(env.DB.prepare(
+      "UPDATE games SET link_fail_count = 0, last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?1))"
+    ).bind(JSON.stringify(okIds)));
+  }
+  if (brokenIds.length > 0) {
+    const brokenJson = JSON.stringify(brokenIds);
+    statements.push(
+      env.DB.prepare(
+        "UPDATE games SET link_fail_count = link_fail_count + 1, last_checked_at = datetime('now'), updated_at = datetime('now') WHERE id IN (SELECT value FROM json_each(?1))"
+      ).bind(brokenJson),
+      env.DB.prepare(
+        `INSERT INTO reports (id, game_id, reported_by_user_id, reason, note)
+         SELECT lower(hex(randomblob(16))), g.id, '00000000-0000-0000-0000-000000000001', 'broken', 'Auto-report: link checker failed 3 times'
+         FROM games g
+         WHERE g.id IN (SELECT value FROM json_each(?1)) AND g.link_fail_count >= 3
+           AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.game_id = g.id AND r.reason = 'broken' AND r.status = 'open')`
+      ).bind(brokenJson)
+    );
+  }
+  if (statements.length > 0) await env.DB.batch(statements);
+  await invalidateGameCaches(env);
+  return { checked: unknownIds.length + okIds.length + brokenIds.length, ok: okIds.length, broken: brokenIds.length, unknown: unknownIds.length };
+}
+
+/** Expired sessions and old rate-limit rows. Its own job so it runs even when another job fails. */
+async function runCleanup(env: Env): Promise<void> {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM rate_limits WHERE updated_at < datetime('now', '-2 days')"),
     env.DB.prepare("DELETE FROM sessions WHERE datetime(expires_at) <= datetime('now')")
   ]);
-  await invalidateGameCaches(env);
 }
 
 /** For a missing /games/<slug> ending in "-<8 hex>": the current slug of the one visible game with that id prefix, if it differs. */
@@ -8334,11 +8378,43 @@ async function updateGameScore(env: Env, gameId: string): Promise<void> {
   await env.DB.prepare("UPDATE games SET score = ?1, updated_at = datetime('now') WHERE id = ?2").bind(score, gameId).run();
 }
 
-async function recalculateAllScores(env: Env): Promise<void> {
-  const games = await env.DB.prepare("SELECT id FROM games WHERE status = 'approved'").all<{ id: string }>();
-  for (const game of games.results) {
-    await updateGameScore(env, game.id);
+/**
+ * Recomputes every approved game's score with the same formula as updateGameScore, but from one grouped read and
+ * a few set-based writes (UPDATE ... FROM json_each), so the daily run costs a handful of D1 calls, not 2 per game.
+ */
+async function recalculateAllScores(env: Env): Promise<number> {
+  const rows = (await env.DB.prepare(
+    `SELECT g.id, g.vote_up_count, g.vote_down_count, g.report_count, g.created_at, g.click_count,
+            COALESCE(fu.n, 0) AS favorite_count_user, COALESCE(fa.n, 0) AS favorite_count_anon, COALESCE(li.n, 0) AS list_count
+     FROM games g
+     LEFT JOIN (SELECT game_id, COUNT(*) AS n FROM favorites GROUP BY game_id) fu ON fu.game_id = g.id
+     LEFT JOIN (SELECT game_id, COUNT(*) AS n FROM anonymous_favorites GROUP BY game_id) fa ON fa.game_id = g.id
+     LEFT JOIN (SELECT game_id, COUNT(*) AS n FROM curated_list_items GROUP BY game_id) li ON li.game_id = g.id
+     WHERE g.status = 'approved'`
+  ).all<{
+    id: string; vote_up_count: number; vote_down_count: number; report_count: number; created_at: string; click_count: number;
+    favorite_count_user: number; favorite_count_anon: number; list_count: number;
+  }>()).results;
+  const pairs = rows.map((row) => [row.id, computeGameScore({
+    upVotes: row.vote_up_count,
+    downVotes: row.vote_down_count,
+    reportCount: row.report_count,
+    favoriteCount: (row.favorite_count_user || 0) + (row.favorite_count_anon || 0),
+    clickCount: row.click_count || 0,
+    listCount: row.list_count || 0,
+    createdAtIso: row.created_at
+  })]);
+  const CHUNK = 250;
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < pairs.length; i += CHUNK) {
+    statements.push(env.DB.prepare(
+      `UPDATE games SET score = j.score, updated_at = datetime('now')
+       FROM (SELECT json_extract(value, '$[0]') AS id, json_extract(value, '$[1]') AS score FROM json_each(?1)) AS j
+       WHERE games.id = j.id`
+    ).bind(JSON.stringify(pairs.slice(i, i + CHUNK))));
   }
+  if (statements.length > 0) await env.DB.batch(statements);
+  return pairs.length;
 }
 
 type GameEventAction =
